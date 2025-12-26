@@ -1,0 +1,6 @@
+pandas
+matplotlib
+ipykernel
+jupyter
+pyarrow
+google-cloud-storage
