@@ -49,8 +49,7 @@ class ArgoversePreprocessor(Preprocessor):
         self.total_parts = sum([len(part) for part in download_parts.values()])
         self.resample_seconds = resample_seconds
 
-        if not os.path.exists(DATA_FOLDER):
-            os.mkdir(DATA_FOLDER)
+        os.makedirs(DATA_FOLDER, exist_ok=True)
 
         self.iteration = 0
 
