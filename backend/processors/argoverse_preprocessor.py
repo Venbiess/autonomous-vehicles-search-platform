@@ -1,4 +1,4 @@
-from preprocessor import Preprocessor
+from .preprocessor import Preprocessor
 from typing import List, Optional, Dict
 from tqdm import tqdm
 import pandas as pd
@@ -7,8 +7,10 @@ from pathlib import Path
 from glob import glob
 import os
 
+from configs.common import ARGOVERSE_DIR, DATA_DIR
+
 S3_DATASET_LINK = "https://s3.amazonaws.com/argoverse/datasets/av2/tars/sensor/"
-DATA_FOLDER = "../data/"
+DATA_FOLDER = os.path.join(DATA_DIR, ARGOVERSE_DIR)
 
 
 class ArgoversePreprocessor(Preprocessor):
@@ -89,7 +91,7 @@ class ArgoversePreprocessor(Preprocessor):
                         f.write(chunk)
                         pbar.update(len(chunk))
 
-        os.system(f"tar -xvf {out_path}")
+        os.system(f"tar -xvf {out_path} -C {DATA_FOLDER}")
         return out_path
 
     def filter_by_step_seconds(self, files: List[str]) -> List[str]:

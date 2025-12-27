@@ -1,4 +1,4 @@
-from preprocessor import Preprocessor
+from .preprocessor import Preprocessor
 from google.cloud import storage
 from typing import List, Optional
 import subprocess
@@ -6,13 +6,15 @@ import pandas as pd
 import shutil
 import os
 
+from configs.common import WAYMO_DIR, DATA_DIR
+
 BUCKET_NAME = "waymo_open_dataset_v_2_0_1"
 PREFIX = "training/camera_image"
 PROJECT_NAME = "avsp-479717"
 REMOTE_PATH = f"gs://{BUCKET_NAME}/{PREFIX}/"
 
 GOOGLE_CLOUD_GSUTIL_PATH = shutil.which("gsutil")
-DATA_FOLDER = "../data/"
+DATA_FOLDER = os.path.join(DATA_DIR, WAYMO_DIR)
 
 
 class WaymoPreprocessor(Preprocessor):
@@ -70,7 +72,7 @@ class WaymoPreprocessor(Preprocessor):
                 dst_path
             ]
 
-            os.system(' '.join(cmd), check=True)
+            subprocess.run(cmd)
 
         # if not os.path.exists(dst_path):
         #     blob = self.bucket.blob(blob_name)

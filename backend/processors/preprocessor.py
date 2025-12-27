@@ -4,8 +4,8 @@ class Preprocessor:
         "FRONT_LEFT",
         "FRONT_RIGHT",
         "REAR",
-        "SIDE_LEFT",
-        "SIDE_RIGHT"
+        "BACK_LEFT",
+        "BACK_RIGHT"
     ]
 
     def __init__(self):

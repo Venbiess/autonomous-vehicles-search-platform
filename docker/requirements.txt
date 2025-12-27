@@ -4,3 +4,5 @@ ipykernel
 jupyter
 pyarrow
 google-cloud-storage
+tqdm
+python-dotenv
