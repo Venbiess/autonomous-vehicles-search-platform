@@ -1,5 +1,5 @@
 set -a
-source ../configs/project.env
+source ../configs/waymo.env
 set +a
 
 docker build \

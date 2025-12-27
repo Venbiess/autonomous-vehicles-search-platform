@@ -12,5 +12,6 @@ source ./run_docker.sh
 
 ```
 docker exec -it <CONTAINED_ID> bash
+gcloud auth application-default login
 gcloud auth login
 ```

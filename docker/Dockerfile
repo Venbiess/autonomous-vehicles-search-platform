@@ -44,14 +44,14 @@ RUN curl -sSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
 # -----------------------------
 # Python dependencies
 # -----------------------------
-WORKDIR /tmp
-COPY docker/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+WORKDIR /app
+COPY docker/requirements.txt /requirements.txt
+RUN pip install --no-cache-dir -r /requirements.txt
 
-# -----------------------------
-# App directory
-# -----------------------------
-WORKDIR ${APP_DIR}
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+COPY docker/setup.py /setup.py
 
-# В dev-контейнере код будет примонтирован volume-ом
-CMD ["bash"]
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["tail", "-f", "/dev/null"]
+

@@ -20,8 +20,8 @@ class WaymoPreprocessor(Preprocessor):
         "FRONT": 1,
         "FRONT_LEFT": 2,
         "FRONT_RIGHT": 3,
-        "SIDE_LEFT": 4,
-        "SIDE_RIGHT": 5
+        "BACK_LEFT": 4,
+        "BACK_RIGHT": 5
     }  # https://github.com/Jossome/Waymo-open-dataset-document
     REVERSE_CAMERA_TO_LABEL = {
         v: k for k, v in CAMERA_TO_LABEL.items()
@@ -33,8 +33,8 @@ class WaymoPreprocessor(Preprocessor):
         "[CameraImageComponent].image": "image"
     }
 
-    def __init__(self, 
-                 cameras: Optional[List[str]] = ["FRONT"], 
+    def __init__(self,
+                 cameras: Optional[List[str]] = ["FRONT"],
                  resample_seconds: Optional[float] = 0.5,
                  exist_skip: bool = False
                 ):
@@ -54,7 +54,7 @@ class WaymoPreprocessor(Preprocessor):
         else:
             self.cameras = None
         self.resample_seconds = resample_seconds
-        
+
         if not os.path.exists(DATA_FOLDER):
             os.mkdir(DATA_FOLDER)
 
@@ -70,8 +70,8 @@ class WaymoPreprocessor(Preprocessor):
                 dst_path
             ]
 
-            subprocess.run(cmd, check=True)
-        
+            os.system(' '.join(cmd), check=True)
+
         # if not os.path.exists(dst_path):
         #     blob = self.bucket.blob(blob_name)
         #     try:
@@ -114,16 +114,16 @@ class WaymoPreprocessor(Preprocessor):
 
         self.download_blob(name, dst_path)
         self.process_parquet(dst_path)
-        
+
         return dst_path
 
     def __iter__(self):
         return self
-    
+
     def __next__(self):
         if self.iteration >= len(self.episodes):
             raise StopIteration
-        
+
         blob_name = self.episodes[self.iteration]
         self.iteration += 1
         return self.process_sample(blob_name)
