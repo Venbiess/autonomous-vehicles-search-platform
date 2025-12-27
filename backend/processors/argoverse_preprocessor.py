@@ -121,7 +121,6 @@ class ArgoversePreprocessor(Preprocessor):
             glob(f"{trips_path}/**/{camera}/*.jpg", recursive=True)
             for camera in self.cameras
         ]
-        # resample by seconds
         images = self.filter_by_step_seconds(images)
 
         result = pd.DataFrame([
