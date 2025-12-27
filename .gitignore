@@ -1,0 +1,5 @@
+__pycache__
+*.parquet
+application_default_credentials.json
+backend/data/
+data/
