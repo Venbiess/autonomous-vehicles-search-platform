@@ -1,0 +1,15 @@
+transformers
+huggingface_hub
+safetensors
+accelerate
+
+pillow
+numpy
+pandas
+tqdm
+requests
+
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv

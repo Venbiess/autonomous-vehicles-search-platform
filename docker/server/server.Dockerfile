@@ -11,6 +11,10 @@ ARG APP_DIR=/app
 # -----------------------------
 # Environment variables
 # -----------------------------
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+
 ENV PROJECT_NAME=${PROJECT_NAME}
 ENV GCLOUD_PROJECT=${GCLOUD_PROJECT}
 ENV ENVIRONMENT=${ENVIRONMENT}
@@ -45,12 +49,12 @@ RUN curl -sSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
 # Python dependencies
 # -----------------------------
 WORKDIR /app
-COPY docker/requirements.txt /requirements.txt
+COPY docker/server/requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
-COPY docker/entrypoint.sh /entrypoint.sh
+COPY docker/server/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-COPY docker/setup.py /setup.py
+COPY docker/server/setup.py /setup.py
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["tail", "-f", "/dev/null"]
