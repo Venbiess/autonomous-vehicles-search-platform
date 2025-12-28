@@ -20,7 +20,11 @@ else:
 processor = AlignProcessor.from_pretrained("kakaobrain/align-base")
 model = AlignModel.from_pretrained("kakaobrain/align-base").to(device)
 model.eval()
-print(f"Embedder has been successfully initialized. Device: {device}")
+print(
+    f"Embedder has been successfully initialized.",
+    f"Device: {device}.",
+    f"Port: {EMBEDDER_CONFIG.PORT}"
+)
 if cfg_device != device:
     print(
         f"Your config device was: {device}, but currently is used {device}.",

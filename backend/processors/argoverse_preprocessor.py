@@ -7,10 +7,11 @@ from pathlib import Path
 from glob import glob
 import os
 
-from configs.common import ARGOVERSE_DIR, DATA_DIR
+from configs.common import DATA_DIR, ARGOVERSE_DIR
 
 S3_DATASET_LINK = "https://s3.amazonaws.com/argoverse/datasets/av2/tars/sensor/"
 DATA_FOLDER = os.path.join(DATA_DIR, ARGOVERSE_DIR)
+print(DATA_FOLDER)
 
 
 class ArgoversePreprocessor(Preprocessor):
