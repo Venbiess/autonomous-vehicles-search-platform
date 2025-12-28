@@ -2,8 +2,8 @@ from .argoverse import *
 from .waymo import *
 from .nuscenes import *
 
-APP_DIR = "/app"
-DATA_DIR = "/app/data"
+# Data dir inside app
+DATA_DIR = "/data"
 
 # Available: WAYMO, ARGOVERSE
 # Make sure that the appropriate configs are filled in.

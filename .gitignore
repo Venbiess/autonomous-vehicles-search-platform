@@ -3,3 +3,4 @@ __pycache__
 application_default_credentials.json
 backend/data/
 data/
+.cache

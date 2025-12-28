@@ -4,8 +4,10 @@
 
 ## Build
 
+### Server
+
 ```
-cd docker/
+cd docker/server/
 source ./build_docker.sh
 source ./run_docker.sh
 ```
@@ -17,9 +19,17 @@ gcloud auth application-default login
 gcloud auth login
 ```
 
-## Run package
+Run package inside docker container:
 ```
 python -m backend.processors.argoverse_preprocessor
 
 python -m backend.processors.waymo_preprocessor
 ```
+
+### Models
+```
+cd docker/models/
+source ./build_docker.sh
+source ./run_docker.sh
+```
+ 

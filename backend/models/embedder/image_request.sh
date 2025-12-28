@@ -1,0 +1,1 @@
+curl -X POST http://localhost:8000/embedding/image_bytes --data-binary "@test.jpg"
