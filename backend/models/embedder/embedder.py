@@ -3,22 +3,29 @@ from fastapi import FastAPI
 from fastapi import UploadFile, File, Request
 from PIL import Image
 from transformers import AlignProcessor, AlignModel
+from configs.hw_settings import EMBEDDER_CONFIG
 import torch
-
 
 app = FastAPI(title="Align Text Embedding API")
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-elif torch.backends.mps.is_available():
-    device = torch.device("mps")
+# --- Choose device ---
+cfg_device = EMBEDDER_CONFIG.DEVICE.lower()
+if cfg_device == "cuda" and torch.cuda.is_available():
+    device = "cuda"
+elif cfg_device == "mps" and torch.backends.mps.is_available():
+    device = "mps"
 else:
-    device = torch.device("cpu")
+    device = "cpu"
 
 processor = AlignProcessor.from_pretrained("kakaobrain/align-base")
 model = AlignModel.from_pretrained("kakaobrain/align-base").to(device)
 model.eval()
-print("Embedder has been successfully initialized")
+print(f"Embedder has been successfully initialized. Device: {device}")
+if cfg_device != device:
+    print(
+        f"Your config device was: {device}, but currently is used {device}.",
+        f"Check your {cfg_device} availability"
+    )
 
 
 def extract_patches(image, patch: bool):

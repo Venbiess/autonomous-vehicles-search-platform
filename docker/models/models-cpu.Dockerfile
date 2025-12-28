@@ -5,6 +5,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
+ENV PYTHONPATH=/app
+
+COPY configs/ /app/configs
+
+RUN python - <<'PY' > /tmp/build.env
+from configs.hw_settings import TORCH_CONFIG, EMBEDDER_CONFIG, VLM_CONFIG
+
+print(f"TORCH_VERSION={TORCH_CONFIG.TORCH_VERSION}")
+print(f"TORCH_CUDA_TAG={TORCH_CONFIG.TORCH_CUDA_TAG or 'cpu'}")
+print(f"HF_HOME={getattr(TORCH_CONFIG, 'HF_HOME', '.cache/huggingface')}")
+print(f"EMBEDDER_PORT={EMBEDDER_CONFIG.PORT}")
+print(f"VLM_PORT={VLM_CONFIG.PORT}")
+PY
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl \
@@ -15,19 +28,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --upgrade pip setuptools wheel
 
-# ---- torch (CPU) ----
-ARG TORCH_VERSION=2.9.1
-RUN pip install torch==${TORCH_VERSION} --index-url https://download.pytorch.org/whl/cpu
+# ---- torch ----
+RUN . /tmp/build.env && \
+    if [ "$TORCH_CUDA_TAG" = "cpu" ] || [ "$TORCH_CUDA_TAG" = "None" ]; then \
+      pip install --no-cache-dir torch==${TORCH_VERSION} \
+        --index-url https://download.pytorch.org/whl/cpu ; \
+    else \
+      pip install --no-cache-dir torch==${TORCH_VERSION}+${TORCH_CUDA_TAG} \
+        --index-url https://download.pytorch.org/whl/${TORCH_CUDA_TAG} ; \
+    fi
 
 COPY docker/models/requirements.txt /requirements.txt
 RUN pip install -r /requirements.txt
 
-ENV HF_HOME=/app/.cache/huggingface
+EXPOSE ${EMBEDDER_PORT}
 
-# COPY configs/ /app/configs/
-
-ENV PYTHONPATH=/app
-EXPOSE 8000
-
-CMD ["uvicorn", "backend.models.embedder.embedder:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "debug", "--reload"]
+CMD sh -c "uvicorn backend.models.embedder.embedder:app \
+  --host 0.0.0.0 \
+  --port ${EMBEDDER_PORT} \
+  --log-level debug \
+  --reload"
 # uvicorn backend.models.embedder.embedder:app --host 0.0.0.0 --port 8000 --log-level debug --reload
