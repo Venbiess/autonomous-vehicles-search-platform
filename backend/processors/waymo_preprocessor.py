@@ -116,7 +116,12 @@ class WaymoPreprocessor(Preprocessor):
         self.download_blob(name, dst_path)
         self.process_parquet(dst_path)
 
-        return dst_path
+        self.upload_to_s3(
+            local_path=dst_path,
+            object_name=f"waymo/{name}"
+        )
+        os.remove(dst_path)
+        return f"s3://{self.s3_bucket}/waymo/{name}"
 
     def __iter__(self):
         return self
@@ -134,7 +139,8 @@ if __name__ == "__main__":
     processor = WaymoPreprocessor(resample_seconds=0.5)
 
     for i, episode in enumerate(processor):
-        if i >= 1:
-            break
         print(i)
         print(episode)
+        if i >= 1000:
+            break
+
