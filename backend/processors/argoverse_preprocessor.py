@@ -5,13 +5,13 @@ import pandas as pd
 import requests
 from pathlib import Path
 from glob import glob
+import shutil
 import os
 
 from configs.common import DATA_DIR, ARGOVERSE_DIR
 
 S3_DATASET_LINK = "https://s3.amazonaws.com/argoverse/datasets/av2/tars/sensor/"
-DATA_FOLDER = os.path.join(DATA_DIR, ARGOVERSE_DIR)
-print(DATA_FOLDER)
+DATA_FOLDER = Path(DATA_DIR) / ARGOVERSE_DIR
 
 
 class ArgoversePreprocessor(Preprocessor):
@@ -37,6 +37,7 @@ class ArgoversePreprocessor(Preprocessor):
                      "val": range(3),
                      "test": range(3)
                  },  # https://www.argoverse.org/av2.html#download-link
+                 remove_after_load: bool = False
                 ):
         super().__init__()
 
@@ -49,9 +50,11 @@ class ArgoversePreprocessor(Preprocessor):
         self.download_parts = download_parts
         self.total_parts = sum([len(part) for part in download_parts.values()])
         self.resample_seconds = resample_seconds
+        self.remove_after_load = remove_after_load
 
         os.makedirs(DATA_FOLDER, exist_ok=True)
 
+        # for iterable
         self.iteration = 0
 
     def download_part(self, split: str, part: int):
@@ -99,14 +102,21 @@ class ArgoversePreprocessor(Preprocessor):
         os.system(f'tar -xvf "{out_path}" -C "{DATA_FOLDER}"')
         return out_path
 
-    def filter_by_step_seconds(self, files: List[str]) -> List[str]:
+    def filter_by_step_seconds(self, files: List[Path]) -> List[Path]:
         step_ns = int(self.resample_seconds * 1e9)
 
         parsed = []
         for file in files:
-            name = os.path.basename(file)
-            ts = int(os.path.splitext(name)[0])
-            parsed.append((ts, file))
+            p = Path(file)
+            parts = p.stem.split("_")
+            ts = None
+            for token in reversed(parts):
+                if token.isdigit():
+                    ts = int(token)
+                    break
+            if ts is None:
+                continue
+            parsed.append((ts, p))
 
         parsed.sort(key=lambda x: x[0])
 
@@ -114,49 +124,72 @@ class ArgoversePreprocessor(Preprocessor):
         last_ts = None
         for ts, p in parsed:
             if last_ts is None or (ts - last_ts) >= step_ns:
-                out.append(Path(p))
+                out.append(p)
                 last_ts = ts
 
         return out
 
     def fitler_part(self, path, split, part):
-        trips_path = os.path.join(path, "sensor", split)
+        trips_path = path / "sensor" / split
 
         # filter cameras
-        images = [
-            glob(f"{trips_path}/**/{camera}/*.jpg", recursive=True)
+        paths = [
+            Path(p)
             for camera in self.cameras
+            for p in glob(str(trips_path / "**" / camera / "*.jpg"), recursive=True)
         ]
+
+        images: List[Path] = []
+        for src in paths:
+            ts_str = src.stem
+            cam_raw = src.parent.name
+            cam = self.REVERSE_CAMERA_TO_LABEL.get(cam_raw, cam_raw)
+
+            dst = DATA_FOLDER / f"{cam}_{ts_str}.jpg"
+
+            if dst.exists():
+                i = 1
+                while (DATA_FOLDER / f"{cam}_{ts_str}_{i}.jpg").exists():
+                    i += 1
+                dst = DATA_FOLDER / f"{cam}_{ts_str}_{i}.jpg"
+
+            src.rename(dst)  # moves files from sensor to argoverse data folder
+            images.append(dst)
+        
+        if self.remove_after_load:
+            sensor_dir = Path(DATA_FOLDER) / "sensor"
+            if sensor_dir.exists():
+                shutil.rmtree(sensor_dir)
+
         images = self.filter_by_step_seconds(images)
 
         result = pd.DataFrame([
             {
                 "timestamp": int(path.stem),
                 "camera_name": self.REVERSE_CAMERA_TO_LABEL[path.parent.name],
-                "image": Path(path).read_bytes()
+                "dataset_type": "argoverse",
+                "image_path": path,
+                "source_link": os.path.join(S3_DATASET_LINK, f"{split}-{part:03d}.tar"),
             }
             for path in images
         ])
 
-        out_path = os.path.join(DATA_FOLDER, f"{split}-{part:03d}.parquet")
-        result.to_parquet(out_path, index=False)
-        return out_path
+        # out_path = os.path.join(DATA_FOLDER, f"{split}-{part:03d}.parquet")
+        # result.to_parquet(out_path, index=False)
+        return result
 
     def process_part(self, split: str, part: int):
         output = self.download_part(split, part)
-        output = self.fitler_part(os.path.dirname(output), split, part)
+        output = self.fitler_part(Path(output).parent, split, part)
         return output
 
     def _generate(self):
         for split, parts in self.download_parts.items():
             for part in parts:
-                if self.iteration >= self.total_parts:
-                    raise StopIteration
-                self.process_part(split, part)
-                self.iteration += 1
+                yield self.process_part(split, part)
 
     def __iter__(self):
-        return iter(self._generate())
+        return self._generate()
 
 
 if __name__ == "__main__":
@@ -166,8 +199,10 @@ if __name__ == "__main__":
         cameras=["FRONT"]
     )
 
-    for i, episode in enumerate(processor):
-        if i >= 1:
-            break
-        print(i)
-        print(episode)
+    # for i, episode in enumerate(processor):
+    #     if i >= 1:
+    #         break
+    #     print(i)
+    #     print(episode)
+
+    processor.download_to_s3(bucket="argoverse")

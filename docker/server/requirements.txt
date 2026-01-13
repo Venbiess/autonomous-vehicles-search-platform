@@ -3,6 +3,7 @@ matplotlib
 ipykernel
 jupyter
 pyarrow
+boto3
 google-cloud-storage
 tqdm
 python-dotenv

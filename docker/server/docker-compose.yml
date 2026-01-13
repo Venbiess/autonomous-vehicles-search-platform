@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: "minio-${USER}"
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web UI
+    networks:
+      - avsp-net
+
+  avsp-server:
+    image: avsp-server
+    container_name: "avsp-server-${USER}"
+    depends_on:
+      - minio
+    volumes:
+      - "${PWD}/../..:/app"
+      - "vscode-server:/root/.vscode-server"
+    ports:
+      - "9100:9000"   # если приложение слушает 9000
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: waymo-processed
+    networks:
+      - avsp-net
+
+volumes:
+  minio-data:
+  vscode-server:
+
+networks:
+  avsp-net:
+    driver: bridge
