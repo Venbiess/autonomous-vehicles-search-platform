@@ -37,7 +37,7 @@ class ArgoversePreprocessor(Preprocessor):
                      "val": range(3),
                      "test": range(3)
                  },  # https://www.argoverse.org/av2.html#download-link
-                 remove_after_load: bool = True
+                 remove_after_load: bool = False
                 ):
         super().__init__()
 
