@@ -1,6 +1,7 @@
 from .preprocessor import Preprocessor
 from google.cloud import storage
 from typing import List, Optional
+from pathlib import Path
 import subprocess
 import pandas as pd
 import shutil
@@ -14,7 +15,7 @@ PROJECT_NAME = "avsp-479717"
 REMOTE_PATH = f"gs://{BUCKET_NAME}/{PREFIX}/"
 
 GOOGLE_CLOUD_GSUTIL_PATH = shutil.which("gsutil")
-DATA_FOLDER = os.path.join(DATA_DIR, WAYMO_DIR)
+DATA_FOLDER = Path(DATA_DIR) / WAYMO_DIR
 
 
 class WaymoPreprocessor(Preprocessor):
@@ -81,17 +82,16 @@ class WaymoPreprocessor(Preprocessor):
         #         print("DOWNLOAD FAILED")
         #         print("type:", type(e))
         #         print("error:", e)
-        #         # если файл создался частично — уберём
         #         if os.path.exists(dst_path) and os.path.getsize(dst_path) == 0:
         #             os.remove(dst_path)
         #         raise
 
-    def process_parquet(self, path):
+    def process_parquet(self, path: str) -> pd.DataFrame:
         df = pd.read_parquet(path)
 
         if self.cameras:
-            df = df[df['key.camera_name'].isin(self.cameras)]
-            df['key.camera_name'] = df['key.camera_name'].map(self.REVERSE_CAMERA_TO_LABEL)
+            df = df[df["key.camera_name"].isin(self.cameras)]
+            df["key.camera_name"] = df["key.camera_name"].map(self.REVERSE_CAMERA_TO_LABEL)
 
         if self.resample_seconds:
             df["ts"] = pd.to_datetime(df["key.frame_timestamp_micros"], unit="us", utc=True)
@@ -106,22 +106,60 @@ class WaymoPreprocessor(Preprocessor):
                 .dropna(subset=["ts"])
             )
 
+        episode_name = os.path.basename(path)
         df = df[self.COLUMNS_TO_SAVE.keys()].rename(columns=self.COLUMNS_TO_SAVE)
-        df.to_parquet(path, index=False)
+        df = self._save_images_and_replace_column(df, episode_name)
+        return df
+    
+    def _save_images_and_replace_column(
+        self,
+        df: pd.DataFrame,
+        episode_name: str,
+    ) -> pd.DataFrame:
+        episode_id = Path(episode_name).stem
 
-    def process_sample(self, blob_name: str):
+        image_paths: List[str] = []
+
+        for row in df.itertuples(index=False):
+            ts = getattr(row, "timestamp")
+            cam = getattr(row, "camera_name")
+            img = getattr(row, "image")
+
+            ts_str = str(int(ts))
+
+            file_path = DATA_FOLDER / f"{cam}_{ts_str}.jpg"
+            if file_path.exists():
+                i = 1
+                while (DATA_FOLDER / f"{ts_str}_{i}.jpg").exists():
+                    i += 1
+                file_path = DATA_FOLDER / f"{ts_str}_{i}.jpg"
+
+            if img is None or (hasattr(pd, "isna") and pd.isna(img)):
+                image_paths.append(None)
+                continue
+
+            if isinstance(img, memoryview):
+                img_bytes = img.tobytes()
+            else:
+                img_bytes = img if isinstance(img, (bytes, bytearray)) else bytes(img)
+
+            with open(file_path, "wb") as f:
+                f.write(img_bytes)
+
+            image_paths.append(str(file_path))
+
+        df = df.drop(columns=["image"])
+        df["image_path"] = image_paths
+        return df
+
+    def process_sample(self, blob_name: str) -> pd.DataFrame:
         name = os.path.basename(blob_name)
-        dst_path = os.path.join(DATA_FOLDER, name)
+        dst_path = DATA_FOLDER / name
 
         self.download_blob(name, dst_path)
-        self.process_parquet(dst_path)
+        result_df = self.process_parquet(dst_path)
 
-        self.upload_to_s3(
-            local_path=dst_path,
-            object_name=f"waymo/{name}"
-        )
-        os.remove(dst_path)
-        return f"s3://{self.s3_bucket}/waymo/{name}"
+        return result_df
 
     def __iter__(self):
         return self
@@ -133,14 +171,18 @@ class WaymoPreprocessor(Preprocessor):
         blob_name = self.episodes[self.iteration]
         self.iteration += 1
         return self.process_sample(blob_name)
+    
+    def __len__(self):
+        return len(self.episodes)
 
 
 if __name__ == "__main__":
     processor = WaymoPreprocessor(resample_seconds=0.5)
 
-    for i, episode in enumerate(processor):
-        print(i)
-        print(episode)
-        if i >= 1000:
-            break
-
+    # for i, episode in enumerate(processor):
+    #     print(i)
+    #     print(episode)
+    #     if i >= 1000:
+    #         break
+    print(processor.blobs)
+    processor.download_to_s3(bucket="waymo")

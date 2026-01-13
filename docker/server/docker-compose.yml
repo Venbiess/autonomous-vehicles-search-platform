@@ -3,7 +3,7 @@ version: "3.9"
 services:
   minio:
     image: minio/minio:latest
-    container_name: minio
+    container_name: "minio-${USER}"
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -18,7 +18,7 @@ services:
 
   avsp-server:
     image: avsp-server
-    container_name: avsp-server-dev
+    container_name: "avsp-server-${USER}"
     depends_on:
       - minio
     volumes:
