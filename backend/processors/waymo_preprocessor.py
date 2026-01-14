@@ -13,6 +13,7 @@ BUCKET_NAME = "waymo_open_dataset_v_2_0_1"
 PREFIX = "training/camera_image"
 PROJECT_NAME = "avsp-479717"
 REMOTE_PATH = f"gs://{BUCKET_NAME}/{PREFIX}/"
+SOURCE_URL = f"https://storage.googleapis.com/{BUCKET_NAME}/{PREFIX}/"
 
 GOOGLE_CLOUD_GSUTIL_PATH = shutil.which("gsutil")
 DATA_FOLDER = Path(DATA_DIR) / WAYMO_DIR
@@ -45,7 +46,7 @@ class WaymoPreprocessor(Preprocessor):
         self.client = storage.Client(project=PROJECT_NAME)
         self.bucket = self.client.bucket(BUCKET_NAME, user_project=PROJECT_NAME)
         self.blobs = self.bucket.list_blobs(prefix=PREFIX)
-        self.episodes = [
+        self.rides = [
             blob.name for blob in self.blobs if blob.name.endswith(".parquet")
         ]
         self.exist_skip = exist_skip
@@ -86,7 +87,7 @@ class WaymoPreprocessor(Preprocessor):
         #             os.remove(dst_path)
         #         raise
 
-    def process_parquet(self, path: str) -> pd.DataFrame:
+    def process_parquet(self, path: Path) -> pd.DataFrame:
         df = pd.read_parquet(path)
 
         if self.cameras:
@@ -106,18 +107,19 @@ class WaymoPreprocessor(Preprocessor):
                 .dropna(subset=["ts"])
             )
 
-        episode_name = os.path.basename(path)
         df = df[self.COLUMNS_TO_SAVE.keys()].rename(columns=self.COLUMNS_TO_SAVE)
-        df = self._save_images_and_replace_column(df, episode_name)
+
+        ride_id = path.stem
+        df = self._save_images_and_replace_column(df, ride_id)
+        df["source_ride_id"] = ride_id
+        df["source_link"] = SOURCE_URL + ride_id + ".parquet"
         return df
-    
+
     def _save_images_and_replace_column(
         self,
         df: pd.DataFrame,
-        episode_name: str,
+        ride_id: str,
     ) -> pd.DataFrame:
-        episode_id = Path(episode_name).stem
-
         image_paths: List[str] = []
 
         for row in df.itertuples(index=False):
@@ -127,12 +129,7 @@ class WaymoPreprocessor(Preprocessor):
 
             ts_str = str(int(ts))
 
-            file_path = DATA_FOLDER / f"{cam}_{ts_str}.jpg"
-            if file_path.exists():
-                i = 1
-                while (DATA_FOLDER / f"{ts_str}_{i}.jpg").exists():
-                    i += 1
-                file_path = DATA_FOLDER / f"{ts_str}_{i}.jpg"
+            file_path = DATA_FOLDER / f"{cam}_{ts_str}_{ride_id}.jpg"
 
             if img is None or (hasattr(pd, "isna") and pd.isna(img)):
                 image_paths.append(None)
@@ -149,7 +146,7 @@ class WaymoPreprocessor(Preprocessor):
             image_paths.append(str(file_path))
 
         df = df.drop(columns=["image"])
-        df["image_path"] = image_paths
+        df["local_path"] = image_paths
         return df
 
     def process_sample(self, blob_name: str) -> pd.DataFrame:
@@ -165,24 +162,25 @@ class WaymoPreprocessor(Preprocessor):
         return self
 
     def __next__(self):
-        if self.iteration >= len(self.episodes):
+        if self.iteration >= len(self.rides):
             raise StopIteration
 
-        blob_name = self.episodes[self.iteration]
+        blob_name = self.rides[self.iteration]
         self.iteration += 1
         return self.process_sample(blob_name)
-    
+
     def __len__(self):
-        return len(self.episodes)
+        return len(self.rides)
 
 
 if __name__ == "__main__":
-    processor = WaymoPreprocessor(resample_seconds=0.5)
+    processor = WaymoPreprocessor(resample_seconds=0.5, exist_skip=True)
+    # processor.clear_bucket(bucket="waymo")
 
-    # for i, episode in enumerate(processor):
+    # for i, ride in enumerate(processor):
     #     print(i)
-    #     print(episode)
+    #     print(ride)
     #     if i >= 1000:
     #         break
-    print(processor.blobs)
-    processor.download_to_s3(bucket="waymo")
+
+    processor.download_to_s3(bucket="waymo", total_rides=1)

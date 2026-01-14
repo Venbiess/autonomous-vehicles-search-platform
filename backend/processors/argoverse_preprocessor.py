@@ -36,8 +36,7 @@ class ArgoversePreprocessor(Preprocessor):
                      "train": range(14),
                      "val": range(3),
                      "test": range(3)
-                 },  # https://www.argoverse.org/av2.html#download-link
-                 remove_after_load: bool = False
+                 }  # https://www.argoverse.org/av2.html#download-link
                 ):
         super().__init__()
 
@@ -50,7 +49,6 @@ class ArgoversePreprocessor(Preprocessor):
         self.download_parts = download_parts
         self.total_parts = sum([len(part) for part in download_parts.values()])
         self.resample_seconds = resample_seconds
-        self.remove_after_load = remove_after_load
 
         os.makedirs(DATA_FOLDER, exist_ok=True)
 
@@ -74,7 +72,8 @@ class ArgoversePreprocessor(Preprocessor):
             headers = {}
 
             if remote_size and local_size >= remote_size:
-                os.system(f'tar -xvf "{out_path}" -C "{DATA_FOLDER}"')
+                os.system(f'tar -xvf "{out_path}" -C "{DATA_FOLDER}" --wildcards --no-anchored \'*.jpg\' --skip-old-files')
+                os.remove(out_path)
                 return out_path
             if downloaded > 0:
                 headers = {"Range": f"bytes={downloaded}-"}
@@ -99,7 +98,8 @@ class ArgoversePreprocessor(Preprocessor):
                         f.write(chunk)
                         pbar.update(len(chunk))
 
-        os.system(f'tar -xvf "{out_path}" -C "{DATA_FOLDER}"')
+        os.system(f'tar -xvf "{out_path}" -C "{DATA_FOLDER}" --wildcards --no-anchored \'*.jpg\' --skip-old-files')
+        os.remove(out_path)
         return out_path
 
     def filter_by_step_seconds(self, files: List[Path]) -> List[Path]:
@@ -143,33 +143,26 @@ class ArgoversePreprocessor(Preprocessor):
         for src in paths:
             ts_str = src.stem
             cam_raw = src.parent.name
+            ride_id = path.parents[2].name
             cam = self.REVERSE_CAMERA_TO_LABEL.get(cam_raw, cam_raw)
 
-            dst = DATA_FOLDER / f"{cam}_{ts_str}.jpg"
-
-            if dst.exists():
-                i = 1
-                while (DATA_FOLDER / f"{cam}_{ts_str}_{i}.jpg").exists():
-                    i += 1
-                dst = DATA_FOLDER / f"{cam}_{ts_str}_{i}.jpg"
+            dst = DATA_FOLDER / f"{cam}_{ts_str}_{ride_id}.jpg"
 
             src.rename(dst)  # moves files from sensor to argoverse data folder
             images.append(dst)
-        
-        if self.remove_after_load:
-            sensor_dir = Path(DATA_FOLDER) / "sensor"
-            if sensor_dir.exists():
-                shutil.rmtree(sensor_dir)
+
+        if not images:
+            images = glob(str(DATA_FOLDER / "*.jpg"))
 
         images = self.filter_by_step_seconds(images)
-
         result = pd.DataFrame([
             {
-                "timestamp": int(path.stem),
-                "camera_name": self.REVERSE_CAMERA_TO_LABEL[path.parent.name],
+                "timestamp": int(path.stem.split('_')[1]),
+                "camera_name": path.stem.split('_')[0],
                 "dataset_type": "argoverse",
-                "image_path": path,
+                "local_path": path,
                 "source_link": os.path.join(S3_DATASET_LINK, f"{split}-{part:03d}.tar"),
+                "source_ride_id": path.stem.split('_')[2]
             }
             for path in images
         ])
@@ -198,11 +191,12 @@ if __name__ == "__main__":
         download_parts={"train": [0]},
         cameras=["FRONT"]
     )
+    # processor.clear_bucket(bucket="argoverse")
 
-    # for i, episode in enumerate(processor):
+    # for i, ride in enumerate(processor):
     #     if i >= 1:
     #         break
     #     print(i)
-    #     print(episode)
+    #     print(ride)
 
     processor.download_to_s3(bucket="argoverse")

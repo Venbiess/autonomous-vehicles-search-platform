@@ -3,6 +3,7 @@ import boto3
 from botocore.client import Config
 from configs.common import S3_ENDPOINT_URL,S3_ACCESS_KEY_ID,S3_SECRET_ACCESS_KEY
 from botocore.exceptions import ClientError
+from typing import Optional
 import os
 
 class Preprocessor:
@@ -29,7 +30,7 @@ class Preprocessor:
                 s3={"addressing_style": "path"},
             ),
         )
-    
+
     def ensure_bucket(self, bucket: str):
         try:
             self.s3.head_bucket(Bucket=bucket)
@@ -55,11 +56,24 @@ class Preprocessor:
     def __next__(self):
         raise NotImplementedError("Dataset preprocessor must have __next__")
 
-    def download_to_s3(self, bucket: str = "avsp"):
+    def download_to_s3(self,
+                       bucket: str = "avsp",
+                       remove_after_load: bool = False,
+                       total_rides: Optional[int] = None):
         self.ensure_bucket(bucket=bucket)
-        for episode_df in self:
-            for row in episode_df.itertuples(index=False):
-                local_path = getattr(row, "image_path")
+        for i, ride_df in enumerate(self):
+            for row in ride_df.itertuples(index=False):
+                local_path = getattr(row, "local_path")
                 name = os.path.basename(local_path)
                 self.upload_to_s3(local_path, bucket, name)
-                os.remove(local_path)
+                if remove_after_load:
+                    os.remove(local_path)
+            if (total_rides is not None) and (i + 1 >= total_rides):
+                break
+
+    def clear_bucket(self, bucket: str):
+        paginator = self.s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket):
+            keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+            if keys:
+                self.s3.delete_objects(Bucket=bucket, Delete={"Objects": keys})
