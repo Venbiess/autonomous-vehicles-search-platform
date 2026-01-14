@@ -160,7 +160,7 @@ class ArgoversePreprocessor(Preprocessor):
                 "timestamp": int(path.stem.split('_')[1]),
                 "camera_name": path.stem.split('_')[0],
                 "dataset_type": "argoverse",
-                "local": path,
+                "local_path": path,
                 "source_link": os.path.join(S3_DATASET_LINK, f"{split}-{part:03d}.tar"),
                 "source_ride_id": path.stem.split('_')[2]
             }
