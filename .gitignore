@@ -4,3 +4,4 @@ application_default_credentials.json
 backend/data/
 data/
 .cache
+.ipynb_checkpoints
