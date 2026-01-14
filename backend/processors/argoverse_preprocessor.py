@@ -73,6 +73,7 @@ class ArgoversePreprocessor(Preprocessor):
 
             if remote_size and local_size >= remote_size:
                 os.system(f'tar -xvf "{out_path}" -C "{DATA_FOLDER}" --wildcards --no-anchored \'*.jpg\' --skip-old-files')
+                os.remove(out_path)
                 return out_path
             if downloaded > 0:
                 headers = {"Range": f"bytes={downloaded}-"}
@@ -98,6 +99,7 @@ class ArgoversePreprocessor(Preprocessor):
                         pbar.update(len(chunk))
 
         os.system(f'tar -xvf "{out_path}" -C "{DATA_FOLDER}" --wildcards --no-anchored \'*.jpg\' --skip-old-files')
+        os.remove(out_path)
         return out_path
 
     def filter_by_step_seconds(self, files: List[Path]) -> List[Path]:
