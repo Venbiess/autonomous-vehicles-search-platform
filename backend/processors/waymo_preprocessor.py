@@ -110,7 +110,7 @@ class WaymoPreprocessor(Preprocessor):
         df = df[self.COLUMNS_TO_SAVE.keys()].rename(columns=self.COLUMNS_TO_SAVE)
         df = self._save_images_and_replace_column(df, episode_name)
         return df
-    
+
     def _save_images_and_replace_column(
         self,
         df: pd.DataFrame,
@@ -171,7 +171,7 @@ class WaymoPreprocessor(Preprocessor):
         blob_name = self.episodes[self.iteration]
         self.iteration += 1
         return self.process_sample(blob_name)
-    
+
     def __len__(self):
         return len(self.episodes)
 
@@ -184,5 +184,5 @@ if __name__ == "__main__":
     #     print(episode)
     #     if i >= 1000:
     #         break
-    print(processor.blobs)
+
     processor.download_to_s3(bucket="waymo")

@@ -3,6 +3,7 @@ import boto3
 from botocore.client import Config
 from configs.common import S3_ENDPOINT_URL,S3_ACCESS_KEY_ID,S3_SECRET_ACCESS_KEY
 from botocore.exceptions import ClientError
+from tqdm import tqdm
 import os
 
 class Preprocessor:
@@ -29,7 +30,7 @@ class Preprocessor:
                 s3={"addressing_style": "path"},
             ),
         )
-    
+
     def ensure_bucket(self, bucket: str):
         try:
             self.s3.head_bucket(Bucket=bucket)
@@ -57,7 +58,7 @@ class Preprocessor:
 
     def download_to_s3(self, bucket: str = "avsp"):
         self.ensure_bucket(bucket=bucket)
-        for episode_df in self:
+        for episode_df in tqdm(self):
             for row in episode_df.itertuples(index=False):
                 local_path = getattr(row, "image_path")
                 name = os.path.basename(local_path)
