@@ -89,13 +89,20 @@ class Preprocessor:
             )
         try:
             for episode_df in self:
-                if writer:
-                    writer.insert_df(episode_df)
-                for row in episode_df.itertuples(index=False):
-                    local_path = getattr(row, "image_path")
+                episode_df["storage_path"] = None
+
+                for idx, row in episode_df.iterrows():
+                    local_path = row["image_path"]
                     name = os.path.basename(local_path)
+                    storage_path = os.path.join(bucket, name)
+
+                    episode_df.at[idx, "storage_path"] = storage_path
+
                     self.upload_to_s3(local_path, bucket, name)
                     os.remove(local_path)
+
+                if writer:
+                    writer.insert_df(episode_df)
         finally:
             if writer:
                 writer.close()
