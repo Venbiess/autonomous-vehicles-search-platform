@@ -5,3 +5,4 @@ backend/data/
 data/
 .cache
 notebooks/.ipynb_checkpoints/
+avsp/

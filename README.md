@@ -32,4 +32,3 @@ cd docker/models/
 source ./build_docker.sh
 source ./run_docker.sh
 ```
- 
