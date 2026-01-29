@@ -19,15 +19,15 @@ services:
   minio:
     image: minio/minio:latest
     container_name: "minio-${USER}"
-    command: server /data --console-address ":1001"
+    command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
       - minio-data:/data
     ports:
-      - "1000:1000"
-      - "1001:1001"
+      - "9000:9000"
+      - "9001:9001"
     networks:
       - avsp-net
 
@@ -57,9 +57,9 @@ services:
       - "${PWD}/../..:/app"
       - "vscode-server:/root/.vscode-server"
     ports:
-      - "1002:1002"
+      - "9002:9002"
     environment:
-      MINIO_ENDPOINT: http://minio:1000
+      MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
       MINIO_BUCKET: waymo-processed

@@ -229,6 +229,12 @@ def backfill_embeddings(payload: BackfillRequest):
     total_inserted = 0
     errors = []
 
+    logger.info(
+        "Backfill started: limit=%s batch_size=%s dry_run=%s",
+        payload.limit,
+        payload.batch_size,
+        payload.dry_run,
+    )
     s3 = _s3_client()
     timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
 
@@ -239,8 +245,16 @@ def backfill_embeddings(payload: BackfillRequest):
                 batch_limit = min(payload.batch_size, payload.limit - total_seen)
                 paths = _fetch_pending_paths(conn, batch_limit)
                 if not paths:
+                    logger.info("Backfill complete: no more pending rows.")
                     break
 
+                logger.info(
+                    "Processing batch: size=%s seen=%s inserted=%s errors=%s",
+                    len(paths),
+                    total_seen,
+                    total_inserted,
+                    len(errors),
+                )
                 total_seen += len(paths)
                 rows: List[EmbedResult] = []
 
@@ -265,10 +279,21 @@ def backfill_embeddings(payload: BackfillRequest):
 
                 if rows and not payload.dry_run:
                     total_inserted += _insert_embeddings(conn, rows)
+                    logger.info(
+                        "Batch inserted: count=%s total_inserted=%s",
+                        len(rows),
+                        total_inserted,
+                    )
 
                 if payload.stop_on_error and errors:
                     break
 
+    logger.info(
+        "Backfill finished: total_seen=%s total_inserted=%s errors=%s",
+        total_seen,
+        total_inserted,
+        len(errors),
+    )
     return {
         "total_seen": total_seen,
         "total_inserted": total_inserted,

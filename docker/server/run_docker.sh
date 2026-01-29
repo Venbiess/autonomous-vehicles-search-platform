@@ -4,5 +4,5 @@ docker run \
   -v "$(pwd)/../..":/app \
   -v "vscode-server-$USER":/root/.vscode-server \
   --name avsp-server-dev-$USER \
-  -p 1002:1000 \
+  -p 9002:9000 \
   avsp-server
