@@ -8,3 +8,6 @@ google-cloud-storage
 tqdm
 python-dotenv
 psycopg2-binary
+fastapi
+uvicorn
+httpx
