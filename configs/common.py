@@ -25,7 +25,7 @@ POSTGRES_SCHEMA = os.getenv("POSTGRES_SCHEMA", "public")
 POSTGRES_TABLE = os.getenv("POSTGRES_TABLE", "frames")
 
 # Embeddings configuration
-EMBEDDER_ENDPOINT = os.getenv("EMBEDDER_ENDPOINT", "http://0.0.0.0:8000")
+EMBEDDER_ENDPOINT = os.getenv("EMBEDDER_ENDPOINT", "http://embedder:8000")
 EMBEDDER_TIMEOUT_SEC = int(os.getenv("EMBEDDER_TIMEOUT_SEC", "30"))
 EMBEDDINGS_SCHEMA = os.getenv("EMBEDDINGS_SCHEMA", POSTGRES_SCHEMA)
 EMBEDDINGS_TABLE = os.getenv("EMBEDDINGS_TABLE", "image_embeddings")

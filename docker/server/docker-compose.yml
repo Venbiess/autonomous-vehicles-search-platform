@@ -57,7 +57,7 @@ services:
       - "${PWD}/../..:/app"
       - "vscode-server:/root/.vscode-server"
     ports:
-      - "1002:1000"
+      - "1002:1002"
     environment:
       MINIO_ENDPOINT: http://minio:1000
       MINIO_ACCESS_KEY: minioadmin

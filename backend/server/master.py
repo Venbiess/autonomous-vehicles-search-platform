@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from math import sqrt
 from typing import List, Tuple
 
 import boto3
@@ -10,6 +11,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from psycopg2 import sql
 from psycopg2.extras import execute_values
+import time
 
 from configs.common import (
     EMBEDDER_ENDPOINT,
@@ -39,6 +41,12 @@ class BackfillRequest(BaseModel):
     batch_size: int = Field(50, ge=1)
     stop_on_error: bool = False
     dry_run: bool = False
+
+
+class TextSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    top_k: int = Field(5, ge=1)
+    max_rows: int = Field(10000, ge=1)
 
 
 @dataclass(frozen=True)
@@ -126,6 +134,27 @@ def _fetch_pending_paths(conn, limit: int) -> List[str]:
     return [row[0] for row in rows]
 
 
+def _embedding_column_is_vector(conn) -> bool:
+    query = """
+        SELECT data_type, udt_name
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = %s
+          AND column_name = 'embedding'
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, (EMBEDDINGS_SCHEMA, EMBEDDINGS_TABLE))
+        row = cur.fetchone()
+    if not row:
+        return False
+    data_type, udt_name = row
+    return data_type == "USER-DEFINED" and udt_name == "vector"
+
+
+def _vector_literal(values: List[float]) -> str:
+    return "[" + ",".join(f"{value:.8f}" for value in values) + "]"
+
+
 def _insert_embeddings(conn, rows: List[EmbedResult]) -> int:
     if not rows:
         return 0
@@ -148,7 +177,6 @@ def _insert_embeddings(conn, rows: List[EmbedResult]) -> int:
 
 
 def _fetch_image_bytes(s3, storage_path: str) -> bytes:
-    print(s3, storage_path)
     if storage_path.startswith(("http://", "https://")):
         response = httpx.get(storage_path, timeout=EMBEDDER_TIMEOUT_SEC)
         response.raise_for_status()
@@ -164,6 +192,30 @@ def _embed_image(client: httpx.Client, image_bytes: bytes) -> Tuple[List[float],
     response.raise_for_status()
     payload = response.json()
     return payload["embedding"], payload["dim"]
+
+
+def _embed_text(client: httpx.Client, text: str) -> Tuple[List[float], int]:
+    url = f"{EMBEDDER_ENDPOINT}/embedding/text"
+    response = client.post(url, params={"text": text})
+    response.raise_for_status()
+    payload = response.json()
+    return payload["embedding"], payload["dim"]
+
+
+def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
+    if len(vec_a) != len(vec_b):
+        raise ValueError("Embedding dimensions do not match")
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for a, b in zip(vec_a, vec_b):
+        dot += a * b
+        norm_a += a * a
+        norm_b += b * b
+    denom = sqrt(norm_a) * sqrt(norm_b)
+    if denom == 0.0:
+        return 0.0
+    return dot / denom
 
 
 @app.get("/health")
@@ -191,6 +243,7 @@ def backfill_embeddings(payload: BackfillRequest):
 
                 total_seen += len(paths)
                 rows: List[EmbedResult] = []
+
                 for storage_path in paths:
                     try:
                         image_bytes = _fetch_image_bytes(s3, storage_path)
@@ -220,4 +273,62 @@ def backfill_embeddings(payload: BackfillRequest):
         "total_seen": total_seen,
         "total_inserted": total_inserted,
         "errors": errors[:50],
+    }
+
+
+@app.post("/search/text")
+def search_text(payload: TextSearchRequest):
+    timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
+    with httpx.Client(timeout=timeout) as client:
+        query_embedding, _ = _embed_text(client, payload.query)
+
+    with _db_conn() as conn:
+        if _embedding_column_is_vector(conn):
+            vector_value = _vector_literal(query_embedding)
+            query = sql.SQL(
+                """
+                SELECT storage_path, embedding <-> %s::vector AS distance
+                FROM {}.{}
+                ORDER BY embedding <-> %s::vector
+                LIMIT %s
+                """
+            ).format(
+                sql.Identifier(EMBEDDINGS_SCHEMA),
+                sql.Identifier(EMBEDDINGS_TABLE),
+            )
+            with conn.cursor() as cur:
+                cur.execute(query, (vector_value, vector_value, payload.top_k))
+                rows = cur.fetchall()
+            results = [
+                {"storage_path": row[0], "distance": row[1]} for row in rows
+            ]
+            return {"mode": "vector_distance", "results": results}
+
+        query = sql.SQL(
+            """
+            SELECT storage_path, embedding
+            FROM {}.{}
+            LIMIT %s
+            """
+        ).format(
+            sql.Identifier(EMBEDDINGS_SCHEMA),
+            sql.Identifier(EMBEDDINGS_TABLE),
+        )
+        with conn.cursor() as cur:
+            cur.execute(query, (payload.max_rows,))
+            rows = cur.fetchall()
+
+    scored = []
+    for storage_path, embedding in rows:
+        similarity = _cosine_similarity(query_embedding, embedding)
+        scored.append((storage_path, similarity))
+    scored.sort(key=lambda item: item[1], reverse=True)
+    results = [
+        {"storage_path": storage_path, "similarity": score}
+        for storage_path, score in scored[: payload.top_k]
+    ]
+    return {
+        "mode": "python_cosine",
+        "results": results,
+        "evaluated_rows": len(rows),
     }
