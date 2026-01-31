@@ -1,2 +1,2 @@
-curl -G -X POST http://localhost:8000/embedding/text \
+curl -G -X POST http://0.0.0.0:8000/embedding/text \
      --data-urlencode "text=hello world"

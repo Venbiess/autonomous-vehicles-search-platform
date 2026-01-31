@@ -1,6 +1,21 @@
 version: "3.9"
 
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: "avsp-postgres-${USER}"
+    environment:
+      POSTGRES_DB: avsp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    networks:
+      - avsp-net
+
   minio:
     image: minio/minio:latest
     container_name: "minio-${USER}"
@@ -11,31 +26,54 @@ services:
     volumes:
       - minio-data:/data
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Web UI
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - avsp-net
+
+  embedder:
+    build:
+      context: ../..
+      dockerfile: docker/models/models-cpu.Dockerfile
+    container_name: "embedder-${USER}"
+    volumes:
+      - "${PWD}/../..:/app"
+    ports:
+      - "8000:8000"
     networks:
       - avsp-net
 
   avsp-server:
+    build:
+      context: ../..
+      dockerfile: docker/server/server.Dockerfile
     image: avsp-server
     container_name: "avsp-server-${USER}"
     depends_on:
+      - postgres
       - minio
+      - embedder
     volumes:
       - "${PWD}/../..:/app"
       - "vscode-server:/root/.vscode-server"
     ports:
-      - "9100:9000"   # если приложение слушает 9000
+      - "9002:9002"
     environment:
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
       MINIO_BUCKET: waymo-processed
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: avsp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
     networks:
       - avsp-net
 
 volumes:
   minio-data:
+  postgres-data:
   vscode-server:
 
 networks:

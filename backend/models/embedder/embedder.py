@@ -5,6 +5,10 @@ from PIL import Image
 from transformers import AlignProcessor, AlignModel
 from configs.hw_settings import EMBEDDER_CONFIG
 import torch
+from transformers import logging
+
+from transformers import logging
+logging.disable_progress_bar()
 
 app = FastAPI(title="Align Text Embedding API")
 
@@ -51,6 +55,9 @@ async def inference_text(text: str):
             token_type_ids=inputs['token_type_ids'],
         )
 
+    if hasattr(outputs, "pooler_output"):
+        outputs = outputs.pooler_output
+
     embedding = outputs / outputs.norm(dim=-1, keepdim=True)  # [1, D]
     embedding = embedding.cpu().tolist()[0]
 
@@ -71,6 +78,9 @@ async def inference_image(file: UploadFile = File(...)):
         outputs = model.get_image_features(
             pixel_values=inputs['pixel_values'],
         )
+
+    if hasattr(outputs, "pooler_output"):
+        outputs = outputs.pooler_output
 
     embedding = outputs / outputs.norm(dim=-1, keepdim=True)
     embedding = embedding.cpu().tolist()[0]
@@ -93,6 +103,9 @@ async def embedding_image_bytes(request: Request):
         outputs = model.get_image_features(
             pixel_values=inputs['pixel_values'],
         )
+
+    if hasattr(outputs, "pooler_output"):
+        outputs = outputs.pooler_output
 
     embedding = outputs / outputs.norm(dim=-1, keepdim=True)
     embedding = embedding.cpu().tolist()[0]
