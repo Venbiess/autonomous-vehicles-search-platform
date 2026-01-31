@@ -15,6 +15,7 @@ from configs.common import (
 )
 from backend.db.postgres import PostgresConfig, PostgresWriter
 from botocore.exceptions import ClientError
+from tqdm import tqdm
 import os
 
 class Preprocessor:
@@ -88,7 +89,7 @@ class Preprocessor:
                 )
             )
         try:
-            for episode_df in self:
+            for episode_df in tqdm(self):
                 episode_df["storage_path"] = None
 
                 for idx, row in episode_df.iterrows():

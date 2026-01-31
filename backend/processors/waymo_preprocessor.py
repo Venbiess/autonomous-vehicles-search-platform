@@ -184,5 +184,5 @@ if __name__ == "__main__":
     #     print(episode)
     #     if i >= 1000:
     #         break
-    print(processor.blobs)
+
     processor.download_to_s3(bucket="waymo")
