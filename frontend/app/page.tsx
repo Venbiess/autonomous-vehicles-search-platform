@@ -14,7 +14,10 @@ interface ImageResult {
   score?: number | null;
 }
 
+type SearchMode = "VLM" | "Browser" | "Job Monitor";
+
 export default function HomePage() {
+  const [searchMode, setSearchMode] = useState<SearchMode>("Browser");
   const [images, setImages] = useState<ImageResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -52,6 +55,49 @@ export default function HomePage() {
 
   return (
     <main className="min-h-screen bg-gray-100">
+      {/* Вкладки переключения режимов поиска */}
+      <section className="bg-white border-b border-gray-200 shadow-sm">
+        <div className="mx-auto max-w-5xl px-6">
+          <div className="flex items-center justify-center py-6">
+            <button
+              onClick={() => setSearchMode("VLM")}
+              style={{ fontSize: '32px', fontWeight: 900, letterSpacing: '0.5px' }}
+              className={`font-bebas transition-all duration-200 px-8 py-3 ${
+                searchMode === "VLM"
+                  ? "text-blue-600 bg-blue-50 border-b-4 border-blue-600"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              VLM
+            </button>
+            <div className="h-8 w-px bg-gray-300 mx-4"></div>
+            <button
+              onClick={() => setSearchMode("Browser")}
+              style={{ fontSize: '32px', fontWeight: 900, letterSpacing: '0.5px' }}
+              className={`font-bebas transition-all duration-200 px-8 py-3 ${
+                searchMode === "Browser"
+                  ? "text-blue-600 bg-blue-50 border-b-4 border-blue-600"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              Browser
+            </button>
+            <div className="h-8 w-px bg-gray-300 mx-4"></div>
+            <button
+              onClick={() => setSearchMode("Job Monitor")}
+              style={{ fontSize: '32px', fontWeight: 900, letterSpacing: '0.5px' }}
+              className={`font-bebas transition-all duration-200 px-8 py-3 ${
+                searchMode === "Job Monitor"
+                  ? "text-blue-600 bg-blue-50 border-b-4 border-blue-600"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              Job Monitor
+            </button>
+          </div>
+        </div>
+      </section>
+
       <section className="px-6 pt-12 pb-8">
         <div className="mx-auto flex max-w-5xl flex-col items-center gap-6 text-center">
           <h1 className="text-3xl font-bold text-gray-900">
