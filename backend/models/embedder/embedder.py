@@ -6,6 +6,7 @@ from transformers import AlignProcessor, AlignModel
 from configs.hw_settings import EMBEDDER_CONFIG
 import torch
 from transformers import logging
+from typing import Literal
 
 from transformers import logging
 logging.disable_progress_bar()
@@ -40,26 +41,35 @@ def extract_patches(image, patch: bool):
     return [image]
 
 
-@app.post("/embedding/text")
-async def inference_text(text: str):
-    inputs = processor.tokenizer(
-        text,
-        return_tensors="pt",
-        padding=True
-    ).to(device)
-
+def get_embedding(inputs, type: Literal["text", "image"] = "image") -> torch.Tensor:
     with torch.no_grad():
-        outputs = model.get_text_features(
-            input_ids=inputs['input_ids'],
-            attention_mask=inputs['attention_mask'],
-            token_type_ids=inputs['token_type_ids'],
-        )
-
+        if type == "text":
+            text_inputs = processor.tokenizer(
+                inputs,
+                return_tensors="pt",
+                padding=True
+            ).to(device)
+            outputs = model.get_text_features(
+                input_ids=text_inputs['input_ids'],
+                attention_mask=text_inputs['attention_mask'],
+                token_type_ids=text_inputs['token_type_ids'],
+            )
+        elif type == "image":
+            image_inputs = processor(images=inputs, return_tensors="pt")
+            outputs = model.get_image_features(pixel_values=image_inputs['pixel_values'])
+    
     if hasattr(outputs, "pooler_output"):
         outputs = outputs.pooler_output
 
     embedding = outputs / outputs.norm(dim=-1, keepdim=True)  # [1, D]
     embedding = embedding.cpu().tolist()[0]
+
+    return embedding
+
+
+@app.post("/embedding/text")
+async def inference_text(text: str):
+    embedding = get_embedding(text, type="text")
 
     return {
         "text": text,
@@ -72,18 +82,7 @@ async def inference_text(text: str):
 async def inference_image(file: UploadFile = File(...)):
     image_bytes = file.file.read()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-
-    inputs = processor(images=image, return_tensors="pt")
-    with torch.no_grad():
-        outputs = model.get_image_features(
-            pixel_values=inputs['pixel_values'],
-        )
-
-    if hasattr(outputs, "pooler_output"):
-        outputs = outputs.pooler_output
-
-    embedding = outputs / outputs.norm(dim=-1, keepdim=True)
-    embedding = embedding.cpu().tolist()[0]
+    embedding = get_embedding(image, type="image")
 
     return {
         "filename": file.filename,
@@ -97,18 +96,7 @@ async def inference_image(file: UploadFile = File(...)):
 async def embedding_image_bytes(request: Request):
     image_bytes = await request.body()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-
-    inputs = processor(images=image, return_tensors="pt")
-    with torch.no_grad():
-        outputs = model.get_image_features(
-            pixel_values=inputs['pixel_values'],
-        )
-
-    if hasattr(outputs, "pooler_output"):
-        outputs = outputs.pooler_output
-
-    embedding = outputs / outputs.norm(dim=-1, keepdim=True)
-    embedding = embedding.cpu().tolist()[0]
+    embedding = get_embedding(image, type="image")
 
     return {
         "image_shape": image.size,
