@@ -49,13 +49,18 @@ def get_embedding(inputs, type: Literal["text", "image"] = "image") -> torch.Ten
                 return_tensors="pt",
                 padding=True
             ).to(device)
+
             outputs = model.get_text_features(
                 input_ids=text_inputs['input_ids'],
                 attention_mask=text_inputs['attention_mask'],
-                token_type_ids=text_inputs['token_type_ids'],
+                token_type_ids=text_inputs['token_type_ids']
             )
         elif type == "image":
-            image_inputs = processor(images=inputs, return_tensors="pt")
+            image_inputs = processor(
+                images=inputs,
+                return_tensors="pt"
+            ).to(device)
+
             outputs = model.get_image_features(pixel_values=image_inputs['pixel_values'])
     
     if hasattr(outputs, "pooler_output"):

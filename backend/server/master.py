@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 from psycopg2 import sql
 from psycopg2.extras import execute_values
 import time
+import psutil
+import os
 
 from configs.common import (
     EMBEDDER_ENDPOINT,
@@ -221,6 +223,63 @@ def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
 @app.get("/health")
 def healthcheck():
     return {"status": "ok"}
+
+
+@app.get("/system-info")
+def get_system_info():
+    """Возвращает информацию о системных ресурсах"""
+    try:
+        # CPU информация
+        cpu_percent = psutil.cpu_percent(interval=1)
+        cpu_count = psutil.cpu_count()
+
+        # Память
+        memory = psutil.virtual_memory()
+        memory_total_gb = memory.total / (1024 ** 3)
+        memory_used_gb = memory.used / (1024 ** 3)
+        memory_available_gb = memory.available / (1024 ** 3)
+        memory_percent = memory.percent
+
+        # Диск
+        disk = psutil.disk_usage("/")
+        disk_total_gb = disk.total / (1024 ** 3)
+        disk_used_gb = disk.used / (1024 ** 3)
+        disk_free_gb = disk.free / (1024 ** 3)
+        disk_percent = (disk.used / disk.total) * 100
+
+        # Время работы системы
+        uptime_seconds = int(time.time() - psutil.boot_time())
+
+        return {
+            "cpu": {
+                "usage_percent": cpu_percent,
+                "cores": cpu_count,
+            },
+            "memory": {
+                "total_gb": round(memory_total_gb, 2),
+                "used_gb": round(memory_used_gb, 2),
+                "available_gb": round(memory_available_gb, 2),
+                "usage_percent": round(memory_percent, 2),
+            },
+            "disk": {
+                "total_gb": round(disk_total_gb, 2),
+                "used_gb": round(disk_used_gb, 2),
+                "available_gb": round(disk_free_gb, 2),
+                "usage_percent": round(disk_percent, 2),
+            },
+            "uptime_seconds": uptime_seconds,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    except Exception as e:
+        logger.error(f"Error getting system info: {e}")
+        return {
+            "error": str(e),
+            "cpu": {"usage_percent": 0, "cores": 0},
+            "memory": {"total_gb": 0, "used_gb": 0, "available_gb": 0, "usage_percent": 0},
+            "disk": {"total_gb": 0, "used_gb": 0, "available_gb": 0, "usage_percent": 0},
+            "uptime_seconds": 0,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
 
 
 @app.post("/embeddings/backfill")

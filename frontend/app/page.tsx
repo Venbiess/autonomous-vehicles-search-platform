@@ -6,6 +6,7 @@ import axios from "axios";
 // Импортируем компоненты
 import SearchBar from "../components/SearchBar";
 import ImageGallery from "../components/ImageGallery";
+import SystemMonitor from "../components/SystemMonitor";
 
 interface ImageResult {
   id: string;
@@ -98,34 +99,42 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="px-6 pt-12 pb-8">
-        <div className="mx-auto flex max-w-5xl flex-col items-center gap-6 text-center">
-          <h1 className="text-3xl font-bold text-gray-900">
-            Поиск сцен автономного транспорта
-          </h1>
+      {searchMode === "Job Monitor" ? (
+        <section className="px-6 pt-8 pb-16">
+          <SystemMonitor />
+        </section>
+      ) : (
+        <>
+          <section className="px-6 pt-12 pb-8">
+            <div className="mx-auto flex max-w-5xl flex-col items-center gap-6 text-center">
+              <h1 className="text-3xl font-bold text-gray-900">
+                Поиск сцен автономного транспорта
+              </h1>
 
-          {/* Компонент поиска */}
-          <SearchBar onSearch={handleSearch} loading={isLoading} />
+              {/* Компонент поиска */}
+              <SearchBar onSearch={handleSearch} loading={isLoading} />
 
-          {errorMessage && (
-            <div className="text-sm text-red-600">{errorMessage}</div>
-          )}
-        </div>
-      </section>
-
-      <section className="px-6 pb-16">
-        <div className="mx-auto max-w-5xl">
-          {isLoading && (
-            <div className="text-sm text-gray-500">Ищем подходящие кадры...</div>
-          )}
-          {!isLoading && images.length === 0 && lastQuery && !errorMessage && (
-            <div className="text-sm text-gray-500">
-              Ничего не найдено по запросу "{lastQuery}".
+              {errorMessage && (
+                <div className="text-sm text-red-600">{errorMessage}</div>
+              )}
             </div>
-          )}
-          {images.length > 0 && <ImageGallery images={images} />}
-        </div>
-      </section>
+          </section>
+
+          <section className="px-6 pb-16">
+            <div className="mx-auto max-w-5xl">
+              {isLoading && (
+                <div className="text-sm text-gray-500">Ищем подходящие кадры...</div>
+              )}
+              {!isLoading && images.length === 0 && lastQuery && !errorMessage && (
+                <div className="text-sm text-gray-500">
+                  Ничего не найдено по запросу "{lastQuery}".
+                </div>
+              )}
+              {images.length > 0 && <ImageGallery images={images} />}
+            </div>
+          </section>
+        </>
+      )}
     </main>
   );
 }
