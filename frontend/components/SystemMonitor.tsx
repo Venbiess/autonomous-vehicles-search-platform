@@ -1,0 +1,383 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import axios from "axios";
+
+interface SystemInfo {
+  cpu: {
+    usage_percent: number;
+    cores: number;
+  };
+  memory: {
+    total_gb: number;
+    used_gb: number;
+    available_gb: number;
+    usage_percent: number;
+  };
+  disk: {
+    total_gb: number;
+    used_gb: number;
+    available_gb: number;
+    usage_percent: number;
+  };
+  uptime_seconds: number;
+  timestamp: string;
+}
+
+interface Job {
+  job_id: string;
+  job_type: string;
+  status: "running" | "success" | "error";
+  progress: number;
+  total_seen: number;
+  total_inserted: number;
+  total_limit: number;
+  errors: Array<{ storage_path?: string; error: string }>;
+  created_at: number;
+  updated_at: number;
+}
+
+export default function SystemMonitor() {
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isStartingJob, setIsStartingJob] = useState(false);
+
+  const fetchSystemInfo = async () => {
+    try {
+      const response = await axios.get("/api/system-info");
+      setSystemInfo(response.data);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Не удалось загрузить информацию о системе";
+      setError(message);
+    }
+  };
+
+  const fetchJobs = async () => {
+    try {
+      const response = await axios.get("/api/jobs");
+      setJobs(response.data.jobs || []);
+    } catch (err) {
+      console.error("Failed to fetch jobs:", err);
+    }
+  };
+
+  useEffect(() => {
+    const loadData = async () => {
+      setIsLoading(true);
+      await Promise.all([fetchSystemInfo(), fetchJobs()]);
+      setIsLoading(false);
+    };
+    
+    loadData();
+    const interval = setInterval(() => {
+      fetchSystemInfo();
+      fetchJobs();
+    }, 5000); // Обновление каждые 5 секунд
+    return () => clearInterval(interval);
+  }, []);
+
+  const formatUptime = (seconds: number): string => {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${days}д ${hours}ч ${minutes}м`;
+  };
+
+  const getUsageColor = (percent: number): string => {
+    if (percent < 50) return "bg-green-500";
+    if (percent < 80) return "bg-yellow-500";
+    return "bg-red-500";
+  };
+
+  const getJobStatusColor = (status: string): { bg: string; text: string } => {
+    switch (status) {
+      case "running":
+        return { bg: "bg-blue-500", text: "text-blue-600" };
+      case "success":
+        return { bg: "bg-green-500", text: "text-green-600" };
+      case "error":
+        return { bg: "bg-red-500", text: "text-red-600" };
+      default:
+        return { bg: "bg-gray-500", text: "text-gray-600" };
+    }
+  };
+
+  const getJobStatusText = (status: string): string => {
+    switch (status) {
+      case "running":
+        return "Running";
+      case "success":
+        return "Success";
+      case "error":
+        return "Error";
+      default:
+        return status;
+    }
+  };
+
+  const formatDate = (timestamp: number): string => {
+    return new Date(timestamp * 1000).toLocaleString("ru-RU");
+  };
+
+  const startBackfillJob = async () => {
+    try {
+      setIsStartingJob(true);
+      const response = await axios.post("/api/backfill", {
+        limit: 1000,
+        batch_size: 50,
+        stop_on_error: false,
+        dry_run: false,
+      });
+      
+      // Обновляем список джобов после запуска
+      await fetchJobs();
+      
+      // Показываем сообщение об успехе
+      alert(`Джоба запущена! ID: ${response.data.job_id}`);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Не удалось запустить джобу";
+      alert(`Ошибка: ${message}`);
+    } finally {
+      setIsStartingJob(false);
+    }
+  };
+
+  if (isLoading && !systemInfo) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-gray-500">Загрузка информации о системе...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="text-red-600">Ошибка: {error}</div>
+      </div>
+    );
+  }
+
+  if (!systemInfo) {
+    return null;
+  }
+
+  return (
+    <div className="max-w-4xl mx-auto py-8">
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-2xl font-bold text-gray-900">Мониторинг системы</h2>
+          <button
+            onClick={fetchSystemInfo}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            Обновить
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* CPU */}
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex justify-between items-center mb-2">
+              <h3 className="text-lg font-semibold text-gray-700">Процессор (CPU)</h3>
+              <span className="text-sm text-gray-500">{systemInfo.cpu.cores} ядер</span>
+            </div>
+            <div className="mb-2">
+              <div className="flex justify-between text-sm mb-1">
+                <span className="text-gray-600">Использование</span>
+                <span className="font-bold">{systemInfo.cpu.usage_percent.toFixed(1)}%</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-3">
+                <div
+                  className={`h-3 rounded-full transition-all duration-300 ${getUsageColor(
+                    systemInfo.cpu.usage_percent
+                  )}`}
+                  style={{ width: `${systemInfo.cpu.usage_percent}%` }}
+                ></div>
+              </div>
+            </div>
+          </div>
+
+          {/* Memory */}
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex justify-between items-center mb-2">
+              <h3 className="text-lg font-semibold text-gray-700">Память (RAM)</h3>
+              <span className="text-sm text-gray-500">
+                {systemInfo.memory.total_gb.toFixed(1)} GB
+              </span>
+            </div>
+            <div className="mb-2">
+              <div className="flex justify-between text-sm mb-1">
+                <span className="text-gray-600">Использовано</span>
+                <span className="font-bold">
+                  {systemInfo.memory.used_gb.toFixed(1)} GB / {systemInfo.memory.total_gb.toFixed(1)} GB
+                </span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-3">
+                <div
+                  className={`h-3 rounded-full transition-all duration-300 ${getUsageColor(
+                    systemInfo.memory.usage_percent
+                  )}`}
+                  style={{ width: `${systemInfo.memory.usage_percent}%` }}
+                ></div>
+              </div>
+            </div>
+            <div className="text-xs text-gray-500 mt-1">
+              Доступно: {systemInfo.memory.available_gb.toFixed(1)} GB
+            </div>
+          </div>
+
+          {/* Disk */}
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex justify-between items-center mb-2">
+              <h3 className="text-lg font-semibold text-gray-700">Диск</h3>
+              <span className="text-sm text-gray-500">
+                {systemInfo.disk.total_gb.toFixed(1)} GB
+              </span>
+            </div>
+            <div className="mb-2">
+              <div className="flex justify-between text-sm mb-1">
+                <span className="text-gray-600">Использовано</span>
+                <span className="font-bold">
+                  {systemInfo.disk.used_gb.toFixed(1)} GB / {systemInfo.disk.total_gb.toFixed(1)} GB
+                </span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-3">
+                <div
+                  className={`h-3 rounded-full transition-all duration-300 ${getUsageColor(
+                    systemInfo.disk.usage_percent
+                  )}`}
+                  style={{ width: `${systemInfo.disk.usage_percent}%` }}
+                ></div>
+              </div>
+            </div>
+            <div className="text-xs text-gray-500 mt-1">
+              Доступно: {systemInfo.disk.available_gb.toFixed(1)} GB
+            </div>
+          </div>
+
+          {/* Uptime */}
+          <div className="bg-gray-50 rounded-lg p-4">
+            <div className="flex justify-between items-center mb-2">
+              <h3 className="text-lg font-semibold text-gray-700">Время работы</h3>
+            </div>
+            <div className="text-2xl font-bold text-gray-900">
+              {formatUptime(systemInfo.uptime_seconds)}
+            </div>
+            <div className="text-xs text-gray-500 mt-2">
+              Последнее обновление: {new Date(systemInfo.timestamp).toLocaleString("ru-RU")}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Таблица джобов */}
+      <div className="bg-white rounded-lg shadow-lg p-6 mt-6">
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-2xl font-bold text-gray-900">Джобы</h2>
+          <button
+            onClick={startBackfillJob}
+            disabled={isStartingJob}
+            className={`px-6 py-2 rounded-lg font-semibold transition-all duration-200 ${
+              isStartingJob
+                ? "bg-gray-400 text-white cursor-not-allowed"
+                : "bg-blue-600 text-white hover:bg-blue-700"
+            }`}
+          >
+            {isStartingJob ? "Запуск..." : "Запустить Backfill Embeddings"}
+          </button>
+        </div>
+        
+        {jobs.length === 0 ? (
+          <div className="text-center py-8 text-gray-500">
+            Нет запущенных джоб
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    ID
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Тип
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Прогресс
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Статус
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Обработано
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Создано
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {jobs.map((job) => {
+                  const statusColors = getJobStatusColor(job.status);
+                  // Для завершенных джоб прогресс всегда 100%, для running - текущий прогресс
+                  const progress = (job.status === "success" || job.status === "error") 
+                    ? 100 
+                    : job.progress;
+                  
+                  return (
+                    <tr key={job.job_id} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {job.job_id.substring(0, 8)}...
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {job.job_type === "backfill_embeddings" ? "Backfill Embeddings" : job.job_type}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="w-full">
+                          <div className="flex justify-between text-xs mb-1">
+                            <span className="text-gray-600">
+                              {job.total_seen} / {job.total_limit}
+                            </span>
+                            <span className="font-medium">{progress}%</span>
+                          </div>
+                          <div className="w-full bg-gray-200 rounded-full h-2">
+                            <div
+                              className={`h-2 rounded-full transition-all duration-300 ${statusColors.bg}`}
+                              style={{ width: `${progress}%` }}
+                            ></div>
+                          </div>
+                          {job.total_inserted > 0 && (
+                            <div className="text-xs text-gray-500 mt-1">
+                              Вставлено: {job.total_inserted}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`font-semibold ${statusColors.text}`}>
+                          {getJobStatusText(job.status)}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {job.total_seen} / {job.total_limit}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {formatDate(job.created_at)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+

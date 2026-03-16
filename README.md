@@ -8,6 +8,12 @@
 
 ```
 cd docker/server/
+docker compose up -f ./docker-compose.yml
+```
+
+Old:
+```
+cd docker/server/
 source ./build_docker.sh
 source ./run_docker.sh
 ```
@@ -32,3 +38,11 @@ cd docker/models/
 source ./build_docker.sh
 source ./run_docker.sh
 ```
+ 
+ ### Frontend
+
+ ```
+ cd frontend/
+ npm install
+ npm run dev
+ ```

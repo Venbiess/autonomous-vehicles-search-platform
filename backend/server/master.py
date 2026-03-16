@@ -1,7 +1,10 @@
 import logging
 from dataclasses import dataclass
 from math import sqrt
-from typing import List, Tuple
+from typing import List, Tuple, Dict
+from enum import Enum
+import threading
+import uuid
 
 import boto3
 import httpx
@@ -12,6 +15,8 @@ from pydantic import BaseModel, Field
 from psycopg2 import sql
 from psycopg2.extras import execute_values
 import time
+import psutil
+import os
 
 from configs.common import (
     EMBEDDER_ENDPOINT,
@@ -34,6 +39,16 @@ logger = logging.getLogger("avsp.master")
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="AVSP Master Server")
+
+# Хранилище состояния джобов
+jobs_store: Dict[str, Dict] = {}
+jobs_lock = threading.Lock()
+
+
+class JobStatus(str, Enum):
+    RUNNING = "running"
+    SUCCESS = "success"
+    ERROR = "error"
 
 
 class BackfillRequest(BaseModel):
@@ -223,82 +238,217 @@ def healthcheck():
     return {"status": "ok"}
 
 
-@app.post("/embeddings/backfill")
-def backfill_embeddings(payload: BackfillRequest):
+@app.get("/jobs")
+def get_jobs():
+    """Возвращает список всех джобов"""
+    with jobs_lock:
+        jobs = list(jobs_store.values())
+    # Сортируем по времени создания (новые первыми)
+    jobs.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+    return {"jobs": jobs}
+
+
+@app.get("/system-info")
+def get_system_info():
+    """Возвращает информацию о системных ресурсах"""
+    try:
+        # CPU информация
+        cpu_percent = psutil.cpu_percent(interval=1)
+        cpu_count = psutil.cpu_count()
+
+        # Память
+        memory = psutil.virtual_memory()
+        memory_total_gb = memory.total / (1024 ** 3)
+        memory_used_gb = memory.used / (1024 ** 3)
+        memory_available_gb = memory.available / (1024 ** 3)
+        memory_percent = memory.percent
+
+        # Диск
+        disk = psutil.disk_usage("/")
+        disk_total_gb = disk.total / (1024 ** 3)
+        disk_used_gb = disk.used / (1024 ** 3)
+        disk_free_gb = disk.free / (1024 ** 3)
+        disk_percent = (disk.used / disk.total) * 100
+
+        # Время работы системы
+        uptime_seconds = int(time.time() - psutil.boot_time())
+
+        return {
+            "cpu": {
+                "usage_percent": cpu_percent,
+                "cores": cpu_count,
+            },
+            "memory": {
+                "total_gb": round(memory_total_gb, 2),
+                "used_gb": round(memory_used_gb, 2),
+                "available_gb": round(memory_available_gb, 2),
+                "usage_percent": round(memory_percent, 2),
+            },
+            "disk": {
+                "total_gb": round(disk_total_gb, 2),
+                "used_gb": round(disk_used_gb, 2),
+                "available_gb": round(disk_free_gb, 2),
+                "usage_percent": round(disk_percent, 2),
+            },
+            "uptime_seconds": uptime_seconds,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    except Exception as e:
+        logger.error(f"Error getting system info: {e}")
+        return {
+            "error": str(e),
+            "cpu": {"usage_percent": 0, "cores": 0},
+            "memory": {"total_gb": 0, "used_gb": 0, "available_gb": 0, "usage_percent": 0},
+            "disk": {"total_gb": 0, "used_gb": 0, "available_gb": 0, "usage_percent": 0},
+            "uptime_seconds": 0,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+
+def _run_backfill_job(job_id: str, payload: BackfillRequest):
+    """Выполняет backfill в фоновом режиме и обновляет состояние джобы"""
+    with jobs_lock:
+        jobs_store[job_id] = {
+            "job_id": job_id,
+            "job_type": "backfill_embeddings",
+            "status": JobStatus.RUNNING.value,
+            "progress": 0,
+            "total_seen": 0,
+            "total_inserted": 0,
+            "total_limit": payload.limit,
+            "errors": [],
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+
     total_seen = 0
     total_inserted = 0
     errors = []
 
-    logger.info(
-        "Backfill started: limit=%s batch_size=%s dry_run=%s",
-        payload.limit,
-        payload.batch_size,
-        payload.dry_run,
-    )
-    s3 = _s3_client()
-    timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
+    try:
+        logger.info(
+            "Backfill job %s started: limit=%s batch_size=%s dry_run=%s",
+            job_id,
+            payload.limit,
+            payload.batch_size,
+            payload.dry_run,
+        )
+        s3 = _s3_client()
+        timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
 
-    with _db_conn() as conn:
-        _ensure_embedding_table(conn)
-        with httpx.Client(timeout=timeout) as client:
-            while total_seen < payload.limit:
-                batch_limit = min(payload.batch_size, payload.limit - total_seen)
-                paths = _fetch_pending_paths(conn, batch_limit)
-                if not paths:
-                    logger.info("Backfill complete: no more pending rows.")
-                    break
+        with _db_conn() as conn:
+            _ensure_embedding_table(conn)
+            with httpx.Client(timeout=timeout) as client:
+                while total_seen < payload.limit:
+                    batch_limit = min(payload.batch_size, payload.limit - total_seen)
+                    paths = _fetch_pending_paths(conn, batch_limit)
+                    if not paths:
+                        logger.info("Backfill complete: no more pending rows.")
+                        break
 
-                logger.info(
-                    "Processing batch: size=%s seen=%s inserted=%s errors=%s",
-                    len(paths),
-                    total_seen,
-                    total_inserted,
-                    len(errors),
-                )
-                total_seen += len(paths)
-                rows: List[EmbedResult] = []
-
-                for storage_path in paths:
-                    try:
-                        image_bytes = _fetch_image_bytes(s3, storage_path)
-                        embedding, dim = _embed_image(client, image_bytes)
-                        rows.append(
-                            EmbedResult(
-                                storage_path=storage_path,
-                                embedding=embedding,
-                                dim=dim,
-                            )
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.exception("Failed for %s", storage_path)
-                        errors.append(
-                            {"storage_path": storage_path, "error": str(exc)}
-                        )
-                        if payload.stop_on_error:
-                            break
-
-                if rows and not payload.dry_run:
-                    total_inserted += _insert_embeddings(conn, rows)
                     logger.info(
-                        "Batch inserted: count=%s total_inserted=%s",
-                        len(rows),
+                        "Processing batch: size=%s seen=%s inserted=%s errors=%s",
+                        len(paths),
+                        total_seen,
                         total_inserted,
+                        len(errors),
                     )
+                    total_seen += len(paths)
+                    rows: List[EmbedResult] = []
 
-                if payload.stop_on_error and errors:
-                    break
+                    for storage_path in paths:
+                        try:
+                            image_bytes = _fetch_image_bytes(s3, storage_path)
+                            embedding, dim = _embed_image(client, image_bytes)
+                            rows.append(
+                                EmbedResult(
+                                    storage_path=storage_path,
+                                    embedding=embedding,
+                                    dim=dim,
+                                )
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.exception("Failed for %s", storage_path)
+                            errors.append(
+                                {"storage_path": storage_path, "error": str(exc)}
+                            )
+                            if payload.stop_on_error:
+                                break
 
-    logger.info(
-        "Backfill finished: total_seen=%s total_inserted=%s errors=%s",
-        total_seen,
-        total_inserted,
-        len(errors),
+                    if rows and not payload.dry_run:
+                        total_inserted += _insert_embeddings(conn, rows)
+                        logger.info(
+                            "Batch inserted: count=%s total_inserted=%s",
+                            len(rows),
+                            total_inserted,
+                        )
+
+                    # Обновляем прогресс
+                    if payload.limit > 0:
+                        progress = min(int((total_seen / payload.limit) * 100), 100)
+                    else:
+                        # Если limit не задан, прогресс зависит от наличия новых путей
+                        progress = 0 if paths else 100
+                    
+                    with jobs_lock:
+                        if job_id in jobs_store:
+                            jobs_store[job_id].update({
+                                "progress": progress,
+                                "total_seen": total_seen,
+                                "total_inserted": total_inserted,
+                                "errors": errors,
+                                "updated_at": time.time(),
+                            })
+
+                    if payload.stop_on_error and errors:
+                        break
+
+        logger.info(
+            "Backfill job %s finished: total_seen=%s total_inserted=%s errors=%s",
+            job_id,
+            total_seen,
+            total_inserted,
+            len(errors),
+        )
+
+        # Обновляем финальное состояние
+        final_status = JobStatus.SUCCESS if not errors else JobStatus.ERROR
+        with jobs_lock:
+            if job_id in jobs_store:
+                jobs_store[job_id].update({
+                    "status": final_status.value,
+                    "progress": 100,
+                    "total_seen": total_seen,
+                    "total_inserted": total_inserted,
+                    "errors": errors,
+                    "updated_at": time.time(),
+                })
+
+    except Exception as e:
+        logger.exception("Backfill job %s failed", job_id)
+        with jobs_lock:
+            if job_id in jobs_store:
+                jobs_store[job_id].update({
+                    "status": JobStatus.ERROR.value,
+                    "errors": errors + [{"error": str(e)}],
+                    "updated_at": time.time(),
+                })
+
+
+@app.post("/embeddings/backfill")
+def backfill_embeddings(payload: BackfillRequest):
+    """Запускает backfill джобу асинхронно и возвращает job_id"""
+    job_id = str(uuid.uuid4())
+    
+    # Запускаем джобу в отдельном потоке
+    thread = threading.Thread(
+        target=_run_backfill_job,
+        args=(job_id, payload),
+        daemon=True
     )
-    return {
-        "total_seen": total_seen,
-        "total_inserted": total_inserted,
-        "errors": errors[:50],
-    }
+    thread.start()
+    
+    return {"job_id": job_id, "status": "started"}
 
 
 @app.post("/search/text")
