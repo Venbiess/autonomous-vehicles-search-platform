@@ -35,8 +35,16 @@ function buildImageUrl(storagePath, defaultBucket) {
 }
 
 export default async function handler(req, res) {
-  const { q, filter } = req.query;
+  const { q, filter, limit } = req.query;
   const query = q || filter;
+  const parsedLimit = Number.parseInt(
+    Array.isArray(limit) ? limit[0] : limit || "",
+    10
+  );
+  const topK =
+    Number.isFinite(parsedLimit) && parsedLimit > 0
+      ? Math.min(parsedLimit, 500)
+      : 100;
   if (!query || query.trim().length === 0) {
     return res.status(200).json([]);
   }
@@ -47,7 +55,7 @@ export default async function handler(req, res) {
     const response = await fetch(`${masterEndpoint}/search/text`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, top_k: 9, max_rows: 10000 }),
+      body: JSON.stringify({ query, top_k: topK, max_rows: 10000 }),
     });
     if (!response.ok) {
       const text = await response.text();

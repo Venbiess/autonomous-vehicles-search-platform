@@ -27,11 +27,17 @@ interface SystemInfo {
 interface Job {
   job_id: string;
   job_type: string;
-  status: "running" | "success" | "error";
+  status: "running" | "success" | "error" | "cancelled";
+  cancel_requested?: boolean;
   progress: number;
   total_seen: number;
   total_inserted: number;
   total_limit: number;
+  total_tasks_completed?: number;
+  total_tasks_planned?: number;
+  current_scene_tasks_completed?: number;
+  current_scene_tasks_total?: number;
+  current_scene_index?: number;
   errors: Array<{ storage_path?: string; error: string }>;
   created_at: number;
   updated_at: number;
@@ -42,7 +48,7 @@ export default function SystemMonitor() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isStartingJob, setIsStartingJob] = useState(false);
+  const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
 
   const fetchSystemInfo = async () => {
     try {
@@ -100,12 +106,17 @@ export default function SystemMonitor() {
         return { bg: "bg-green-500", text: "text-green-600" };
       case "error":
         return { bg: "bg-red-500", text: "text-red-600" };
+      case "cancelled":
+        return { bg: "bg-gray-500", text: "text-gray-600" };
       default:
         return { bg: "bg-gray-500", text: "text-gray-600" };
     }
   };
 
-  const getJobStatusText = (status: string): string => {
+  const getJobStatusText = (status: string, cancelRequested?: boolean): string => {
+    if (status === "running" && cancelRequested) {
+      return "Cancelling";
+    }
     switch (status) {
       case "running":
         return "Running";
@@ -113,6 +124,8 @@ export default function SystemMonitor() {
         return "Success";
       case "error":
         return "Error";
+      case "cancelled":
+        return "Cancelled";
       default:
         return status;
     }
@@ -122,27 +135,23 @@ export default function SystemMonitor() {
     return new Date(timestamp * 1000).toLocaleString("ru-RU");
   };
 
-  const startBackfillJob = async () => {
+  const getSceneTaskGradient = (sceneIndex: number): string => {
+    const hue = (sceneIndex * 47) % 360;
+    const nextHue = (hue + 52) % 360;
+    return `linear-gradient(90deg, hsl(${hue} 75% 52%), hsl(${nextHue} 82% 58%))`;
+  };
+
+  const cancelVlmJob = async (jobId: string) => {
     try {
-      setIsStartingJob(true);
-      const response = await axios.post("/api/backfill", {
-        limit: 1000,
-        batch_size: 50,
-        stop_on_error: false,
-        dry_run: false,
-      });
-      
-      // Обновляем список джобов после запуска
+      setCancellingJobId(jobId);
+      await axios.post("/api/jobs/cancel", { job_id: jobId });
       await fetchJobs();
-      
-      // Показываем сообщение об успехе
-      alert(`Джоба запущена! ID: ${response.data.job_id}`);
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Не удалось запустить джобу";
+        err instanceof Error ? err.message : "Не удалось отменить VLM джобу";
       alert(`Ошибка: ${message}`);
     } finally {
-      setIsStartingJob(false);
+      setCancellingJobId(null);
     }
   };
 
@@ -167,13 +176,13 @@ export default function SystemMonitor() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto py-8">
-      <div className="bg-white rounded-lg shadow-lg p-6">
+    <div className="py-8">
+      <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-lg p-6">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-bold text-gray-900">Мониторинг системы</h2>
           <button
             onClick={fetchSystemInfo}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            className="px-4 py-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition-colors"
           >
             Обновить
           </button>
@@ -276,20 +285,9 @@ export default function SystemMonitor() {
       </div>
 
       {/* Таблица джобов */}
-      <div className="bg-white rounded-lg shadow-lg p-6 mt-6">
+      <div className="max-w-7xl mx-auto bg-white rounded-lg shadow-lg p-6 mt-6">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-bold text-gray-900">Джобы</h2>
-          <button
-            onClick={startBackfillJob}
-            disabled={isStartingJob}
-            className={`px-6 py-2 rounded-lg font-semibold transition-all duration-200 ${
-              isStartingJob
-                ? "bg-gray-400 text-white cursor-not-allowed"
-                : "bg-blue-600 text-white hover:bg-blue-700"
-            }`}
-          >
-            {isStartingJob ? "Запуск..." : "Запустить Backfill Embeddings"}
-          </button>
         </div>
         
         {jobs.length === 0 ? (
@@ -319,6 +317,9 @@ export default function SystemMonitor() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Создано
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Действия
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -328,6 +329,25 @@ export default function SystemMonitor() {
                   const progress = (job.status === "success" || job.status === "error") 
                     ? 100 
                     : job.progress;
+                  const canCancelVlm =
+                    job.job_type === "backfill_vlm" &&
+                    job.status === "running" &&
+                    !job.cancel_requested;
+                  const isVlmJob = job.job_type === "backfill_vlm";
+                  const progressLabel = `${job.total_seen} / ${job.total_limit}`;
+                  const processedLabel = `${job.total_seen} / ${job.total_limit}`;
+                  const scenesSavedLabel = `Сцен сохранено: ${job.total_inserted}`;
+                  const currentSceneTasksCompleted = job.current_scene_tasks_completed ?? 0;
+                  const currentSceneTasksTotal = job.current_scene_tasks_total ?? 0;
+                  const currentSceneProgress =
+                    currentSceneTasksTotal > 0
+                      ? Math.min(
+                          (currentSceneTasksCompleted / currentSceneTasksTotal) * 100,
+                          100
+                        )
+                      : 0;
+                  const currentSceneLabel = `VLM calls: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
+                  const currentSceneIndex = job.current_scene_index ?? 0;
                   
                   return (
                     <tr key={job.job_id} className="hover:bg-gray-50">
@@ -335,13 +355,17 @@ export default function SystemMonitor() {
                         {job.job_id.substring(0, 8)}...
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {job.job_type === "backfill_embeddings" ? "Backfill Embeddings" : job.job_type}
+                        {job.job_type === "backfill_embeddings"
+                          ? "Backfill Embeddings"
+                          : job.job_type === "backfill_vlm"
+                            ? "Backfill VLM"
+                            : job.job_type}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="w-full">
                           <div className="flex justify-between text-xs mb-1">
                             <span className="text-gray-600">
-                              {job.total_seen} / {job.total_limit}
+                              {progressLabel}
                             </span>
                             <span className="font-medium">{progress}%</span>
                           </div>
@@ -351,23 +375,63 @@ export default function SystemMonitor() {
                               style={{ width: `${progress}%` }}
                             ></div>
                           </div>
-                          {job.total_inserted > 0 && (
-                            <div className="text-xs text-gray-500 mt-1">
-                              Вставлено: {job.total_inserted}
+                          <div className="text-xs text-gray-500 mt-1">
+                            {isVlmJob ? scenesSavedLabel : `Вставлено: ${job.total_inserted}`}
+                          </div>
+                          {isVlmJob &&
+                            job.status === "running" &&
+                            currentSceneTasksTotal > 0 && (
+                            <div className="mt-3">
+                              <div className="flex justify-between text-xs mb-1">
+                                <span className="text-gray-600">{currentSceneLabel}</span>
+                                <span className="font-medium">
+                                  Scene {Math.min(currentSceneIndex, job.total_limit || currentSceneIndex)}
+                                </span>
+                              </div>
+                              <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                                <div
+                                  className="h-2 rounded-full transition-all duration-300"
+                                  style={{
+                                    width: `${currentSceneProgress}%`,
+                                    backgroundImage: getSceneTaskGradient(currentSceneIndex),
+                                  }}
+                                ></div>
+                              </div>
                             </div>
                           )}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`font-semibold ${statusColors.text}`}>
-                          {getJobStatusText(job.status)}
+                          {getJobStatusText(job.status, job.cancel_requested)}
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {job.total_seen} / {job.total_limit}
+                        {processedLabel}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {formatDate(job.created_at)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {canCancelVlm ? (
+                          <button
+                            onClick={() => cancelVlmJob(job.job_id)}
+                            disabled={cancellingJobId === job.job_id}
+                            className={`px-4 py-2 rounded-lg font-semibold transition-all duration-200 ${
+                              cancellingJobId === job.job_id
+                                ? "bg-red-300 text-white cursor-not-allowed"
+                                : "bg-red-600 text-white hover:bg-red-700"
+                            }`}
+                          >
+                            {cancellingJobId === job.job_id ? "Отмена..." : "Отменить"}
+                          </button>
+                        ) : job.job_type === "backfill_vlm" && job.cancel_requested ? (
+                          <span className="text-red-600 font-medium">Остановка...</span>
+                        ) : job.job_type === "backfill_vlm" && job.status === "cancelled" ? (
+                          <span className="text-gray-500 font-medium">Отменено</span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
                       </td>
                     </tr>
                   );
@@ -380,4 +444,3 @@ export default function SystemMonitor() {
     </div>
   );
 }
-

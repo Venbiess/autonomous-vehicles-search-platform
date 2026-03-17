@@ -8,7 +8,7 @@
 
 ```
 cd docker/server/
-docker compose up -f ./docker-compose.yml
+docker compose -f ./docker-compose.yml up
 ```
 
 Old:
@@ -20,7 +20,7 @@ source ./run_docker.sh
 
 For Waymo:
 ```
-docker exec -it <CONTAINED_ID> bash
+docker exec -it avsp-server-$USER bash
 gcloud auth application-default login
 gcloud auth login
 ```

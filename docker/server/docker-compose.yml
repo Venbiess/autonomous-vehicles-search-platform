@@ -31,6 +31,24 @@ services:
     networks:
       - avsp-net
 
+  minio-init:
+    image: minio/mc:latest
+    container_name: "minio-init-${USER}"
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c '
+      until mc alias set local http://minio:9000 minioadmin minioadmin; do
+        sleep 2;
+      done &&
+      for bucket in waymo argoverse avsp; do
+        mc mb --ignore-existing local/$$bucket;
+        mc anonymous set download local/$$bucket;
+      done
+      '
+    networks:
+      - avsp-net
+
   embedder:
     build:
       context: ../..
@@ -43,6 +61,26 @@ services:
     networks:
       - avsp-net
 
+  vlm:
+    build:
+      context: ../..
+      dockerfile: docker/models/models-cpu.Dockerfile
+    container_name: "vlm-${USER}"
+    volumes:
+      - "${PWD}/../..:/app"
+    command: >
+      /bin/sh -c "
+      uvicorn backend.models.vlm.vlm:app
+      --host 0.0.0.0
+      --port 8001
+      --log-level debug
+      --reload
+      "
+    ports:
+      - "8001:8001"
+    networks:
+      - avsp-net
+
   avsp-server:
     build:
       context: ../..
@@ -52,7 +90,9 @@ services:
     depends_on:
       - postgres
       - minio
+      - minio-init
       - embedder
+      - vlm
     volumes:
       - "${PWD}/../..:/app"
       - "vscode-server:/root/.vscode-server"
@@ -68,10 +108,33 @@ services:
       POSTGRES_DB: avsp
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
+      EMBEDDER_ENDPOINT: http://embedder:8000
+      VLM_ENDPOINT: http://vlm:8001
+    networks:
+      - avsp-net
+
+  frontend:
+    image: node:20
+    container_name: "frontend-${USER}"
+    depends_on:
+      - avsp-server
+      - minio
+    working_dir: /app/frontend
+    command: /bin/sh -c "npm ci && npm run dev -- --hostname 0.0.0.0"
+    volumes:
+      - "${PWD}/../../frontend:/app/frontend"
+      - "frontend-node-modules:/app/frontend/node_modules"
+    ports:
+      - "3000:3000"
+    environment:
+      MASTER_ENDPOINT: http://avsp-server:9002
+      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
+      MINIO_BUCKET: avsp
     networks:
       - avsp-net
 
 volumes:
+  frontend-node-modules:
   minio-data:
   postgres-data:
   vscode-server:
