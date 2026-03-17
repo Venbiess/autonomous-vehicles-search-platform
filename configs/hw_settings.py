@@ -16,6 +16,6 @@ EMBEDDER_CONFIG = SimpleNamespace(
 )
 
 VLM_CONFIG = SimpleNamespace(
-    PORT=9000,
+    PORT=8001,
     DEVICE="CPU",           # CPU, CUDA, MPS
 )

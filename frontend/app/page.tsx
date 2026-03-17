@@ -1,12 +1,13 @@
 "use client"; // делаем компонент клиентским, чтобы можно было использовать useState
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import axios from "axios";
 
 // Импортируем компоненты
 import SearchBar from "../components/SearchBar";
 import ImageGallery from "../components/ImageGallery";
 import SystemMonitor from "../components/SystemMonitor";
+import VlmPanel from "../components/VlmPanel";
 
 interface ImageResult {
   id: string;
@@ -16,6 +17,7 @@ interface ImageResult {
 }
 
 type SearchMode = "VLM" | "Browser" | "Job Monitor";
+const IMAGES_PER_PAGE_OPTIONS = [6, 9, 12, 18, 24];
 
 export default function HomePage() {
   const [searchMode, setSearchMode] = useState<SearchMode>("Browser");
@@ -23,6 +25,18 @@ export default function HomePage() {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [imagesPerPage, setImagesPerPage] = useState(9);
+
+  const totalPages = Math.max(1, Math.ceil(images.length / imagesPerPage));
+  const pageStart = (currentPage - 1) * imagesPerPage;
+  const paginatedImages = images.slice(pageStart, pageStart + imagesPerPage);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   const runSearch = async (query: string) => {
     const cleanedQuery = query.trim();
@@ -30,6 +44,7 @@ export default function HomePage() {
       setImages([]);
       setLastQuery("");
       setErrorMessage(null);
+      setCurrentPage(1);
       return;
     }
 
@@ -38,14 +53,16 @@ export default function HomePage() {
     setLastQuery(cleanedQuery);
     try {
       const response = await axios.get("/api/search", {
-        params: { q: cleanedQuery },
+        params: { q: cleanedQuery, limit: 100 },
       });
       setImages(response.data ?? []);
+      setCurrentPage(1);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Не удалось выполнить поиск";
       setErrorMessage(message);
       setImages([]);
+      setCurrentPage(1);
     } finally {
       setIsLoading(false);
     }
@@ -103,6 +120,8 @@ export default function HomePage() {
         <section className="px-6 pt-8 pb-16">
           <SystemMonitor />
         </section>
+      ) : searchMode === "VLM" ? (
+        <VlmPanel onOpenJobsMonitor={() => setSearchMode("Job Monitor")} />
       ) : (
         <>
           <section className="px-6 pt-12 pb-8">
@@ -130,7 +149,57 @@ export default function HomePage() {
                   Ничего не найдено по запросу "{lastQuery}".
                 </div>
               )}
-              {images.length > 0 && <ImageGallery images={images} />}
+              {images.length > 0 && (
+                <>
+                  <div className="mt-4 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-sm text-gray-600">
+                      Показаны {pageStart + 1}-{Math.min(pageStart + imagesPerPage, images.length)} из {images.length}
+                    </div>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                      <label className="flex items-center gap-2 text-sm text-gray-600">
+                        Картинок на странице
+                        <select
+                          value={imagesPerPage}
+                          onChange={(event) => {
+                            setImagesPerPage(Number(event.target.value));
+                            setCurrentPage(1);
+                          }}
+                          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+                        >
+                          {IMAGES_PER_PAGE_OPTIONS.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                          disabled={currentPage === 1}
+                          className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          ← Назад
+                        </button>
+                        <div className="min-w-24 text-center text-sm font-medium text-gray-700">
+                          {currentPage} / {totalPages}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                          disabled={currentPage === totalPages}
+                          className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Вперёд →
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <ImageGallery images={paginatedImages} />
+                </>
+              )}
             </div>
           </section>
         </>

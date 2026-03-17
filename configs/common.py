@@ -29,3 +29,10 @@ EMBEDDER_ENDPOINT = os.getenv("EMBEDDER_ENDPOINT", "http://embedder:8000")
 EMBEDDER_TIMEOUT_SEC = int(os.getenv("EMBEDDER_TIMEOUT_SEC", "30"))
 EMBEDDINGS_SCHEMA = os.getenv("EMBEDDINGS_SCHEMA", POSTGRES_SCHEMA)
 EMBEDDINGS_TABLE = os.getenv("EMBEDDINGS_TABLE", "image_embeddings")
+
+# VLM configuration
+VLM_ENDPOINT = os.getenv("VLM_ENDPOINT", "http://vlm:8001")
+VLM_TIMEOUT_SEC = int(os.getenv("VLM_TIMEOUT_SEC", "120"))
+VLM_SCHEMA = os.getenv("VLM_SCHEMA", POSTGRES_SCHEMA)
+VLM_FIELDS_TABLE = os.getenv("VLM_FIELDS_TABLE", "vlm_field_specs")
+VLM_ANNOTATIONS_TABLE = os.getenv("VLM_ANNOTATIONS_TABLE", "vlm_annotations")

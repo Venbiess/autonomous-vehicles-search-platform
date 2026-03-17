@@ -45,7 +45,7 @@ COPY docker/models/start.sh /start.sh
 RUN chmod +x /start.sh
 ENV EMBEDDER_PORT=8000 \
     JUPYTER_PORT=8888
-EXPOSE 8000 8888
+EXPOSE 8000 8001 8888
 CMD ["/start.sh"]
 
 # uvicorn backend.models.embedder.embedder:app --host 0.0.0.0 --port 8000 --log-level debug --reload
