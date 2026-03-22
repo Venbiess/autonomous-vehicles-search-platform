@@ -33,6 +33,7 @@ interface Job {
   total_seen: number;
   total_inserted: number;
   total_limit: number;
+  total_planned?: number;
   total_tasks_completed?: number;
   total_tasks_planned?: number;
   current_scene_tasks_completed?: number;
@@ -49,6 +50,7 @@ export default function SystemMonitor() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
+  const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
 
   const fetchSystemInfo = async () => {
     try {
@@ -83,6 +85,13 @@ export default function SystemMonitor() {
       fetchJobs();
     }, 5000); // Обновление каждые 5 секунд
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNowSeconds(Math.floor(Date.now() / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
   }, []);
 
   const formatUptime = (seconds: number): string => {
@@ -133,6 +142,43 @@ export default function SystemMonitor() {
 
   const formatDate = (timestamp: number): string => {
     return new Date(timestamp * 1000).toLocaleString("ru-RU");
+  };
+
+  const formatDuration = (seconds: number): string => {
+    const safe = Math.max(0, Math.floor(seconds));
+    const hours = Math.floor(safe / 3600);
+    const minutes = Math.floor((safe % 3600) / 60);
+    const secs = safe % 60;
+    if (hours > 0) {
+      return `${hours}ч ${String(minutes).padStart(2, "0")}м ${String(secs).padStart(2, "0")}с`;
+    }
+    return `${minutes}м ${String(secs).padStart(2, "0")}с`;
+  };
+
+  const getJobTiming = (job: Job): { elapsed: string; eta: string } => {
+    const start = Math.max(0, job.created_at || 0);
+    const end = job.status === "running" ? nowSeconds : Math.max(start, job.updated_at || start);
+    const elapsedSec = Math.max(0, end - start);
+
+    const plannedTotalRaw = job.total_planned ?? job.total_limit ?? 0;
+    const plannedTotal = Math.max(0, plannedTotalRaw);
+    const completed = Math.max(0, Math.min(job.total_seen ?? 0, plannedTotal || Number.MAX_SAFE_INTEGER));
+    const remaining = Math.max(0, plannedTotal - completed);
+    const speed = elapsedSec > 0 ? completed / elapsedSec : 0;
+    const etaSec =
+      job.status === "running" && plannedTotal > 0 && speed > 0 && remaining > 0
+        ? Math.ceil(remaining / speed)
+        : 0;
+
+    return {
+      elapsed: formatDuration(elapsedSec),
+      eta:
+        job.status === "running"
+          ? etaSec > 0
+            ? formatDuration(etaSec)
+            : "—"
+          : "—",
+    };
   };
 
   const getSceneTaskGradient = (sceneIndex: number): string => {
@@ -318,6 +364,9 @@ export default function SystemMonitor() {
                     Создано
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Время / ETA
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Действия
                   </th>
                 </tr>
@@ -325,17 +374,15 @@ export default function SystemMonitor() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {jobs.map((job) => {
                   const statusColors = getJobStatusColor(job.status);
-                  // Для завершенных джоб прогресс всегда 100%, для running - текущий прогресс
-                  const progress = (job.status === "success" || job.status === "error") 
-                    ? 100 
-                    : job.progress;
+                  const progress = job.progress;
                   const canCancelVlm =
                     job.job_type === "backfill_vlm" &&
                     job.status === "running" &&
                     !job.cancel_requested;
                   const isVlmJob = job.job_type === "backfill_vlm";
-                  const progressLabel = `${job.total_seen} / ${job.total_limit}`;
-                  const processedLabel = `${job.total_seen} / ${job.total_limit}`;
+                  const plannedTotal = job.total_planned ?? job.total_limit;
+                  const progressLabel = `${job.total_seen} / ${plannedTotal}`;
+                  const processedLabel = `${job.total_seen} / ${plannedTotal}`;
                   const scenesSavedLabel = `Сцен сохранено: ${job.total_inserted}`;
                   const currentSceneTasksCompleted = job.current_scene_tasks_completed ?? 0;
                   const currentSceneTasksTotal = job.current_scene_tasks_total ?? 0;
@@ -348,6 +395,7 @@ export default function SystemMonitor() {
                       : 0;
                   const currentSceneLabel = `VLM calls: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
                   const currentSceneIndex = job.current_scene_index ?? 0;
+                  const timing = getJobTiming(job);
                   
                   return (
                     <tr key={job.job_id} className="hover:bg-gray-50">
@@ -385,7 +433,7 @@ export default function SystemMonitor() {
                               <div className="flex justify-between text-xs mb-1">
                                 <span className="text-gray-600">{currentSceneLabel}</span>
                                 <span className="font-medium">
-                                  Scene {Math.min(currentSceneIndex, job.total_limit || currentSceneIndex)}
+                                  Scene {Math.min(currentSceneIndex, plannedTotal || currentSceneIndex)}
                                 </span>
                               </div>
                               <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
@@ -411,6 +459,12 @@ export default function SystemMonitor() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {formatDate(job.created_at)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        <div className="leading-5">
+                          <div className="font-medium text-gray-700">{timing.elapsed}</div>
+                          <div className="text-xs text-gray-500">ETA: {timing.eta}</div>
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {canCancelVlm ? (

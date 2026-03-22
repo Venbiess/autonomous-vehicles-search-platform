@@ -8,6 +8,8 @@ import SearchBar from "../components/SearchBar";
 import ImageGallery from "../components/ImageGallery";
 import SystemMonitor from "../components/SystemMonitor";
 import VlmPanel from "../components/VlmPanel";
+import AnnotationPanel from "../components/AnnotationPanel";
+import StoragePanel from "../components/StoragePanel";
 
 interface ImageResult {
   id: string;
@@ -16,7 +18,7 @@ interface ImageResult {
   score?: number | null;
 }
 
-type SearchMode = "VLM" | "Browser" | "Job Monitor";
+type SearchMode = "VLM" | "Browser" | "ANNOTATION" | "STORAGE" | "Job Monitor";
 const IMAGES_PER_PAGE_OPTIONS = [6, 9, 12, 18, 24];
 
 export default function HomePage() {
@@ -38,9 +40,15 @@ export default function HomePage() {
     }
   }, [currentPage, totalPages]);
 
-  const runSearch = async (query: string) => {
+  const runSearch = async ({
+    query,
+    imageFile,
+  }: {
+    query: string;
+    imageFile: File | null;
+  }) => {
     const cleanedQuery = query.trim();
-    if (!cleanedQuery) {
+    if (!cleanedQuery && !imageFile) {
       setImages([]);
       setLastQuery("");
       setErrorMessage(null);
@@ -50,16 +58,25 @@ export default function HomePage() {
 
     setIsLoading(true);
     setErrorMessage(null);
-    setLastQuery(cleanedQuery);
+    setLastQuery(cleanedQuery || (imageFile ? "image search" : ""));
     try {
-      const response = await axios.get("/api/search", {
-        params: { q: cleanedQuery, limit: 100 },
-      });
+      const response = imageFile
+        ? await axios.post("/api/search?limit=100", imageFile, {
+            headers: {
+              "Content-Type": imageFile.type || "application/octet-stream",
+            },
+          })
+        : await axios.get("/api/search", {
+            params: { q: cleanedQuery, limit: 100 },
+          });
       setImages(response.data ?? []);
       setCurrentPage(1);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Не удалось выполнить поиск";
+      const message = axios.isAxiosError(error)
+        ? error.response?.data?.error || error.message
+        : error instanceof Error
+          ? error.message
+          : "Не удалось выполнить поиск";
       setErrorMessage(message);
       setImages([]);
       setCurrentPage(1);
@@ -68,8 +85,8 @@ export default function HomePage() {
     }
   };
 
-  // Поиск по тексту
-  const handleSearch = (query: string) => runSearch(query);
+  const handleSearch = (payload: { query: string; imageFile: File | null }) =>
+    runSearch(payload);
 
   return (
     <main className="min-h-screen bg-gray-100">
@@ -77,6 +94,18 @@ export default function HomePage() {
       <section className="bg-white border-b border-gray-200 shadow-sm">
         <div className="mx-auto max-w-5xl px-6">
           <div className="flex items-center justify-center py-6">
+            <button
+              onClick={() => setSearchMode("STORAGE")}
+              style={{ fontSize: '32px', fontWeight: 900, letterSpacing: '0.5px' }}
+              className={`font-bebas transition-all duration-200 px-8 py-3 ${
+                searchMode === "STORAGE"
+                  ? "text-blue-600 bg-blue-50 border-b-4 border-blue-600"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              STORAGE
+            </button>
+            <div className="h-8 w-px bg-gray-300 mx-4"></div>
             <button
               onClick={() => setSearchMode("VLM")}
               style={{ fontSize: '32px', fontWeight: 900, letterSpacing: '0.5px' }}
@@ -98,7 +127,19 @@ export default function HomePage() {
                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
               }`}
             >
-              Browser
+              BROWSER
+            </button>
+            <div className="h-8 w-px bg-gray-300 mx-4"></div>
+            <button
+              onClick={() => setSearchMode("ANNOTATION")}
+              style={{ fontSize: '32px', fontWeight: 900, letterSpacing: '0.5px' }}
+              className={`font-bebas transition-all duration-200 px-8 py-3 ${
+                searchMode === "ANNOTATION"
+                  ? "text-blue-600 bg-blue-50 border-b-4 border-blue-600"
+                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
+              }`}
+            >
+              ANNOTATION
             </button>
             <div className="h-8 w-px bg-gray-300 mx-4"></div>
             <button
@@ -110,7 +151,7 @@ export default function HomePage() {
                   : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
               }`}
             >
-              Job Monitor
+              JOB MONITOR
             </button>
           </div>
         </div>
@@ -122,6 +163,10 @@ export default function HomePage() {
         </section>
       ) : searchMode === "VLM" ? (
         <VlmPanel onOpenJobsMonitor={() => setSearchMode("Job Monitor")} />
+      ) : searchMode === "ANNOTATION" ? (
+        <AnnotationPanel onOpenJobsMonitor={() => setSearchMode("Job Monitor")} />
+      ) : searchMode === "STORAGE" ? (
+        <StoragePanel />
       ) : (
         <>
           <section className="px-6 pt-12 pb-8">
@@ -146,7 +191,9 @@ export default function HomePage() {
               )}
               {!isLoading && images.length === 0 && lastQuery && !errorMessage && (
                 <div className="text-sm text-gray-500">
-                  Ничего не найдено по запросу "{lastQuery}".
+                  {lastQuery === "image search"
+                    ? "Ничего не найдено по загруженному изображению."
+                    : `Ничего не найдено по запросу "${lastQuery}".`}
                 </div>
               )}
               {images.length > 0 && (

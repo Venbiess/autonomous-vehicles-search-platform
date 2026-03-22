@@ -1,5 +1,5 @@
 import io
-import logging as py_logging
+import logging
 import threading
 from typing import Optional
 
@@ -7,17 +7,15 @@ import torch
 from fastapi import FastAPI, File, Form, UploadFile
 from PIL import Image
 from transformers import AutoModelForVision2Seq, AutoProcessor
-from transformers import logging
+from transformers import logging as hf_logging
 
 from configs.hw_settings import VLM_CONFIG
 
-logging.disable_progress_bar()
-
-MODEL_NAME = "HuggingFaceTB/SmolVLM-256M-Instruct"
+hf_logging.disable_progress_bar()
 
 app = FastAPI(title="SmolVLM API")
-logger = py_logging.getLogger("avsp.vlm")
-py_logging.basicConfig(level=py_logging.INFO)
+logger = logging.getLogger("avsp.vlm")
+logging.basicConfig(level=logging.INFO)
 
 request_lock = threading.Lock()
 requests_received = 0
@@ -39,7 +37,7 @@ def _resolve_device() -> str:
 DEVICE = _resolve_device()
 TORCH_DTYPE = torch.bfloat16 if DEVICE == "cuda" else torch.float32
 
-processor = AutoProcessor.from_pretrained(MODEL_NAME)
+processor = AutoProcessor.from_pretrained(VLM_CONFIG.MODEL_NAME)
 model_kwargs = {
     "torch_dtype": TORCH_DTYPE,
 }
@@ -47,7 +45,7 @@ if DEVICE == "cuda":
     model_kwargs["_attn_implementation"] = "eager"
 
 model = AutoModelForVision2Seq.from_pretrained(
-    MODEL_NAME,
+    VLM_CONFIG.MODEL_NAME,
     **model_kwargs,
 ).to(DEVICE)
 model.eval()
@@ -95,7 +93,7 @@ def _generate_text(image: Image.Image, prompt_text: str, max_new_tokens: int) ->
 def healthcheck():
     return {
         "status": "ok",
-        "model": MODEL_NAME,
+        "model": VLM_CONFIG.MODEL_NAME,
         "device": DEVICE,
     }
 
@@ -150,7 +148,7 @@ async def generate(
         return {
             "prompt": prompt,
             "response": generated_text,
-            "model": MODEL_NAME,
+            "model": VLM_CONFIG.MODEL_NAME,
             "device": DEVICE,
         }
     finally:

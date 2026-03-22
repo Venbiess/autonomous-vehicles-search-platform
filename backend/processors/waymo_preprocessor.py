@@ -158,6 +158,8 @@ class WaymoPreprocessor(Preprocessor):
 
         self.download_blob(name, dst_path)
         result_df = self.process_parquet(dst_path)
+        if self.remove_local_images:
+            os.remove(dst_path)
 
         return result_df
 

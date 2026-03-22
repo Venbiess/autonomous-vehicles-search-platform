@@ -35,7 +35,7 @@ export default function ImageGallery({ images }) {
               className="h-48 w-full object-cover"
             />
             <div className="p-2">
-              <div className="text-xs break-all">{img.title}</div>
+              <div className="text-xs whitespace-pre-line break-all">{img.title}</div>
               {img.score !== null && img.score !== undefined && (
                 <div className="text-xs text-gray-500">
                   score: {Number(img.score).toFixed(4)}
@@ -69,7 +69,7 @@ export default function ImageGallery({ images }) {
                 className="max-h-[68vh] w-full rounded-2xl object-contain bg-slate-100"
               />
               <div className="px-2 pb-2 pt-4">
-                <div className="text-sm break-all text-slate-800">
+                <div className="text-sm whitespace-pre-line break-all text-slate-800">
                   {selectedImage.title}
                 </div>
                 {selectedImage.score !== null &&

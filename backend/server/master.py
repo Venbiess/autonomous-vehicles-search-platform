@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 import psutil
 import psycopg2
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from psycopg2 import sql
 
@@ -761,6 +761,27 @@ def search_text(payload: TextSearchRequest):
     with httpx.Client(timeout=timeout) as client:
         query_embedding, _ = _embed_text(client, payload.query)
     results = storage_api.query_vectors(query_embedding, payload.top_k)
+    return {
+        "mode": "vector_server",
+        "results": results,
+    }
+
+
+@app.post("/search/image_bytes")
+async def search_image_bytes(
+    request: Request,
+    top_k: int = 5,
+    max_rows: int = 10000,
+):
+    del max_rows
+    image_bytes = await request.body()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Image bytes are required")
+
+    timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
+    with httpx.Client(timeout=timeout) as client:
+        query_embedding, _ = _embed_image(client, image_bytes)
+    results = storage_api.query_vectors(query_embedding, max(1, top_k))
     return {
         "mode": "vector_server",
         "results": results,
