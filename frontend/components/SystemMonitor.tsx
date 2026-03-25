@@ -375,8 +375,9 @@ export default function SystemMonitor() {
                 {jobs.map((job) => {
                   const statusColors = getJobStatusColor(job.status);
                   const progress = job.progress;
-                  const canCancelVlm =
-                    job.job_type === "backfill_vlm" &&
+                  const canCancelJob =
+                    (job.job_type === "backfill_vlm" ||
+                      job.job_type === "backfill_embeddings") &&
                     job.status === "running" &&
                     !job.cancel_requested;
                   const isVlmJob = job.job_type === "backfill_vlm";
@@ -467,7 +468,7 @@ export default function SystemMonitor() {
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {canCancelVlm ? (
+                        {canCancelJob ? (
                           <button
                             onClick={() => cancelVlmJob(job.job_id)}
                             disabled={cancellingJobId === job.job_id}
@@ -479,10 +480,15 @@ export default function SystemMonitor() {
                           >
                             {cancellingJobId === job.job_id ? "Отмена..." : "Отменить"}
                           </button>
-                        ) : job.job_type === "backfill_vlm" && job.cancel_requested ? (
-                          <span className="text-red-600 font-medium">Остановка...</span>
-                        ) : job.job_type === "backfill_vlm" && job.status === "cancelled" ? (
+                        ) : (job.job_type === "backfill_vlm" ||
+                            job.job_type === "backfill_embeddings") &&
+                          job.status === "cancelled" ? (
                           <span className="text-gray-500 font-medium">Отменено</span>
+                        ) : (job.job_type === "backfill_vlm" ||
+                            job.job_type === "backfill_embeddings") &&
+                          job.status === "running" &&
+                          job.cancel_requested ? (
+                          <span className="text-red-600 font-medium">Остановка...</span>
                         ) : (
                           <span className="text-gray-400">-</span>
                         )}

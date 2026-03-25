@@ -26,6 +26,7 @@ export default function HomePage() {
   const [images, setImages] = useState<ImageResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [sourceWarning, setSourceWarning] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [imagesPerPage, setImagesPerPage] = useState(9);
@@ -39,6 +40,27 @@ export default function HomePage() {
       setCurrentPage(totalPages);
     }
   }, [currentPage, totalPages]);
+
+  useEffect(() => {
+    const loadSourceStatus = async () => {
+      try {
+        const response = await axios.get("/api/storage/stats", {
+          params: { include_storage_details: 0 },
+        });
+        if (response.data?.source_table_exists === false) {
+          setSourceWarning(
+            response.data?.warning ??
+              "Исходные данные еще не скачаны. Таблица кадров отсутствует."
+          );
+        } else {
+          setSourceWarning(null);
+        }
+      } catch {
+        setSourceWarning(null);
+      }
+    };
+    loadSourceStatus();
+  }, []);
 
   const runSearch = async ({
     query,
@@ -177,6 +199,12 @@ export default function HomePage() {
 
               {/* Компонент поиска */}
               <SearchBar onSearch={handleSearch} loading={isLoading} />
+
+              {sourceWarning && (
+                <div className="w-full rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 text-left">
+                  {sourceWarning}
+                </div>
+              )}
 
               {errorMessage && (
                 <div className="text-sm text-red-600">{errorMessage}</div>

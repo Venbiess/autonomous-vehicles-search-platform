@@ -76,6 +76,9 @@ interface DiskStats {
 }
 
 interface StorageStatsResponse {
+  source_table_exists?: boolean;
+  source_table?: string;
+  warning?: string | null;
   source: SourceStats;
   embeddings: AnnotationStats;
   vlm: VlmStats;
@@ -90,6 +93,11 @@ interface PieSlice {
   percent: number;
   color: string;
   valueText: string;
+}
+
+interface DonutArc extends PieSlice {
+  startDeg: number;
+  endDeg: number;
 }
 
 function formatNumber(value: number): string {
@@ -112,6 +120,42 @@ function pct(value: number): string {
   return `${value.toFixed(2)}%`;
 }
 
+function polarToCartesian(
+  cx: number,
+  cy: number,
+  radius: number,
+  angleDeg: number
+): { x: number; y: number } {
+  const angleRad = ((angleDeg - 90) * Math.PI) / 180;
+  return {
+    x: cx + radius * Math.cos(angleRad),
+    y: cy + radius * Math.sin(angleRad),
+  };
+}
+
+function describeDonutArc(
+  cx: number,
+  cy: number,
+  outerRadius: number,
+  innerRadius: number,
+  startDeg: number,
+  endDeg: number
+): string {
+  const startOuter = polarToCartesian(cx, cy, outerRadius, startDeg);
+  const endOuter = polarToCartesian(cx, cy, outerRadius, endDeg);
+  const startInner = polarToCartesian(cx, cy, innerRadius, startDeg);
+  const endInner = polarToCartesian(cx, cy, innerRadius, endDeg);
+  const largeArcFlag = endDeg - startDeg > 180 ? 1 : 0;
+
+  return [
+    `M ${startOuter.x} ${startOuter.y}`,
+    `A ${outerRadius} ${outerRadius} 0 ${largeArcFlag} 1 ${endOuter.x} ${endOuter.y}`,
+    `L ${endInner.x} ${endInner.y}`,
+    `A ${innerRadius} ${innerRadius} 0 ${largeArcFlag} 0 ${startInner.x} ${startInner.y}`,
+    "Z",
+  ].join(" ");
+}
+
 function PieChart({
   title,
   subtitle,
@@ -121,41 +165,133 @@ function PieChart({
   subtitle: string;
   slices: PieSlice[];
 }) {
+  const [hoveredLabel, setHoveredLabel] = useState<string | null>(null);
   const normalizedSlices = slices.filter((slice) => slice.percent > 0);
-  const gradient = normalizedSlices
-    .reduce(
-      (acc, slice) => {
-        const from = acc.offset;
-        const to = Math.min(from + slice.percent, 100);
-        acc.parts.push(`${slice.color} ${from}% ${to}%`);
-        acc.offset = to;
-        return acc;
-      },
-      { offset: 0, parts: [] as string[] }
-    )
-    .parts.join(", ");
+  const cumulativePercents = normalizedSlices.reduce<number[]>(
+    (acc, slice, index) => [
+      ...acc,
+      (index === 0 ? 0 : acc[index - 1]) + slice.percent,
+    ],
+    []
+  );
+  const arcs: DonutArc[] = normalizedSlices.map((slice, index) => {
+    const startPercent = index === 0 ? 0 : cumulativePercents[index - 1];
+    const endPercent = cumulativePercents[index] ?? startPercent;
+    return {
+      ...slice,
+      startDeg: (startPercent / 100) * 360,
+      endDeg: (endPercent / 100) * 360,
+    };
+  });
 
-  const background =
-    normalizedSlices.length > 0
-      ? `conic-gradient(${gradient})`
-      : "conic-gradient(#e2e8f0 0% 100%)";
+  const hasHover = hoveredLabel !== null;
+  const viewSize = 280;
+  const center = viewSize / 2;
+  const outerRadius = 116;
+  const innerRadius = 88;
+  const fallbackRing = describeDonutArc(
+    center,
+    center,
+    outerRadius,
+    innerRadius,
+    0,
+    359.99
+  );
 
   return (
     <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
       <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
       <p className="mt-1 text-xs text-slate-500">{subtitle}</p>
       <div className="mt-4 flex flex-col items-center gap-4 lg:flex-row lg:items-start">
-        <div
-          className="relative h-64 w-64 shrink-0 rounded-full border border-slate-200 shadow-inner"
-          style={{ background, aspectRatio: "1 / 1" }}
-        >
-          <div className="absolute inset-[15%] rounded-full border border-slate-200 bg-white shadow-inner" />
+        <div className="relative h-72 w-72 shrink-0">
+          <svg
+            viewBox={`0 0 ${viewSize} ${viewSize}`}
+            className="h-full w-full"
+            onMouseLeave={() => setHoveredLabel(null)}
+            aria-label={title}
+            role="img"
+          >
+            <circle
+              cx={center}
+              cy={center}
+              r={outerRadius + 4}
+              fill="#f8fafc"
+              stroke="#e2e8f0"
+              strokeWidth="1"
+            />
+            {arcs.length === 0 && (
+              <path d={fallbackRing} fill="#cbd5e1" opacity={0.8} />
+            )}
+            {arcs.map((arc) => {
+              const midDeg = (arc.startDeg + arc.endDeg) / 2;
+              const isActive = hoveredLabel === arc.label;
+              const isFaded = hasHover && !isActive;
+              const pullDistance = isActive ? 9 : 0;
+              const pullX = pullDistance * Math.cos(((midDeg - 90) * Math.PI) / 180);
+              const pullY = pullDistance * Math.sin(((midDeg - 90) * Math.PI) / 180);
+
+              return (
+                <path
+                  key={arc.label}
+                  d={describeDonutArc(
+                    center,
+                    center,
+                    outerRadius,
+                    innerRadius,
+                    arc.startDeg,
+                    arc.endDeg
+                  )}
+                  fill={arc.color}
+                  stroke="#ffffff"
+                  strokeWidth={isActive ? 4 : 2}
+                  transform={`translate(${pullX} ${pullY})`}
+                  className="cursor-pointer transition-all duration-300"
+                  opacity={isFaded ? 0.25 : 1}
+                  onMouseEnter={() => setHoveredLabel(arc.label)}
+                />
+              );
+            })}
+            <circle
+              cx={center}
+              cy={center}
+              r={innerRadius - 2}
+              fill="#ffffff"
+              stroke="#e2e8f0"
+              strokeWidth="1"
+            />
+            <text
+              x={center}
+              y={center - 2}
+              textAnchor="middle"
+              className="fill-slate-700 text-[12px] font-semibold"
+            >
+              {hasHover ? hoveredLabel : "Hover class"}
+            </text>
+            <text
+              x={center}
+              y={center + 16}
+              textAnchor="middle"
+              className="fill-slate-500 text-[11px]"
+            >
+              {hasHover
+                ? pct(
+                    slices.find((slice) => slice.label === hoveredLabel)?.percent ?? 0
+                  )
+                : "Dataset share"}
+            </text>
+          </svg>
         </div>
         <div className="w-full space-y-2">
           {slices.map((slice) => (
             <div
               key={slice.label}
-              className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+              className={`flex items-center justify-between rounded-xl border px-3 py-2 text-sm transition-all duration-300 ${
+                hoveredLabel === slice.label
+                  ? "scale-[1.02] border-slate-400 bg-white shadow-sm"
+                  : "border-slate-200 bg-slate-50"
+              } ${hasHover && hoveredLabel !== slice.label ? "opacity-40" : "opacity-100"}`}
+              onMouseEnter={() => setHoveredLabel(slice.label)}
+              onMouseLeave={() => setHoveredLabel(null)}
             >
               <div className="flex items-center gap-2 text-slate-700">
                 <span
@@ -339,6 +475,7 @@ export default function StoragePanel() {
     avgImageBytes * stats.embeddings.pending_rows
   );
   const vlmRemainingBytes = Math.round(avgImageBytes * stats.vlm.pending_rows);
+  const sourceTableMissing = stats.source_table_exists === false;
 
   const rowPalette = [
     "#2563eb",
@@ -417,6 +554,12 @@ export default function StoragePanel() {
           {warningMessage && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
               {warningMessage}
+            </div>
+          )}
+          {sourceTableMissing && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+              {stats.warning ??
+                "Данные еще не скачаны: исходная таблица с кадрами отсутствует. Пока отображается пустая статистика."}
             </div>
           )}
           {errorMessage && (

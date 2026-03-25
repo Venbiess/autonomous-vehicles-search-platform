@@ -18,4 +18,5 @@ EMBEDDER_CONFIG = SimpleNamespace(
 VLM_CONFIG = SimpleNamespace(
     PORT=8001,
     DEVICE="CPU",           # CPU, CUDA, MPS
+    MODEL_NAME="HuggingFaceTB/SmolVLM-256M-Instruct"
 )

@@ -140,6 +140,7 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
   const [maxNewTokens, setMaxNewTokens] = useState(64);
   const [currentPage, setCurrentPage] = useState(1);
   const [imagesPerPage, setImagesPerPage] = useState(9);
+  const [sourceWarning, setSourceWarning] = useState<string | null>(null);
 
   const totalPages = Math.max(1, Math.ceil(images.length / imagesPerPage));
   const pageStart = (currentPage - 1) * imagesPerPage;
@@ -176,6 +177,27 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
       }
     };
     loadSchema();
+  }, []);
+
+  useEffect(() => {
+    const loadSourceStatus = async () => {
+      try {
+        const response = await axios.get("/api/storage/stats", {
+          params: { include_storage_details: 0 },
+        });
+        if (response.data?.source_table_exists === false) {
+          setSourceWarning(
+            response.data?.warning ??
+              "Исходные данные еще не скачаны. Таблица кадров отсутствует."
+          );
+        } else {
+          setSourceWarning(null);
+        }
+      } catch {
+        setSourceWarning(null);
+      }
+    };
+    loadSourceStatus();
   }, []);
 
   useEffect(() => {
@@ -401,6 +423,11 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
   return (
     <section className="px-6 pt-10 pb-16">
       <div className="mx-auto flex max-w-6xl flex-col gap-8">
+        {sourceWarning && (
+          <div className="rounded-3xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 shadow-sm">
+            {sourceWarning}
+          </div>
+        )}
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5">
             <h2 className="text-2xl font-semibold text-slate-900">VLM Schema</h2>
