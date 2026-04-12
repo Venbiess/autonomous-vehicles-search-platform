@@ -3,7 +3,7 @@ import boto3
 import requests
 from botocore.client import Config
 from configs.common import (
-    OBJECT_SERVICE_ENDPOINT,
+    OBJECT_SERVER_ENDPOINT,
     S3_ENDPOINT_URL,
     S3_ACCESS_KEY_ID,
     S3_SECRET_ACCESS_KEY,
@@ -65,12 +65,12 @@ class Preprocessor:
     def register_storage_path(self, storage_path: str):
         try:
             requests.post(
-                f"{OBJECT_SERVICE_ENDPOINT}/objects",
+                f"{OBJECT_SERVER_ENDPOINT}/objects",
                 json={"storage_path": storage_path},
                 timeout=30,
             ).raise_for_status()
         except Exception:
-            # Ingestion should not fail if object-service is temporarily unavailable.
+            # Ingestion should not fail if object-server is temporarily unavailable.
             pass
 
     @abstractmethod

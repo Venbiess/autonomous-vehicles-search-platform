@@ -5,7 +5,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 import psutil
@@ -13,13 +13,14 @@ import psycopg2
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 from psycopg2 import sql
-from psycopg2.extras import execute_values
 
 from configs.common import (
+    ANALYTICS_SERVER_ENDPOINT,
+    ANALYTICS_SERVER_TIMEOUT_SEC,
     EMBEDDER_ENDPOINT,
     EMBEDDER_TIMEOUT_SEC,
-    OBJECT_SERVICE_ENDPOINT,
-    OBJECT_SERVICE_TIMEOUT_SEC,
+    OBJECT_SERVER_ENDPOINT,
+    OBJECT_SERVER_TIMEOUT_SEC,
     POSTGRES_DB,
     POSTGRES_HOST,
     POSTGRES_PASSWORD,
@@ -27,14 +28,12 @@ from configs.common import (
     POSTGRES_SCHEMA,
     POSTGRES_TABLE,
     POSTGRES_USER,
-    VECTOR_SERVICE_ENDPOINT,
-    VECTOR_SERVICE_TIMEOUT_SEC,
-    VLM_ANNOTATIONS_TABLE,
+    VECTOR_SERVER_ENDPOINT,
+    VECTOR_SERVER_TIMEOUT_SEC,
     VLM_ENDPOINT,
-    VLM_FIELDS_TABLE,
-    VLM_SCHEMA,
     VLM_TIMEOUT_SEC,
 )
+from backend.server.analytics_api import AnalyticsAPI
 from backend.server.storage_api import StorageAPI
 
 logger = logging.getLogger("avsp.master")
@@ -122,10 +121,14 @@ class EmbedResult:
     dim: int
 
 storage_api = StorageAPI(
-    object_endpoint=OBJECT_SERVICE_ENDPOINT,
-    vector_endpoint=VECTOR_SERVICE_ENDPOINT,
-    object_timeout_sec=OBJECT_SERVICE_TIMEOUT_SEC,
-    vector_timeout_sec=VECTOR_SERVICE_TIMEOUT_SEC,
+    object_endpoint=OBJECT_SERVER_ENDPOINT,
+    vector_endpoint=VECTOR_SERVER_ENDPOINT,
+    object_timeout_sec=OBJECT_SERVER_TIMEOUT_SEC,
+    vector_timeout_sec=VECTOR_SERVER_TIMEOUT_SEC,
+)
+analytics_api = AnalyticsAPI(
+    endpoint=ANALYTICS_SERVER_ENDPOINT,
+    timeout_sec=ANALYTICS_SERVER_TIMEOUT_SEC,
 )
 
 
@@ -220,117 +223,9 @@ def _db_conn():
         password=POSTGRES_PASSWORD,
     )
 
-def _ensure_vlm_tables(conn) -> None:
-    create_schema_stmt = sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
-        sql.Identifier(VLM_SCHEMA)
-    )
-    create_fields_stmt = sql.SQL(
-        """
-        CREATE TABLE IF NOT EXISTS {}.{} (
-            field_name TEXT PRIMARY KEY,
-            prompt TEXT NOT NULL,
-            response_type TEXT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT now(),
-            updated_at TIMESTAMPTZ DEFAULT now()
-        )
-        """
-    ).format(
-        sql.Identifier(VLM_SCHEMA),
-        sql.Identifier(VLM_FIELDS_TABLE),
-    )
-    create_annotations_stmt = sql.SQL(
-        """
-        CREATE TABLE IF NOT EXISTS {}.{} (
-            object_id TEXT PRIMARY KEY,
-            updated_at TIMESTAMPTZ DEFAULT now()
-        )
-        """
-    ).format(
-        sql.Identifier(VLM_SCHEMA),
-        sql.Identifier(VLM_ANNOTATIONS_TABLE),
-    )
-    with conn.cursor() as cur:
-        cur.execute(create_schema_stmt)
-        cur.execute(create_fields_stmt)
-        cur.execute(create_annotations_stmt)
-
-
-def _ensure_vlm_columns(conn, field_names: List[str]) -> None:
-    if not field_names:
-        return
-    with conn.cursor() as cur:
-        for field_name in field_names:
-            cur.execute(
-                sql.SQL(
-                    "ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} TEXT"
-                ).format(
-                    sql.Identifier(VLM_SCHEMA),
-                    sql.Identifier(VLM_ANNOTATIONS_TABLE),
-                    sql.Identifier(field_name),
-                )
-            )
-
-
-def _upsert_vlm_field_specs(conn, fields: List[Dict[str, str]]) -> None:
-    if not fields:
-        return
-    insert_stmt = sql.SQL(
-        """
-        INSERT INTO {}.{} (field_name, prompt, response_type)
-        VALUES %s
-        ON CONFLICT (field_name)
-        DO UPDATE SET prompt = EXCLUDED.prompt,
-                      response_type = EXCLUDED.response_type,
-                      updated_at = now()
-        """
-    ).format(
-        sql.Identifier(VLM_SCHEMA),
-        sql.Identifier(VLM_FIELDS_TABLE),
-    )
-    values = [
-        (field["field_name"], field["prompt"], field["response_type"])
-        for field in fields
-    ]
-    with conn.cursor() as cur:
-        execute_values(cur, insert_stmt.as_string(cur), values)
-
-
-def _fetch_vlm_fields(
-    conn,
-    requested_names: Optional[List[str]] = None,
-) -> List[Dict[str, str]]:
-    base_query = sql.SQL(
-        """
-        SELECT field_name, prompt, response_type
-        FROM {}.{}
-        """
-    ).format(
-        sql.Identifier(VLM_SCHEMA),
-        sql.Identifier(VLM_FIELDS_TABLE),
-    )
-    params: List[Any] = []
-    if requested_names:
-        query = base_query + sql.SQL(" WHERE field_name = ANY(%s)")
-        params.append(requested_names)
-    else:
-        query = base_query
-    query += sql.SQL(" ORDER BY field_name")
-    with conn.cursor() as cur:
-        cur.execute(query, params)
-        rows = cur.fetchall()
-    return [
-        {
-            "field_name": row[0],
-            "prompt": row[1],
-            "response_type": row[2],
-        }
-        for row in rows
-    ]
-
-
-def _validate_existing_vlm_fields(conn, field_names: List[str]) -> List[Dict[str, str]]:
+def _validate_existing_vlm_fields(field_names: List[str]) -> List[Dict[str, str]]:
     normalized_names = [_normalize_field_name(name) for name in field_names]
-    fields = _fetch_vlm_fields(conn, normalized_names)
+    fields = analytics_api.get_fields(normalized_names)
     if len(fields) != len(set(normalized_names)):
         existing = {field["field_name"] for field in fields}
         missing = sorted(set(normalized_names) - existing)
@@ -357,71 +252,20 @@ def _fetch_source_paths(conn, limit: int) -> List[str]:
     return [row[0] for row in rows]
 
 
-def _upsert_vlm_annotations(
-    conn,
-    rows: List[Dict[str, Any]],
-    field_names: List[str],
-) -> int:
-    if not rows or not field_names:
+def _upsert_vlm_annotations(rows: List[Dict[str, Any]]) -> int:
+    if not rows:
         return 0
-
-    insert_columns = ["object_id"] + field_names
-    insert_stmt = sql.SQL(
-        """
-        INSERT INTO {}.{} ({})
-        VALUES %s
-        ON CONFLICT (object_id)
-        DO UPDATE SET {},
-                      updated_at = now()
-        """
-    ).format(
-        sql.Identifier(VLM_SCHEMA),
-        sql.Identifier(VLM_ANNOTATIONS_TABLE),
-        sql.SQL(", ").join(sql.Identifier(column) for column in insert_columns),
-        sql.SQL(", ").join(
-            sql.SQL("{} = EXCLUDED.{}").format(
-                sql.Identifier(field_name),
-                sql.Identifier(field_name),
-            )
-            for field_name in field_names
-        ),
-    )
-    values = [
-        (row["object_id"],) + tuple(row["values"].get(field_name) for field_name in field_names)
-        for row in rows
-    ]
-    with conn.cursor() as cur:
-        execute_values(cur, insert_stmt.as_string(cur), values)
-    return len(rows)
+    return analytics_api.upsert_annotations(rows)
 
 
 def _filter_pending_vlm_object_ids(
-    conn,
     object_ids: List[str],
     field_names: List[str],
     overwrite_existing: bool,
 ) -> List[str]:
     if overwrite_existing or not object_ids:
         return object_ids
-    completed_predicate = sql.SQL(" AND ").join(
-        [sql.SQL("{} IS NOT NULL").format(sql.Identifier(name)) for name in field_names]
-    )
-    query = sql.SQL(
-        """
-        SELECT object_id
-        FROM {}.{}
-        WHERE object_id = ANY(%s)
-          AND {}
-        """
-    ).format(
-        sql.Identifier(VLM_SCHEMA),
-        sql.Identifier(VLM_ANNOTATIONS_TABLE),
-        completed_predicate,
-    )
-    with conn.cursor() as cur:
-        cur.execute(query, (object_ids,))
-        rows = cur.fetchall()
-    completed = {row[0] for row in rows}
+    completed = set(analytics_api.completed_object_ids(object_ids, field_names))
     return [object_id for object_id in object_ids if object_id not in completed]
 
 
@@ -658,116 +502,106 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
     try:
         timeout = httpx.Timeout(VLM_TIMEOUT_SEC)
 
-        with _db_conn() as conn:
-            _ensure_vlm_tables(conn)
-            if payload.field_names:
-                fields = _validate_existing_vlm_fields(conn, payload.field_names)
-            else:
-                fields = _fetch_vlm_fields(conn)
-            if not fields:
-                raise ValueError("No VLM fields configured")
+        if payload.field_names:
+            fields = _validate_existing_vlm_fields(payload.field_names)
+        else:
+            fields = analytics_api.get_fields()
+        if not fields:
+            raise ValueError("No VLM fields configured")
 
-            field_names = [field["field_name"] for field in fields]
-            _ensure_vlm_columns(conn, field_names)
-            object_ids = _list_object_ids(payload.limit)
-            object_ids = _filter_pending_vlm_object_ids(
-                conn,
-                object_ids,
-                field_names,
-                payload.overwrite_existing,
-            )
-            total_tasks_planned = len(object_ids) * len(field_names)
-            completed_tasks = 0
-            conn.commit()
+        field_names = [field["field_name"] for field in fields]
+        object_ids = _list_object_ids(payload.limit)
+        object_ids = _filter_pending_vlm_object_ids(
+            object_ids,
+            field_names,
+            payload.overwrite_existing,
+        )
+        total_tasks_planned = len(object_ids) * len(field_names)
+        completed_tasks = 0
 
-            with jobs_lock:
-                if job_id in jobs_store:
-                    jobs_store[job_id].update(
-                        {
-                            "total_tasks_planned": total_tasks_planned,
-                            "updated_at": time.time(),
-                        }
-                    )
+        with jobs_lock:
+            if job_id in jobs_store:
+                jobs_store[job_id].update(
+                    {
+                        "total_tasks_planned": total_tasks_planned,
+                        "updated_at": time.time(),
+                    }
+                )
 
-            with httpx.Client(timeout=timeout) as client:
-                for object_id in object_ids:
-                    if _job_cancel_requested(job_id):
-                        _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
-                        return
-                    try:
-                        image_bytes = _fetch_image_bytes(object_id)
-                        values: Dict[str, str] = {}
-                        current_scene_index = total_seen + 1
-                        current_scene_tasks_total = len(fields)
-                        current_scene_tasks_completed = 0
-                        with jobs_lock:
-                            if job_id in jobs_store:
-                                jobs_store[job_id].update(
-                                    {
-                                        "current_scene_index": current_scene_index,
-                                        "current_scene_tasks_completed": 0,
-                                        "current_scene_tasks_total": current_scene_tasks_total,
-                                        "updated_at": time.time(),
-                                    }
-                                )
-                        for field_index, field in enumerate(fields):
-                            if _job_cancel_requested(job_id):
-                                _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
-                                return
-                            prompt = _build_vlm_prompt(field["prompt"], field["response_type"])
-                            task_index = completed_tasks + field_index + 1
-                            values[field["field_name"]] = _run_vlm(
-                                client,
-                                image_bytes,
-                                prompt,
-                                payload.max_new_tokens,
-                                job_id=job_id,
-                                task_index=task_index,
-                                task_total=total_tasks_planned if total_tasks_planned > 0 else None,
-                                field_name=field["field_name"],
-                                object_id=object_id,
-                            )
-                            values[field["field_name"]] = _normalize_vlm_response(
-                                values[field["field_name"]],
-                                field["response_type"],
-                            )
-                            completed_tasks += 1
-                            current_scene_tasks_completed = field_index + 1
-                        if not payload.dry_run:
-                            total_inserted += _upsert_vlm_annotations(
-                                conn,
-                                [{"object_id": object_id, "values": values}],
-                                field_names,
-                            )
-                            conn.commit()
-                        total_seen += 1
-                    except Exception as exc:  # noqa: BLE001
-                        logger.exception("VLM failed for object_id=%s", object_id)
-                        errors.append({"object_id": object_id, "error": str(exc)})
-                        total_seen += 1
-                        if payload.stop_on_error:
-                            break
-
-                    progress = min(int((total_seen / max(len(object_ids), 1)) * 100), 100)
+        with httpx.Client(timeout=timeout) as client:
+            for object_id in object_ids:
+                if _job_cancel_requested(job_id):
+                    _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
+                    return
+                try:
+                    image_bytes = _fetch_image_bytes(object_id)
+                    values: Dict[str, str] = {}
+                    current_scene_index = total_seen + 1
+                    current_scene_tasks_total = len(fields)
                     with jobs_lock:
                         if job_id in jobs_store:
                             jobs_store[job_id].update(
                                 {
-                                    "progress": progress,
-                                    "total_seen": total_seen,
-                                    "total_inserted": total_inserted,
-                                    "total_tasks_completed": completed_tasks,
-                                    "total_tasks_planned": total_tasks_planned,
+                                    "current_scene_index": current_scene_index,
                                     "current_scene_tasks_completed": 0,
-                                    "current_scene_tasks_total": len(fields),
-                                    "errors": errors,
-                                    "field_names": field_names,
+                                    "current_scene_tasks_total": current_scene_tasks_total,
                                     "updated_at": time.time(),
                                 }
                             )
-
-                    if payload.stop_on_error and errors:
+                    for field_index, field in enumerate(fields):
+                        if _job_cancel_requested(job_id):
+                            _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
+                            return
+                        prompt = _build_vlm_prompt(field["prompt"], field["response_type"])
+                        task_index = completed_tasks + field_index + 1
+                        values[field["field_name"]] = _run_vlm(
+                            client,
+                            image_bytes,
+                            prompt,
+                            payload.max_new_tokens,
+                            job_id=job_id,
+                            task_index=task_index,
+                            task_total=total_tasks_planned if total_tasks_planned > 0 else None,
+                            field_name=field["field_name"],
+                            object_id=object_id,
+                        )
+                        values[field["field_name"]] = _normalize_vlm_response(
+                            values[field["field_name"]],
+                            field["response_type"],
+                        )
+                        completed_tasks += 1
+                    if not payload.dry_run:
+                        total_inserted += _upsert_vlm_annotations(
+                            [{"object_id": object_id, "values": values}]
+                        )
+                    total_seen += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("VLM failed for object_id=%s", object_id)
+                    errors.append({"object_id": object_id, "error": str(exc)})
+                    total_seen += 1
+                    if payload.stop_on_error:
                         break
+
+                progress = min(int((total_seen / max(len(object_ids), 1)) * 100), 100)
+                with jobs_lock:
+                    if job_id in jobs_store:
+                        jobs_store[job_id].update(
+                            {
+                                "progress": progress,
+                                "total_seen": total_seen,
+                                "total_inserted": total_inserted,
+                                "total_tasks_completed": completed_tasks,
+                                "total_tasks_planned": total_tasks_planned,
+                                "current_scene_tasks_completed": 0,
+                                "current_scene_tasks_total": len(fields),
+                                "errors": errors,
+                                "field_names": field_names,
+                                "updated_at": time.time(),
+                            }
+                        )
+
+                if payload.stop_on_error and errors:
+                    break
 
         final_status = JobStatus.SUCCESS if not errors else JobStatus.ERROR
         with jobs_lock:
@@ -882,16 +716,14 @@ def search_text(payload: TextSearchRequest):
         query_embedding, _ = _embed_text(client, payload.query)
     results = storage_api.query_vectors(query_embedding, payload.top_k)
     return {
-        "mode": "vector_service",
+        "mode": "vector_server",
         "results": results,
     }
 
 
 @app.get("/vlm/fields")
 def get_vlm_fields():
-    with _db_conn() as conn:
-        _ensure_vlm_tables(conn)
-        return {"fields": _fetch_vlm_fields(conn)}
+    return {"fields": analytics_api.get_fields()}
 
 
 @app.post("/vlm/fields")
@@ -901,11 +733,7 @@ def upsert_vlm_fields(payload: VLMFieldsRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    with _db_conn() as conn:
-        _ensure_vlm_tables(conn)
-        _ensure_vlm_columns(conn, [field["field_name"] for field in normalized_fields])
-        _upsert_vlm_field_specs(conn, normalized_fields)
-        fields = _fetch_vlm_fields(conn)
+    fields = analytics_api.upsert_fields(normalized_fields)
     return {"fields": fields}
 
 
@@ -923,25 +751,7 @@ def backfill_vlm(payload: VLMBackfillRequest):
 
 @app.post("/vlm/annotations/clear")
 def clear_vlm_annotations():
-    with _db_conn() as conn:
-        _ensure_vlm_tables(conn)
-        with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
-                    sql.Identifier(VLM_SCHEMA),
-                    sql.Identifier(VLM_ANNOTATIONS_TABLE),
-                )
-            )
-            row = cur.fetchone()
-            deleted_rows = int(row[0]) if row and row[0] is not None else 0
-            cur.execute(
-                sql.SQL("TRUNCATE TABLE {}.{}").format(
-                    sql.Identifier(VLM_SCHEMA),
-                    sql.Identifier(VLM_ANNOTATIONS_TABLE),
-                )
-            )
-        conn.commit()
-    return {"status": "cleared", "deleted_rows": deleted_rows}
+    return analytics_api.clear_annotations()
 
 
 @app.post("/jobs/cancel")
@@ -990,64 +800,47 @@ def search_vlm(payload: VLMSearchRequest):
 
     if not normalized_filters:
         return {"results": []}
+    _validate_existing_vlm_fields([item["field_name"] for item in normalized_filters])
+    return {
+        "results": analytics_api.search(normalized_filters, payload.limit),
+    }
 
-    with _db_conn() as conn:
-        _ensure_vlm_tables(conn)
-        _validate_existing_vlm_fields(
-            conn,
-            [item["field_name"] for item in normalized_filters],
+
+@app.delete("/objects/{object_id}")
+def delete_object(object_id: str):
+    result: Dict[str, Any] = {
+        "object_id": object_id,
+        "vectors": {"requested": 0},
+        "annotations": {"requested": 0},
+        "object": {"object_id": object_id, "deleted": False},
+    }
+    errors: Dict[str, str] = {}
+
+    try:
+        result["vectors"]["requested"] = storage_api.delete_vectors([object_id])
+    except Exception as exc:  # noqa: BLE001
+        errors["vector_server"] = str(exc)
+
+    try:
+        result["annotations"]["requested"] = analytics_api.delete_annotations([object_id])
+    except Exception as exc:  # noqa: BLE001
+        errors["analytics_server"] = str(exc)
+
+    try:
+        result["object"] = storage_api.delete_object(object_id)
+    except Exception as exc:  # noqa: BLE001
+        errors["object_server"] = str(exc)
+
+    if errors:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "Cascade delete partially failed; retry is safe (idempotent).",
+                "errors": errors,
+                "result": result,
+            },
         )
-
-        selected_fields = []
-        seen_fields = set()
-        for item in normalized_filters:
-            if item["field_name"] not in seen_fields:
-                selected_fields.append(item["field_name"])
-                seen_fields.add(item["field_name"])
-
-        select_columns = [sql.SQL("object_id")]
-        select_columns.extend(
-            sql.Identifier(field_name) for field_name in selected_fields
-        )
-        query = sql.SQL("SELECT {} FROM {}.{} WHERE ").format(
-            sql.SQL(", ").join(select_columns),
-            sql.Identifier(VLM_SCHEMA),
-            sql.Identifier(VLM_ANNOTATIONS_TABLE),
-        )
-
-        clauses = []
-        params: List[Any] = []
-        for item in normalized_filters:
-            identifier = sql.Identifier(item["field_name"])
-            if item["match_mode"] == "contains":
-                clauses.append(sql.SQL("{} ILIKE %s").format(identifier))
-                params.append(f"%{item['value']}%")
-            else:
-                clauses.append(sql.SQL("LOWER({}) = LOWER(%s)").format(identifier))
-                params.append(item["value"])
-
-        query += sql.SQL(" AND ").join(clauses)
-        query += sql.SQL(" ORDER BY updated_at DESC LIMIT %s")
-        params.append(payload.limit)
-
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            rows = cur.fetchall()
-
-    results = []
-    for row in rows:
-        object_id = row[0]
-        attributes = {
-            field_name: row[index + 1]
-            for index, field_name in enumerate(selected_fields)
-        }
-        results.append(
-            {
-                "object_id": object_id,
-                "attributes": attributes,
-            }
-        )
-    return {"results": results}
+    return {"status": "ok", "result": result}
 
 
 @app.get("/objects/{object_id}/content")

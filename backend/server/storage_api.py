@@ -99,4 +99,10 @@ class StorageAPI:
             )
             response.raise_for_status()
             payload = response.json()
-        return int(payload.get("deleted", 0))
+        return int(payload.get("requested", 0))
+
+    def delete_object(self, object_id: str) -> Dict[str, Any]:
+        with httpx.Client(timeout=httpx.Timeout(self.object_timeout_sec)) as client:
+            response = client.delete(f"{self.object_endpoint}/objects/{object_id}")
+            response.raise_for_status()
+            return response.json()

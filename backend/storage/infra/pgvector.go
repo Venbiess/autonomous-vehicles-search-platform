@@ -1,13 +1,22 @@
-package vector
+package infra
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	_ "github.com/lib/pq"
 )
+
+type VectorIndexConfig struct {
+	Provider string `yaml:"provider"`
+	ConnStr  string `yaml:"conn_str"`
+	Schema   string `yaml:"schema"`
+	Table    string `yaml:"table"`
+}
 
 type PgVectorAdapter struct {
 	db        *sql.DB
@@ -16,12 +25,31 @@ type PgVectorAdapter struct {
 }
 
 func NewPgVectorAdapter(connStr, schema, table string) (*PgVectorAdapter, error) {
+	if strings.TrimSpace(connStr) == "" {
+		return nil, errors.New("postgres connection string is required")
+	}
+	if strings.TrimSpace(schema) == "" {
+		return nil, errors.New("vector schema is required")
+	}
+	if strings.TrimSpace(table) == "" {
+		return nil, errors.New("vector table is required")
+	}
+
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		return nil, err
 	}
+
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	adapter := &PgVectorAdapter{db: db, schema: schema, tableName: table}
 	if err := adapter.ensureTable(context.Background()); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	return adapter, nil
@@ -59,7 +87,7 @@ func (p *PgVectorAdapter) Upsert(ctx context.Context, objectID string, embedding
 	return err
 }
 
-func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, topK int) ([]QueryResult, error) {
+func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, topK int) ([]VectorQueryResult, error) {
 	query := fmt.Sprintf(`
 		SELECT object_id,
 			embedding <=> $1::vector AS distance,
@@ -74,9 +102,9 @@ func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, to
 	}
 	defer rows.Close()
 
-	results := make([]QueryResult, 0, topK)
+	results := make([]VectorQueryResult, 0, topK)
 	for rows.Next() {
-		var item QueryResult
+		var item VectorQueryResult
 		if err := rows.Scan(&item.ObjectID, &item.Distance, &item.Similarity); err != nil {
 			return nil, err
 		}
@@ -100,13 +128,9 @@ func (p *PgVectorAdapter) Delete(ctx context.Context, objectIDs []string) error 
 	return err
 }
 
-func (p *PgVectorAdapter) Health(ctx context.Context) error {
-	return p.db.PingContext(ctx)
-}
+func (p *PgVectorAdapter) Health(ctx context.Context) error { return p.db.PingContext(ctx) }
 
-func pqIdent(s string) string {
-	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
-}
+func pqIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
 
 func vectorLiteral(values []float64) string {
 	if len(values) == 0 {
