@@ -30,6 +30,12 @@ EMBEDDER_TIMEOUT_SEC = int(os.getenv("EMBEDDER_TIMEOUT_SEC", "30"))
 EMBEDDINGS_SCHEMA = os.getenv("EMBEDDINGS_SCHEMA", POSTGRES_SCHEMA)
 EMBEDDINGS_TABLE = os.getenv("EMBEDDINGS_TABLE", "image_embeddings")
 
+# Unified storage services
+OBJECT_SERVICE_ENDPOINT = os.getenv("OBJECT_SERVICE_ENDPOINT", "http://object-service:9010")
+OBJECT_SERVICE_TIMEOUT_SEC = int(os.getenv("OBJECT_SERVICE_TIMEOUT_SEC", "30"))
+VECTOR_SERVICE_ENDPOINT = os.getenv("VECTOR_SERVICE_ENDPOINT", "http://vector-service:9011")
+VECTOR_SERVICE_TIMEOUT_SEC = int(os.getenv("VECTOR_SERVICE_TIMEOUT_SEC", "30"))
+
 # VLM configuration
 VLM_ENDPOINT = os.getenv("VLM_ENDPOINT", "http://vlm:8001")
 VLM_TIMEOUT_SEC = int(os.getenv("VLM_TIMEOUT_SEC", "120"))

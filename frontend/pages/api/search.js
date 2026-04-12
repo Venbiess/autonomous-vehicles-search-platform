@@ -1,39 +1,3 @@
-function buildImageUrl(storagePath, defaultBucket) {
-  if (storagePath.startsWith("http://") || storagePath.startsWith("https://")) {
-    return storagePath;
-  }
-  let normalized = storagePath.replace(/\\/g, "/");
-  if (normalized.startsWith("s3://")) {
-    normalized = normalized.slice(5);
-  }
-  normalized = normalized.replace(/^\/+/, "");
-  let bucket = "";
-  let key = "";
-
-  if (!normalized.includes("/") && defaultBucket) {
-    bucket = defaultBucket;
-    key = normalized;
-  } else if (normalized.includes("/")) {
-    const [first, ...rest] = normalized.split("/");
-    if (defaultBucket && ["data", "app", "tmp", "var"].includes(first)) {
-      bucket = defaultBucket;
-      key = rest.length > 0 ? rest[rest.length - 1] : first;
-    } else {
-      bucket = first;
-      key = rest.join("/");
-    }
-  }
-
-  if (!bucket || !key) return null;
-  const baseUrl =
-    process.env.MINIO_PUBLIC_ENDPOINT || "http://localhost:9000";
-  const safeKey = key
-    .split("/")
-    .map((segment) => encodeURIComponent(segment))
-    .join("/");
-  return `${baseUrl.replace(/\/$/, "")}/${bucket}/${safeKey}`;
-}
-
 export default async function handler(req, res) {
   const { q, filter, limit } = req.query;
   const query = q || filter;
@@ -63,20 +27,18 @@ export default async function handler(req, res) {
     }
     const payload = await response.json();
     const results = payload.results || [];
-    const defaultBucket = process.env.MINIO_BUCKET || "avsp";
     const data = results
       .map((item, index) => {
-        const directUrl = item.url || item.image_url || item.imageUrl || null;
-        const url =
-          typeof directUrl === "string" && directUrl.length > 0
-            ? directUrl
-            : buildImageUrl(item.storage_path, defaultBucket);
+        const objectId = item.object_id || "";
+        if (!objectId) return null;
+        const url = `/api/objects/${encodeURIComponent(objectId)}`;
         if (!url) return null;
         return {
-          id: `${item.storage_path}-${index}`,
-          title: item.title || item.storage_path || url,
+          id: `${objectId}-${index}`,
+          title: item.title || objectId,
           url,
           score: item.similarity ?? item.distance ?? null,
+          object_id: objectId,
         };
       })
       .filter(Boolean);

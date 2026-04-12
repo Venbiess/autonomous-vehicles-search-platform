@@ -1,35 +1,3 @@
-function buildImageUrl(storagePath, defaultBucket) {
-  if (storagePath.startsWith("http://") || storagePath.startsWith("https://")) {
-    return storagePath;
-  }
-
-  let normalized = storagePath.replace(/\\/g, "/");
-  if (normalized.startsWith("s3://")) {
-    normalized = normalized.slice(5);
-  }
-  normalized = normalized.replace(/^\/+/, "");
-
-  let bucket = "";
-  let key = "";
-  if (!normalized.includes("/") && defaultBucket) {
-    bucket = defaultBucket;
-    key = normalized;
-  } else if (normalized.includes("/")) {
-    const [first, ...rest] = normalized.split("/");
-    bucket = first;
-    key = rest.join("/");
-  }
-
-  if (!bucket || !key) return null;
-  const baseUrl =
-    process.env.MINIO_PUBLIC_ENDPOINT || "http://localhost:9000";
-  const safeKey = key
-    .split("/")
-    .map((segment) => encodeURIComponent(segment))
-    .join("/");
-  return `${baseUrl.replace(/\/$/, "")}/${bucket}/${safeKey}`;
-}
-
 const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
 
 export default async function handler(req, res) {
@@ -48,10 +16,11 @@ export default async function handler(req, res) {
       return res.status(response.status).json(payload);
     }
 
-    const defaultBucket = process.env.MINIO_BUCKET || "avsp";
     const results = (payload.results || [])
       .map((item, index) => {
-        const url = buildImageUrl(item.storage_path, defaultBucket);
+        const objectId = item.object_id || "";
+        if (!objectId) return null;
+        const url = `/api/objects/${encodeURIComponent(objectId)}`;
         if (!url) return null;
         const attributes = item.attributes || {};
         const title =
@@ -59,12 +28,13 @@ export default async function handler(req, res) {
             ? Object.entries(attributes)
                 .map(([key, value]) => `${key}: ${value}`)
                 .join(" | ")
-            : item.storage_path;
+            : objectId;
         return {
-          id: `${item.storage_path}-${index}`,
+          id: `${objectId}-${index}`,
           title,
           url,
           attributes,
+          object_id: objectId,
         };
       })
       .filter(Boolean);

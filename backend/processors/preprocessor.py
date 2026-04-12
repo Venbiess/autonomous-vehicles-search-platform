@@ -1,7 +1,9 @@
 from abc import abstractmethod
 import boto3
+import requests
 from botocore.client import Config
 from configs.common import (
+    OBJECT_SERVICE_ENDPOINT,
     S3_ENDPOINT_URL,
     S3_ACCESS_KEY_ID,
     S3_SECRET_ACCESS_KEY,
@@ -60,6 +62,17 @@ class Preprocessor:
             Key=object_name
         )
 
+    def register_storage_path(self, storage_path: str):
+        try:
+            requests.post(
+                f"{OBJECT_SERVICE_ENDPOINT}/objects",
+                json={"storage_path": storage_path},
+                timeout=30,
+            ).raise_for_status()
+        except Exception:
+            # Ingestion should not fail if object-service is temporarily unavailable.
+            pass
+
     @abstractmethod
     def __iter__(self):
         raise NotImplementedError("Dataset preprocessor must have __iter__")
@@ -100,6 +113,7 @@ class Preprocessor:
                     episode_df.at[idx, "storage_path"] = storage_path
 
                     self.upload_to_s3(local_path, bucket, name)
+                    self.register_storage_path(storage_path)
                     os.remove(local_path)
 
                 if writer:

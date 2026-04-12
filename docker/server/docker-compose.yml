@@ -81,6 +81,52 @@ services:
     networks:
       - avsp-net
 
+  object-service:
+    build:
+      context: ../..
+      dockerfile: docker/storage/object-service.Dockerfile
+    container_name: "object-service-${USER}"
+    depends_on:
+      - minio
+      - minio-init
+    volumes:
+      - object-kv-data:/data
+    environment:
+      OBJECT_SERVICE_ADDR: ":9010"
+      OBJECT_ADAPTER_PROVIDER: minio
+      OBJECT_DEFAULT_BUCKET: avsp
+      OBJECT_KV_PATH: /data/object-pebble
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_USE_SSL: "false"
+    ports:
+      - "9010:9010"
+    networks:
+      - avsp-net
+
+  vector-service:
+    build:
+      context: ../..
+      dockerfile: docker/storage/vector-service.Dockerfile
+    container_name: "vector-service-${USER}"
+    depends_on:
+      - postgres
+    environment:
+      VECTOR_SERVICE_ADDR: ":9011"
+      VECTOR_ADAPTER_PROVIDER: pgvector
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: avsp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      VECTOR_SCHEMA: public
+      VECTOR_TABLE: image_embeddings
+    ports:
+      - "9011:9011"
+    networks:
+      - avsp-net
+
   avsp-server:
     build:
       context: ../..
@@ -93,6 +139,8 @@ services:
       - minio-init
       - embedder
       - vlm
+      - object-service
+      - vector-service
     volumes:
       - "${PWD}/../..:/app"
       - "vscode-server:/root/.vscode-server"
@@ -110,6 +158,8 @@ services:
       POSTGRES_PASSWORD: postgres
       EMBEDDER_ENDPOINT: http://embedder:8000
       VLM_ENDPOINT: http://vlm:8001
+      OBJECT_SERVICE_ENDPOINT: http://object-service:9010
+      VECTOR_SERVICE_ENDPOINT: http://vector-service:9011
     networks:
       - avsp-net
 
@@ -136,6 +186,7 @@ services:
 volumes:
   frontend-node-modules:
   minio-data:
+  object-kv-data:
   postgres-data:
   vscode-server:
 

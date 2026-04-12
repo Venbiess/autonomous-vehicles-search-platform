@@ -5,15 +5,12 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from math import sqrt
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-import boto3
 import httpx
 import psutil
 import psycopg2
-from botocore.client import Config
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 from psycopg2 import sql
 from psycopg2.extras import execute_values
@@ -21,8 +18,8 @@ from psycopg2.extras import execute_values
 from configs.common import (
     EMBEDDER_ENDPOINT,
     EMBEDDER_TIMEOUT_SEC,
-    EMBEDDINGS_SCHEMA,
-    EMBEDDINGS_TABLE,
+    OBJECT_SERVICE_ENDPOINT,
+    OBJECT_SERVICE_TIMEOUT_SEC,
     POSTGRES_DB,
     POSTGRES_HOST,
     POSTGRES_PASSWORD,
@@ -30,15 +27,15 @@ from configs.common import (
     POSTGRES_SCHEMA,
     POSTGRES_TABLE,
     POSTGRES_USER,
-    S3_ACCESS_KEY_ID,
-    S3_ENDPOINT_URL,
-    S3_SECRET_ACCESS_KEY,
+    VECTOR_SERVICE_ENDPOINT,
+    VECTOR_SERVICE_TIMEOUT_SEC,
     VLM_ANNOTATIONS_TABLE,
     VLM_ENDPOINT,
     VLM_FIELDS_TABLE,
     VLM_SCHEMA,
     VLM_TIMEOUT_SEC,
 )
+from backend.server.storage_api import StorageAPI
 
 logger = logging.getLogger("avsp.master")
 logging.basicConfig(level=logging.INFO)
@@ -113,20 +110,23 @@ class CancelJobRequest(BaseModel):
     job_id: str = Field(..., min_length=1)
 
 
+class SyncObjectsRequest(BaseModel):
+    limit: int = Field(100000, ge=1)
+    batch_size: int = Field(500, ge=1)
+
+
 @dataclass(frozen=True)
 class EmbedResult:
-    storage_path: str
+    object_id: str
     embedding: List[float]
     dim: int
 
-
-def _parse_storage_path(storage_path: str) -> Tuple[str, str]:
-    if storage_path.startswith("s3://"):
-        storage_path = storage_path[5:]
-    bucket, sep, key = storage_path.partition("/")
-    if not bucket or not sep or not key:
-        raise ValueError(f"Invalid storage_path: {storage_path}")
-    return bucket, key
+storage_api = StorageAPI(
+    object_endpoint=OBJECT_SERVICE_ENDPOINT,
+    vector_endpoint=VECTOR_SERVICE_ENDPOINT,
+    object_timeout_sec=OBJECT_SERVICE_TIMEOUT_SEC,
+    vector_timeout_sec=VECTOR_SERVICE_TIMEOUT_SEC,
+)
 
 
 def _normalize_field_name(field_name: str) -> str:
@@ -211,20 +211,6 @@ def _normalize_vlm_response(response_text: str, response_type: str) -> str:
     return value
 
 
-def _s3_client():
-    return boto3.client(
-        "s3",
-        endpoint_url=S3_ENDPOINT_URL,
-        aws_access_key_id=S3_ACCESS_KEY_ID,
-        aws_secret_access_key=S3_SECRET_ACCESS_KEY,
-        region_name="us-east-1",
-        config=Config(
-            signature_version="s3v4",
-            s3={"addressing_style": "path"},
-        ),
-    )
-
-
 def _db_conn():
     return psycopg2.connect(
         host=POSTGRES_HOST,
@@ -233,29 +219,6 @@ def _db_conn():
         user=POSTGRES_USER,
         password=POSTGRES_PASSWORD,
     )
-
-
-def _ensure_embedding_table(conn) -> None:
-    create_schema_stmt = sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
-        sql.Identifier(EMBEDDINGS_SCHEMA)
-    )
-    create_table_stmt = sql.SQL(
-        """
-        CREATE TABLE IF NOT EXISTS {}.{} (
-            storage_path TEXT PRIMARY KEY,
-            embedding DOUBLE PRECISION[] NOT NULL,
-            embedding_dim INT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-        """
-    ).format(
-        sql.Identifier(EMBEDDINGS_SCHEMA),
-        sql.Identifier(EMBEDDINGS_TABLE),
-    )
-    with conn.cursor() as cur:
-        cur.execute(create_schema_stmt)
-        cur.execute(create_table_stmt)
-
 
 def _ensure_vlm_tables(conn) -> None:
     create_schema_stmt = sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
@@ -278,7 +241,7 @@ def _ensure_vlm_tables(conn) -> None:
     create_annotations_stmt = sql.SQL(
         """
         CREATE TABLE IF NOT EXISTS {}.{} (
-            storage_path TEXT PRIMARY KEY,
+            object_id TEXT PRIMARY KEY,
             updated_at TIMESTAMPTZ DEFAULT now()
         )
         """
@@ -375,138 +338,23 @@ def _validate_existing_vlm_fields(conn, field_names: List[str]) -> List[Dict[str
     return fields
 
 
-def _fetch_pending_paths(conn, limit: int) -> List[str]:
+def _fetch_source_paths(conn, limit: int) -> List[str]:
     query = sql.SQL(
         """
-        SELECT src.storage_path
+        SELECT DISTINCT src.storage_path
         FROM {}.{} AS src
-        LEFT JOIN {}.{} AS emb
-            ON src.storage_path = emb.storage_path
         WHERE src.storage_path IS NOT NULL
-          AND emb.storage_path IS NULL
+          AND src.storage_path <> ''
         LIMIT %s
         """
     ).format(
         sql.Identifier(POSTGRES_SCHEMA),
         sql.Identifier(POSTGRES_TABLE),
-        sql.Identifier(EMBEDDINGS_SCHEMA),
-        sql.Identifier(EMBEDDINGS_TABLE),
     )
     with conn.cursor() as cur:
         cur.execute(query, (limit,))
         rows = cur.fetchall()
     return [row[0] for row in rows]
-
-
-def _fetch_pending_vlm_paths(
-    conn,
-    field_names: List[str],
-    limit: int,
-    overwrite_existing: bool,
-) -> List[str]:
-    query = sql.SQL(
-        """
-        SELECT src.storage_path
-        FROM {}.{} AS src
-        LEFT JOIN {}.{} AS ann
-            ON src.storage_path = ann.storage_path
-        WHERE src.storage_path IS NOT NULL
-        """
-    ).format(
-        sql.Identifier(POSTGRES_SCHEMA),
-        sql.Identifier(POSTGRES_TABLE),
-        sql.Identifier(VLM_SCHEMA),
-        sql.Identifier(VLM_ANNOTATIONS_TABLE),
-    )
-    params: List[Any] = []
-    if not overwrite_existing:
-        missing_clauses = [sql.SQL("ann.storage_path IS NULL")]
-        for field_name in field_names:
-            missing_clauses.append(
-                sql.SQL("ann.{} IS NULL").format(sql.Identifier(field_name))
-            )
-        query += sql.SQL(" AND ({})").format(sql.SQL(" OR ").join(missing_clauses))
-    query += sql.SQL(" LIMIT %s")
-    params.append(limit)
-    with conn.cursor() as cur:
-        cur.execute(query, params)
-        rows = cur.fetchall()
-    return [row[0] for row in rows]
-
-
-def _count_pending_vlm_paths(
-    conn,
-    field_names: List[str],
-    overwrite_existing: bool,
-) -> int:
-    query = sql.SQL(
-        """
-        SELECT COUNT(*)
-        FROM {}.{} AS src
-        LEFT JOIN {}.{} AS ann
-            ON src.storage_path = ann.storage_path
-        WHERE src.storage_path IS NOT NULL
-        """
-    ).format(
-        sql.Identifier(POSTGRES_SCHEMA),
-        sql.Identifier(POSTGRES_TABLE),
-        sql.Identifier(VLM_SCHEMA),
-        sql.Identifier(VLM_ANNOTATIONS_TABLE),
-    )
-    params: List[Any] = []
-    if not overwrite_existing:
-        missing_clauses = [sql.SQL("ann.storage_path IS NULL")]
-        for field_name in field_names:
-            missing_clauses.append(
-                sql.SQL("ann.{} IS NULL").format(sql.Identifier(field_name))
-            )
-        query += sql.SQL(" AND ({})").format(sql.SQL(" OR ").join(missing_clauses))
-    with conn.cursor() as cur:
-        cur.execute(query, params)
-        row = cur.fetchone()
-    return int(row[0]) if row and row[0] is not None else 0
-
-
-def _embedding_column_is_vector(conn) -> bool:
-    query = """
-        SELECT data_type, udt_name
-        FROM information_schema.columns
-        WHERE table_schema = %s
-          AND table_name = %s
-          AND column_name = 'embedding'
-    """
-    with conn.cursor() as cur:
-        cur.execute(query, (EMBEDDINGS_SCHEMA, EMBEDDINGS_TABLE))
-        row = cur.fetchone()
-    if not row:
-        return False
-    data_type, udt_name = row
-    return data_type == "USER-DEFINED" and udt_name == "vector"
-
-
-def _vector_literal(values: List[float]) -> str:
-    return "[" + ",".join(f"{value:.8f}" for value in values) + "]"
-
-
-def _insert_embeddings(conn, rows: List[EmbedResult]) -> int:
-    if not rows:
-        return 0
-    insert_stmt = sql.SQL(
-        """
-        INSERT INTO {}.{} (storage_path, embedding, embedding_dim)
-        VALUES %s
-        ON CONFLICT (storage_path)
-        DO UPDATE SET embedding = EXCLUDED.embedding,
-                      embedding_dim = EXCLUDED.embedding_dim
-        """
-    ).format(
-        sql.Identifier(EMBEDDINGS_SCHEMA),
-        sql.Identifier(EMBEDDINGS_TABLE),
-    )
-    values = [(row.storage_path, row.embedding, row.dim) for row in rows]
-    with conn.cursor() as cur:
-        execute_values(cur, insert_stmt.as_string(cur), values)
-    return len(rows)
 
 
 def _upsert_vlm_annotations(
@@ -517,12 +365,12 @@ def _upsert_vlm_annotations(
     if not rows or not field_names:
         return 0
 
-    insert_columns = ["storage_path"] + field_names
+    insert_columns = ["object_id"] + field_names
     insert_stmt = sql.SQL(
         """
         INSERT INTO {}.{} ({})
         VALUES %s
-        ON CONFLICT (storage_path)
+        ON CONFLICT (object_id)
         DO UPDATE SET {},
                       updated_at = now()
         """
@@ -539,7 +387,7 @@ def _upsert_vlm_annotations(
         ),
     )
     values = [
-        (row["storage_path"],) + tuple(row["values"].get(field_name) for field_name in field_names)
+        (row["object_id"],) + tuple(row["values"].get(field_name) for field_name in field_names)
         for row in rows
     ]
     with conn.cursor() as cur:
@@ -547,14 +395,62 @@ def _upsert_vlm_annotations(
     return len(rows)
 
 
-def _fetch_image_bytes(s3, storage_path: str) -> bytes:
-    if storage_path.startswith(("http://", "https://")):
-        response = httpx.get(storage_path, timeout=EMBEDDER_TIMEOUT_SEC)
-        response.raise_for_status()
-        return response.content
-    bucket, key = _parse_storage_path(storage_path)
-    obj = s3.get_object(Bucket=bucket, Key=key)
-    return obj["Body"].read()
+def _filter_pending_vlm_object_ids(
+    conn,
+    object_ids: List[str],
+    field_names: List[str],
+    overwrite_existing: bool,
+) -> List[str]:
+    if overwrite_existing or not object_ids:
+        return object_ids
+    completed_predicate = sql.SQL(" AND ").join(
+        [sql.SQL("{} IS NOT NULL").format(sql.Identifier(name)) for name in field_names]
+    )
+    query = sql.SQL(
+        """
+        SELECT object_id
+        FROM {}.{}
+        WHERE object_id = ANY(%s)
+          AND {}
+        """
+    ).format(
+        sql.Identifier(VLM_SCHEMA),
+        sql.Identifier(VLM_ANNOTATIONS_TABLE),
+        completed_predicate,
+    )
+    with conn.cursor() as cur:
+        cur.execute(query, (object_ids,))
+        rows = cur.fetchall()
+    completed = {row[0] for row in rows}
+    return [object_id for object_id in object_ids if object_id not in completed]
+
+
+def _list_object_ids(limit: int, page_size: int = 500) -> List[str]:
+    remaining = max(limit, 0)
+    cursor: Optional[str] = None
+    object_ids: List[str] = []
+    while remaining > 0:
+        payload = storage_api.list_objects(limit=min(page_size, remaining), cursor=cursor)
+        items = payload.get("items", [])
+        if not items:
+            break
+        for item in items:
+            object_id = item.get("object_id")
+            if object_id:
+                object_ids.append(object_id)
+                remaining -= 1
+                if remaining == 0:
+                    break
+        next_cursor = payload.get("next_cursor")
+        if not next_cursor or remaining == 0:
+            break
+        cursor = next_cursor
+    return object_ids
+
+
+def _fetch_image_bytes(object_id: str) -> bytes:
+    content, _ = storage_api.get_object_bytes(object_id)
+    return content
 
 
 def _embed_image(client: httpx.Client, image_bytes: bytes) -> Tuple[List[float], int]:
@@ -582,7 +478,7 @@ def _run_vlm(
     task_index: Optional[int] = None,
     task_total: Optional[int] = None,
     field_name: Optional[str] = None,
-    storage_path: Optional[str] = None,
+    object_id: Optional[str] = None,
 ) -> str:
     response = client.post(
         f"{VLM_ENDPOINT}/generate",
@@ -593,29 +489,13 @@ def _run_vlm(
             "task_index": str(task_index) if task_index is not None else "",
             "task_total": str(task_total) if task_total is not None else "",
             "field_name": field_name or "",
-            "storage_path": storage_path or "",
+            "object_id": object_id or "",
         },
         files={"file": ("image.jpg", image_bytes, "image/jpeg")},
     )
     response.raise_for_status()
     payload = response.json()
     return payload["response"].strip()
-
-
-def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
-    if len(vec_a) != len(vec_b):
-        raise ValueError("Embedding dimensions do not match")
-    dot = 0.0
-    norm_a = 0.0
-    norm_b = 0.0
-    for a, b in zip(vec_a, vec_b):
-        dot += a * b
-        norm_a += a * a
-        norm_b += b * b
-    denom = sqrt(norm_a) * sqrt(norm_b)
-    if denom == 0.0:
-        return 0.0
-    return dot / denom
 
 
 def _job_cancel_requested(job_id: str) -> bool:
@@ -672,58 +552,56 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
             payload.batch_size,
             payload.dry_run,
         )
-        s3 = _s3_client()
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
 
-        with _db_conn() as conn:
-            _ensure_embedding_table(conn)
-            with httpx.Client(timeout=timeout) as client:
-                while total_seen < payload.limit:
-                    batch_limit = min(payload.batch_size, payload.limit - total_seen)
-                    paths = _fetch_pending_paths(conn, batch_limit)
-                    if not paths:
-                        break
+        object_ids = _list_object_ids(payload.limit)
+        with httpx.Client(timeout=timeout) as client:
+            for i in range(0, len(object_ids), payload.batch_size):
+                batch_ids = object_ids[i : i + payload.batch_size]
+                rows: List[EmbedResult] = []
 
-                    total_seen += len(paths)
-                    rows: List[EmbedResult] = []
-
-                    for storage_path in paths:
-                        try:
-                            image_bytes = _fetch_image_bytes(s3, storage_path)
-                            embedding, dim = _embed_image(client, image_bytes)
-                            rows.append(
-                                EmbedResult(
-                                    storage_path=storage_path,
-                                    embedding=embedding,
-                                    dim=dim,
-                                )
+                for object_id in batch_ids:
+                    try:
+                        image_bytes = _fetch_image_bytes(object_id)
+                        embedding, dim = _embed_image(client, image_bytes)
+                        rows.append(
+                            EmbedResult(
+                                object_id=object_id,
+                                embedding=embedding,
+                                dim=dim,
                             )
-                        except Exception as exc:  # noqa: BLE001
-                            logger.exception("Embedding failed for %s", storage_path)
-                            errors.append(
-                                {"storage_path": storage_path, "error": str(exc)}
-                            )
-                            if payload.stop_on_error:
-                                break
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception("Embedding failed for object_id=%s", object_id)
+                        errors.append(
+                            {"object_id": object_id, "error": str(exc)}
+                        )
+                        if payload.stop_on_error:
+                            break
 
-                    if rows and not payload.dry_run:
-                        total_inserted += _insert_embeddings(conn, rows)
+                total_seen += len(batch_ids)
+                if rows and not payload.dry_run:
+                    total_inserted += storage_api.upsert_vectors(
+                        [
+                            {"object_id": row.object_id, "embedding": row.embedding}
+                            for row in rows
+                        ]
+                    )
 
-                    progress = min(int((total_seen / payload.limit) * 100), 100)
-                    with jobs_lock:
-                        if job_id in jobs_store:
-                            jobs_store[job_id].update(
-                                {
-                                    "progress": progress,
-                                    "total_seen": total_seen,
-                                    "total_inserted": total_inserted,
-                                    "errors": errors,
-                                    "updated_at": time.time(),
-                                }
-                            )
-
-                    if payload.stop_on_error and errors:
-                        break
+                progress = min(int((total_seen / max(payload.limit, 1)) * 100), 100)
+                with jobs_lock:
+                    if job_id in jobs_store:
+                        jobs_store[job_id].update(
+                            {
+                                "progress": progress,
+                                "total_seen": total_seen,
+                                "total_inserted": total_inserted,
+                                "errors": errors,
+                                "updated_at": time.time(),
+                            }
+                        )
+                if payload.stop_on_error and errors:
+                    break
 
         final_status = JobStatus.SUCCESS if not errors else JobStatus.ERROR
         with jobs_lock:
@@ -778,7 +656,6 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
     errors = []
 
     try:
-        s3 = _s3_client()
         timeout = httpx.Timeout(VLM_TIMEOUT_SEC)
 
         with _db_conn() as conn:
@@ -792,13 +669,14 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
 
             field_names = [field["field_name"] for field in fields]
             _ensure_vlm_columns(conn, field_names)
-            pending_paths = _count_pending_vlm_paths(
+            object_ids = _list_object_ids(payload.limit)
+            object_ids = _filter_pending_vlm_object_ids(
                 conn,
+                object_ids,
                 field_names,
                 payload.overwrite_existing,
             )
-            total_paths_planned = min(payload.limit, pending_paths)
-            total_tasks_planned = total_paths_planned * len(field_names)
+            total_tasks_planned = len(object_ids) * len(field_names)
             completed_tasks = 0
             conn.commit()
 
@@ -812,158 +690,65 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                     )
 
             with httpx.Client(timeout=timeout) as client:
-                while total_seen < payload.limit:
+                for object_id in object_ids:
                     if _job_cancel_requested(job_id):
                         _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
                         return
-
-                    batch_limit = min(payload.batch_size, payload.limit - total_seen)
-                    paths = _fetch_pending_vlm_paths(
-                        conn,
-                        field_names,
-                        batch_limit,
-                        payload.overwrite_existing,
-                    )
-                    if not paths:
-                        break
-
-                    for storage_path in paths:
-                        if _job_cancel_requested(job_id):
-                            _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
-                            return
-                        try:
-                            image_bytes = _fetch_image_bytes(s3, storage_path)
-                            values: Dict[str, str] = {}
-                            current_scene_index = total_seen + 1
-                            current_scene_tasks_total = len(fields)
-                            current_scene_tasks_completed = 0
-                            with jobs_lock:
-                                if job_id in jobs_store:
-                                    jobs_store[job_id].update(
-                                        {
-                                            "current_scene_index": current_scene_index,
-                                            "current_scene_tasks_completed": 0,
-                                            "current_scene_tasks_total": current_scene_tasks_total,
-                                            "updated_at": time.time(),
-                                        }
-                                    )
-                            for field_index, field in enumerate(fields):
-                                if _job_cancel_requested(job_id):
-                                    _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
-                                    return
-                                prompt = _build_vlm_prompt(
-                                    field["prompt"],
-                                    field["response_type"],
+                    try:
+                        image_bytes = _fetch_image_bytes(object_id)
+                        values: Dict[str, str] = {}
+                        current_scene_index = total_seen + 1
+                        current_scene_tasks_total = len(fields)
+                        current_scene_tasks_completed = 0
+                        with jobs_lock:
+                            if job_id in jobs_store:
+                                jobs_store[job_id].update(
+                                    {
+                                        "current_scene_index": current_scene_index,
+                                        "current_scene_tasks_completed": 0,
+                                        "current_scene_tasks_total": current_scene_tasks_total,
+                                        "updated_at": time.time(),
+                                    }
                                 )
-                                task_index = completed_tasks + field_index + 1
-                                values[field["field_name"]] = _run_vlm(
-                                    client,
-                                    image_bytes,
-                                    prompt,
-                                    payload.max_new_tokens,
-                                    job_id=job_id,
-                                    task_index=task_index,
-                                    task_total=total_tasks_planned if total_tasks_planned > 0 else None,
-                                    field_name=field["field_name"],
-                                    storage_path=storage_path,
-                                )
-                                values[field["field_name"]] = _normalize_vlm_response(
-                                    values[field["field_name"]],
-                                    field["response_type"],
-                                )
-                                completed_tasks += 1
-                                current_scene_tasks_completed = field_index + 1
-                                with jobs_lock:
-                                    if job_id in jobs_store:
-                                        jobs_store[job_id].update(
-                                            {
-                                                "progress": (
-                                                    min(
-                                                        int(
-                                                            (total_seen / total_paths_planned)
-                                                            * 100
-                                                        ),
-                                                        100,
-                                                    )
-                                                    if total_paths_planned > 0
-                                                    else 100
-                                                ),
-                                                "total_seen": total_seen,
-                                                "total_tasks_completed": completed_tasks,
-                                                "total_tasks_planned": total_tasks_planned,
-                                                "current_scene_index": current_scene_index,
-                                                "current_scene_tasks_completed": (
-                                                    current_scene_tasks_completed
-                                                ),
-                                                "current_scene_tasks_total": (
-                                                    current_scene_tasks_total
-                                                ),
-                                                "updated_at": time.time(),
-                                            }
-                                        )
-                            if not payload.dry_run:
-                                total_inserted += _upsert_vlm_annotations(
-                                    conn,
-                                    [{"storage_path": storage_path, "values": values}],
-                                    field_names,
-                                )
-                                conn.commit()
-                            total_seen += 1
-                            progress = (
-                                min(int((total_seen / total_paths_planned) * 100), 100)
-                                if total_paths_planned > 0
-                                else 100
+                        for field_index, field in enumerate(fields):
+                            if _job_cancel_requested(job_id):
+                                _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
+                                return
+                            prompt = _build_vlm_prompt(field["prompt"], field["response_type"])
+                            task_index = completed_tasks + field_index + 1
+                            values[field["field_name"]] = _run_vlm(
+                                client,
+                                image_bytes,
+                                prompt,
+                                payload.max_new_tokens,
+                                job_id=job_id,
+                                task_index=task_index,
+                                task_total=total_tasks_planned if total_tasks_planned > 0 else None,
+                                field_name=field["field_name"],
+                                object_id=object_id,
                             )
-                            with jobs_lock:
-                                if job_id in jobs_store:
-                                    jobs_store[job_id].update(
-                                        {
-                                            "progress": progress,
-                                            "total_seen": total_seen,
-                                            "total_inserted": total_inserted,
-                                            "total_tasks_completed": completed_tasks,
-                                            "total_tasks_planned": total_tasks_planned,
-                                            "current_scene_index": current_scene_index,
-                                            "current_scene_tasks_completed": 0,
-                                            "current_scene_tasks_total": current_scene_tasks_total,
-                                            "updated_at": time.time(),
-                                        }
-                                    )
-                        except Exception as exc:  # noqa: BLE001
-                            logger.exception("VLM failed for %s", storage_path)
-                            errors.append(
-                                {"storage_path": storage_path, "error": str(exc)}
+                            values[field["field_name"]] = _normalize_vlm_response(
+                                values[field["field_name"]],
+                                field["response_type"],
                             )
-                            total_seen += 1
-                            progress = (
-                                min(int((total_seen / total_paths_planned) * 100), 100)
-                                if total_paths_planned > 0
-                                else 100
+                            completed_tasks += 1
+                            current_scene_tasks_completed = field_index + 1
+                        if not payload.dry_run:
+                            total_inserted += _upsert_vlm_annotations(
+                                conn,
+                                [{"object_id": object_id, "values": values}],
+                                field_names,
                             )
-                            with jobs_lock:
-                                if job_id in jobs_store:
-                                    jobs_store[job_id].update(
-                                        {
-                                            "progress": progress,
-                                            "total_seen": total_seen,
-                                            "total_inserted": total_inserted,
-                                            "total_tasks_completed": completed_tasks,
-                                            "total_tasks_planned": total_tasks_planned,
-                                            "current_scene_index": total_seen,
-                                            "current_scene_tasks_completed": 0,
-                                            "current_scene_tasks_total": 0,
-                                            "errors": errors,
-                                            "updated_at": time.time(),
-                                        }
-                                    )
-                            if payload.stop_on_error:
-                                break
+                            conn.commit()
+                        total_seen += 1
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception("VLM failed for object_id=%s", object_id)
+                        errors.append({"object_id": object_id, "error": str(exc)})
+                        total_seen += 1
+                        if payload.stop_on_error:
+                            break
 
-                    progress = (
-                        min(int((total_seen / total_paths_planned) * 100), 100)
-                        if total_paths_planned > 0
-                        else 100
-                    )
+                    progress = min(int((total_seen / max(len(object_ids), 1)) * 100), 100)
                     with jobs_lock:
                         if job_id in jobs_store:
                             jobs_store[job_id].update(
@@ -974,7 +759,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                     "total_tasks_completed": completed_tasks,
                                     "total_tasks_planned": total_tasks_planned,
                                     "current_scene_tasks_completed": 0,
-                                    "current_scene_tasks_total": 0,
+                                    "current_scene_tasks_total": len(fields),
                                     "errors": errors,
                                     "field_names": field_names,
                                     "updated_at": time.time(),
@@ -1095,57 +880,10 @@ def search_text(payload: TextSearchRequest):
     timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
     with httpx.Client(timeout=timeout) as client:
         query_embedding, _ = _embed_text(client, payload.query)
-
-    with _db_conn() as conn:
-        if _embedding_column_is_vector(conn):
-            vector_value = _vector_literal(query_embedding)
-            query = sql.SQL(
-                """
-                SELECT storage_path, embedding <-> %s::vector AS distance
-                FROM {}.{}
-                ORDER BY embedding <-> %s::vector
-                LIMIT %s
-                """
-            ).format(
-                sql.Identifier(EMBEDDINGS_SCHEMA),
-                sql.Identifier(EMBEDDINGS_TABLE),
-            )
-            with conn.cursor() as cur:
-                cur.execute(query, (vector_value, vector_value, payload.top_k))
-                rows = cur.fetchall()
-            return {
-                "mode": "vector_distance",
-                "results": [
-                    {"storage_path": row[0], "distance": row[1]} for row in rows
-                ],
-            }
-
-        query = sql.SQL(
-            """
-            SELECT storage_path, embedding
-            FROM {}.{}
-            LIMIT %s
-            """
-        ).format(
-            sql.Identifier(EMBEDDINGS_SCHEMA),
-            sql.Identifier(EMBEDDINGS_TABLE),
-        )
-        with conn.cursor() as cur:
-            cur.execute(query, (payload.max_rows,))
-            rows = cur.fetchall()
-
-    scored = []
-    for storage_path, embedding in rows:
-        similarity = _cosine_similarity(query_embedding, embedding)
-        scored.append((storage_path, similarity))
-    scored.sort(key=lambda item: item[1], reverse=True)
+    results = storage_api.query_vectors(query_embedding, payload.top_k)
     return {
-        "mode": "python_cosine",
-        "results": [
-            {"storage_path": storage_path, "similarity": score}
-            for storage_path, score in scored[: payload.top_k]
-        ],
-        "evaluated_rows": len(rows),
+        "mode": "vector_service",
+        "results": results,
     }
 
 
@@ -1219,6 +957,22 @@ def cancel_job(payload: CancelJobRequest):
     return {"job_id": payload.job_id, "status": "cancellation_requested"}
 
 
+@app.post("/objects/sync-from-frames")
+def sync_objects_from_frames(payload: SyncObjectsRequest):
+    with _db_conn() as conn:
+        paths = _fetch_source_paths(conn, payload.limit)
+    total_registered = 0
+    for i in range(0, len(paths), payload.batch_size):
+        batch = paths[i : i + payload.batch_size]
+        items = storage_api.register_paths(batch)
+        total_registered += len(items)
+    return {
+        "status": "ok",
+        "source_paths": len(paths),
+        "registered_objects": total_registered,
+    }
+
+
 @app.post("/search/vlm")
 def search_vlm(payload: VLMSearchRequest):
     try:
@@ -1251,7 +1005,7 @@ def search_vlm(payload: VLMSearchRequest):
                 selected_fields.append(item["field_name"])
                 seen_fields.add(item["field_name"])
 
-        select_columns = [sql.SQL("storage_path")]
+        select_columns = [sql.SQL("object_id")]
         select_columns.extend(
             sql.Identifier(field_name) for field_name in selected_fields
         )
@@ -1282,15 +1036,24 @@ def search_vlm(payload: VLMSearchRequest):
 
     results = []
     for row in rows:
-        storage_path = row[0]
+        object_id = row[0]
         attributes = {
             field_name: row[index + 1]
             for index, field_name in enumerate(selected_fields)
         }
         results.append(
             {
-                "storage_path": storage_path,
+                "object_id": object_id,
                 "attributes": attributes,
             }
         )
     return {"results": results}
+
+
+@app.get("/objects/{object_id}/content")
+def get_object_content(object_id: str):
+    try:
+        image_bytes, content_type = storage_api.get_object_bytes(object_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(content=image_bytes, media_type=content_type)

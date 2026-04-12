@@ -11,6 +11,11 @@ cd docker/server/
 docker compose -f ./docker-compose.yml up
 ```
 
+This stack now includes:
+- `avsp-server` (master API)
+- `object-service` (Go object API + Pebble metadata)
+- `vector-service` (Go vector API with pgvector adapter)
+
 Old:
 ```
 cd docker/server/
