@@ -760,7 +760,12 @@ def search_text(payload: TextSearchRequest):
     timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
     with httpx.Client(timeout=timeout) as client:
         query_embedding, _ = _embed_text(client, payload.query)
-    results = storage_api.query_vectors(query_embedding, payload.top_k)
+    try:
+        results = storage_api.query_vectors(query_embedding, payload.top_k)
+    except httpx.HTTPStatusError as exc:
+        logger.exception("Vector query failed for text search")
+        detail = exc.response.text if exc.response is not None else str(exc)
+        raise HTTPException(status_code=502, detail=detail) from exc
     return {
         "mode": "vector_server",
         "results": results,
@@ -781,7 +786,12 @@ async def search_image_bytes(
     timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
     with httpx.Client(timeout=timeout) as client:
         query_embedding, _ = _embed_image(client, image_bytes)
-    results = storage_api.query_vectors(query_embedding, max(1, top_k))
+    try:
+        results = storage_api.query_vectors(query_embedding, max(1, top_k))
+    except httpx.HTTPStatusError as exc:
+        logger.exception("Vector query failed for image search")
+        detail = exc.response.text if exc.response is not None else str(exc)
+        raise HTTPException(status_code=502, detail=detail) from exc
     return {
         "mode": "vector_server",
         "results": results,

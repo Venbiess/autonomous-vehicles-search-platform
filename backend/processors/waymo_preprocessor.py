@@ -38,7 +38,7 @@ class WaymoPreprocessor(Preprocessor):
                 ):
         super().__init__()
         self.client = storage.Client(project=PROJECT_NAME)
-        self.bucket = self.client.bucket(BUCKET_NAME, user_project=PROJECT_NAME)
+        self.bucket = self.client.bucket(BUCKET_NAME)
         self.blobs = self.bucket.list_blobs(prefix=PREFIX)
         self.episodes = [
             blob.name for blob in self.blobs if blob.name.endswith(".parquet")

@@ -99,10 +99,11 @@ func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, to
 			embedding <=> $1::vector AS distance,
 			1 - (embedding <=> $1::vector) AS similarity
 		FROM %s.%s
+		WHERE embedding_dim = $3
 		ORDER BY embedding <=> $1::vector
 		LIMIT $2
 	`, pqIdent(p.schema), pqIdent(p.tableName))
-	rows, err := p.db.QueryContext(ctx, query, vectorLiteral(embedding), topK)
+	rows, err := p.db.QueryContext(ctx, query, vectorLiteral(embedding), topK, len(embedding))
 	if err != nil {
 		return nil, err
 	}
