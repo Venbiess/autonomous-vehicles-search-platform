@@ -1,11 +1,33 @@
 const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
 
+function buildImageUrl(storagePath, defaultBucket) {
+  if (!storagePath || typeof storagePath !== "string") return null;
+  if (storagePath.startsWith("http://") || storagePath.startsWith("https://")) {
+    return storagePath;
+  }
+  let normalized = storagePath.replace(/\\/g, "/");
+  if (normalized.startsWith("s3://")) {
+    normalized = normalized.slice(5);
+  }
+  normalized = normalized.replace(/^\/+/, "");
+  if (!normalized.includes("/")) return null;
+  const [bucket, ...rest] = normalized.split("/");
+  const key = rest.join("/");
+  if (!bucket || !key) return null;
+  const baseUrl = process.env.MINIO_PUBLIC_ENDPOINT || "http://localhost:9000";
+  return `${baseUrl.replace(/\/$/, "")}/${bucket || defaultBucket}/${key
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/")}`;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
+    const defaultBucket = process.env.MINIO_BUCKET || "avsp";
     const response = await fetch(`${masterEndpoint}/search/vlm`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -19,22 +41,28 @@ export default async function handler(req, res) {
     const results = (payload.results || [])
       .map((item, index) => {
         const objectId = item.object_id || "";
-        if (!objectId) return null;
-        const url = `/api/objects/${encodeURIComponent(objectId)}`;
-        if (!url) return null;
+        const storagePath = item.storage_path || "";
+        const directUrl = item.url || item.image_url || item.imageUrl || null;
+        const url =
+          (objectId && `/api/objects/${encodeURIComponent(objectId)}`) ||
+          (typeof directUrl === "string" && directUrl.length > 0 ? directUrl : null) ||
+          buildImageUrl(storagePath, defaultBucket);
+        if (!url && !storagePath) return null;
         const attributes = item.attributes || {};
         const title =
           Object.keys(attributes).length > 0
             ? Object.entries(attributes)
                 .map(([key, value]) => `${key}: ${value}`)
                 .join(" | ")
-            : objectId;
+            : objectId || storagePath;
+        const identity = objectId || storagePath || url || `item-${index}`;
         return {
-          id: `${objectId}-${index}`,
+          id: `${identity}-${index}`,
           title,
-          url,
+          url: url || "",
           attributes,
-          object_id: objectId,
+          object_id: objectId || undefined,
+          storage_path: storagePath || undefined,
         };
       })
       .filter(Boolean);

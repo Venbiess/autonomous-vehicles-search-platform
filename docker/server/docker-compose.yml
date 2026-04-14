@@ -226,7 +226,7 @@ services:
     depends_on:
       - avsp-server
     working_dir: /app/frontend
-    command: /bin/sh -c "npm ci && npm run dev -- --hostname 0.0.0.0"
+    command: /bin/sh -c "npm ci --no-audit --no-fund && npm run dev -- --hostname 0.0.0.0 --webpack"
     volumes:
       - "${PWD}/../../frontend:/app/frontend"
       - "frontend-node-modules:/app/frontend/node_modules"
@@ -236,6 +236,7 @@ services:
       MASTER_ENDPOINT: http://avsp-server:9002
       MINIO_PUBLIC_ENDPOINT: http://localhost:9000
       MINIO_BUCKET: avsp
+      NODE_OPTIONS: --max-old-space-size=1024
     networks:
       - avsp-net
 

@@ -32,7 +32,7 @@ class Preprocessor:
         "BACK_RIGHT"
     ]
 
-    def __init__(self):
+    def __init__(self, remove_local_images: bool = True):
         self.s3 = boto3.client(
             "s3",
             endpoint_url=S3_ENDPOINT_URL,
@@ -44,6 +44,7 @@ class Preprocessor:
                 s3={"addressing_style": "path"},
             ),
         )
+        self.remove_local_images = remove_local_images
 
     def ensure_bucket(self, bucket: str):
         try:
@@ -114,7 +115,8 @@ class Preprocessor:
 
                     self.upload_to_s3(local_path, bucket, name)
                     self.register_storage_path(storage_path)
-                    os.remove(local_path)
+                    if self.remove_local_images:
+                        os.remove(local_path)
 
                 if writer:
                     writer.insert_df(episode_df)

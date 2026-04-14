@@ -6,7 +6,15 @@ import axios from "axios";
 import ImageGallery from "./ImageGallery";
 
 type ResponseType = "short_text" | "text" | "yes_no" | "number" | "category";
-type MatchMode = "exact" | "contains";
+type MatchMode =
+  | "contains"
+  | "exact"
+  | "equal"
+  | "not_equal"
+  | "greater"
+  | "greater_or_equal"
+  | "less"
+  | "less_or_equal";
 
 interface FieldDraft {
   id: string;
@@ -30,6 +38,12 @@ interface ImageResult {
   id: string;
   title: string;
   url: string;
+  score?: number | null;
+}
+
+interface MatchModeOption {
+  value: MatchMode;
+  label: string;
 }
 
 const RESPONSE_TYPE_OPTIONS: Array<{
@@ -42,9 +56,57 @@ const RESPONSE_TYPE_OPTIONS: Array<{
   { value: "short_text", label: "Short text" },
   { value: "text", label: "Detailed text" },
 ];
+const IMAGES_PER_PAGE_OPTIONS = [6, 9, 12, 18, 24];
+const DEFAULT_MATCH_MODE: MatchMode = "contains";
+const BASIC_MATCH_MODE_OPTIONS: MatchModeOption[] = [
+  { value: "contains", label: "Contains" },
+  { value: "exact", label: "Exact" },
+];
+const NUMBER_MATCH_MODE_OPTIONS: MatchModeOption[] = [
+  { value: "contains", label: "Contains" },
+  { value: "exact", label: "Exact" },
+  { value: "equal", label: "Equal" },
+  { value: "not_equal", label: "Not equal" },
+  { value: "greater", label: "Greater than" },
+  { value: "greater_or_equal", label: "Greater or equal" },
+  { value: "less", label: "Less than" },
+  { value: "less_or_equal", label: "Less or equal" },
+];
+const YES_NO_VALUE_OPTIONS = [
+  { value: "yes", label: "Yes" },
+  { value: "no", label: "No" },
+];
 
-function usesContainsMatch(responseType: ResponseType): boolean {
-  return responseType === "short_text" || responseType === "text";
+function getMatchModeOptions(responseType: ResponseType): MatchModeOption[] {
+  if (responseType === "yes_no") {
+    return [{ value: "exact", label: "Exact" }];
+  }
+
+  return responseType === "number"
+    ? NUMBER_MATCH_MODE_OPTIONS
+    : BASIC_MATCH_MODE_OPTIONS;
+}
+
+function createFilterState(
+  responseType: ResponseType,
+  current?: FilterState
+): FilterState {
+  const allowedModes = new Set(
+    getMatchModeOptions(responseType).map((option) => option.value)
+  );
+  const nextValue =
+    responseType === "yes_no" &&
+    current?.value &&
+    !YES_NO_VALUE_OPTIONS.some((option) => option.value === current.value)
+      ? ""
+      : current?.value ?? "";
+
+  return {
+    value: nextValue,
+    match_mode: allowedModes.has(current?.match_mode ?? DEFAULT_MATCH_MODE)
+      ? (current?.match_mode ?? DEFAULT_MATCH_MODE)
+      : DEFAULT_MATCH_MODE,
+  };
 }
 
 function createFieldDraft(): FieldDraft {
@@ -66,6 +128,7 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
   const [filters, setFilters] = useState<Record<string, FilterState>>({});
   const [images, setImages] = useState<ImageResult[]>([]);
   const [analyzeStatusMessage, setAnalyzeStatusMessage] = useState<string | null>(null);
+  const [analyzeWarning, setAnalyzeWarning] = useState(false);
   const [showAnalyzeJobsLink, setShowAnalyzeJobsLink] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -75,6 +138,13 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
   const [isClearingAnnotations, setIsClearingAnnotations] = useState(false);
   const [backfillLimit, setBackfillLimit] = useState(200);
   const [maxNewTokens, setMaxNewTokens] = useState(64);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [imagesPerPage, setImagesPerPage] = useState(9);
+  const [sourceWarning, setSourceWarning] = useState<string | null>(null);
+
+  const totalPages = Math.max(1, Math.ceil(images.length / imagesPerPage));
+  const pageStart = (currentPage - 1) * imagesPerPage;
+  const paginatedImages = images.slice(pageStart, pageStart + imagesPerPage);
 
   useEffect(() => {
     const loadSchema = async () => {
@@ -95,11 +165,8 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
         setFilters(
           Object.fromEntries(
             fields.map((field: SavedField) => [
-                field.field_name,
-              {
-                value: "",
-                match_mode: usesContainsMatch(field.response_type) ? "contains" : "exact",
-              },
+              field.field_name,
+              createFilterState(field.response_type),
             ])
           )
         );
@@ -111,6 +178,33 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
     };
     loadSchema();
   }, []);
+
+  useEffect(() => {
+    const loadSourceStatus = async () => {
+      try {
+        const response = await axios.get("/api/storage/stats", {
+          params: { include_storage_details: 0 },
+        });
+        if (response.data?.source_table_exists === false) {
+          setSourceWarning(
+            response.data?.warning ??
+              "Исходные данные еще не скачаны. Таблица кадров отсутствует."
+          );
+        } else {
+          setSourceWarning(null);
+        }
+      } catch {
+        setSourceWarning(null);
+      }
+    };
+    loadSourceStatus();
+  }, []);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   const updateDraftField = (
     id: string,
@@ -146,6 +240,7 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
 
     if (fields.length === 0) {
       setAnalyzeStatusMessage(null);
+      setAnalyzeWarning(false);
       setShowAnalyzeJobsLink(false);
       setErrorMessage("Add at least one field with a prompt.");
       return;
@@ -153,6 +248,7 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
 
     setIsSaving(true);
     setAnalyzeStatusMessage(null);
+    setAnalyzeWarning(false);
     setShowAnalyzeJobsLink(false);
     setErrorMessage(null);
     setStatusMessage(null);
@@ -172,16 +268,12 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
         Object.fromEntries(
           nextFields.map((field: SavedField) => [
             field.field_name,
-            {
-              value: filters[field.field_name]?.value ?? "",
-              match_mode:
-                filters[field.field_name]?.match_mode ??
-                (usesContainsMatch(field.response_type) ? "contains" : "exact"),
-            },
+            createFilterState(field.response_type, filters[field.field_name]),
           ])
         )
       );
       setAnalyzeStatusMessage("VLM schema saved.");
+      setAnalyzeWarning(false);
     } catch (error: unknown) {
       const message =
         axios.isAxiosError(error) && error.response?.data?.detail
@@ -198,6 +290,7 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
   const startBackfill = async () => {
     if (savedFields.length === 0) {
       setAnalyzeStatusMessage(null);
+      setAnalyzeWarning(false);
       setShowAnalyzeJobsLink(false);
       setErrorMessage("Save VLM fields before starting analysis.");
       return;
@@ -205,10 +298,23 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
 
     setIsStartingJob(true);
     setAnalyzeStatusMessage(null);
+    setAnalyzeWarning(false);
     setShowAnalyzeJobsLink(false);
     setErrorMessage(null);
     setStatusMessage(null);
     try {
+      const statsResponse = await axios.get("/api/storage/stats", {
+        params: { include_storage_details: 0 },
+      });
+      const pendingRows = Number(statsResponse.data?.vlm?.pending_rows ?? 0);
+      if (pendingRows <= 0) {
+        setAnalyzeStatusMessage(
+          "Все сцены уже размечены для VLM. Новая backfill-джоба не требуется."
+        );
+        setAnalyzeWarning(true);
+        return;
+      }
+
       const response = await axios.post("/api/vlm/backfill", {
         field_names: savedFields.map((field) => field.field_name),
         limit: backfillLimit,
@@ -216,6 +322,7 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
         max_new_tokens: maxNewTokens,
       });
       setAnalyzeStatusMessage(`VLM backfill started. Job ID: ${response.data.job_id}. `);
+      setAnalyzeWarning(false);
       setShowAnalyzeJobsLink(true);
     } catch (error: unknown) {
       const message =
@@ -240,6 +347,7 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
 
     setIsClearingAnnotations(true);
     setAnalyzeStatusMessage(null);
+    setAnalyzeWarning(false);
     setShowAnalyzeJobsLink(false);
     setErrorMessage(null);
     setStatusMessage(null);
@@ -247,9 +355,11 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
       const response = await axios.post("/api/vlm/clear");
       const deletedRows = response.data?.deleted_rows ?? 0;
       setImages([]);
+      setCurrentPage(1);
       setAnalyzeStatusMessage(
         `VLM annotations cleared. Deleted rows: ${deletedRows}.`
       );
+      setAnalyzeWarning(false);
     } catch (error: unknown) {
       const message =
         axios.isAxiosError(error) && error.response?.data?.detail
@@ -268,7 +378,7 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
       .map((field) => ({
         field_name: field.field_name,
         value: filters[field.field_name]?.value?.trim() ?? "",
-        match_mode: filters[field.field_name]?.match_mode ?? "exact",
+        match_mode: filters[field.field_name]?.match_mode ?? DEFAULT_MATCH_MODE,
       }))
       .filter((filter) => filter.value.length > 0);
 
@@ -276,6 +386,7 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
       setAnalyzeStatusMessage(null);
       setErrorMessage("Set at least one VLM filter value.");
       setImages([]);
+      setCurrentPage(1);
       return;
     }
 
@@ -290,6 +401,7 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
         limit: 100,
       });
       setImages(response.data ?? []);
+      setCurrentPage(1);
       if ((response.data ?? []).length === 0) {
         setStatusMessage("No scenes matched the current VLM filters.");
       }
@@ -302,6 +414,7 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
             : "Failed to run VLM search";
       setErrorMessage(message);
       setImages([]);
+      setCurrentPage(1);
     } finally {
       setIsSearching(false);
     }
@@ -310,6 +423,11 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
   return (
     <section className="px-6 pt-10 pb-16">
       <div className="mx-auto flex max-w-6xl flex-col gap-8">
+        {sourceWarning && (
+          <div className="rounded-3xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 shadow-sm">
+            {sourceWarning}
+          </div>
+        )}
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5">
             <h2 className="text-2xl font-semibold text-slate-900">VLM Schema</h2>
@@ -445,7 +563,13 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
           </div>
 
           {analyzeStatusMessage && (
-            <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+            <div
+              className={`mt-5 rounded-xl px-4 py-3 text-sm font-semibold ${
+                analyzeWarning
+                  ? "border border-amber-200 bg-amber-50 text-amber-800"
+                  : "border border-emerald-200 bg-emerald-50 text-emerald-800"
+              }`}
+            >
               <span>{analyzeStatusMessage}</span>
               {showAnalyzeJobsLink && (
                 <>
@@ -491,40 +615,76 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
                       {field.response_type}
                     </div>
                     <div className="flex gap-3">
-                      <input
-                        value={filters[field.field_name]?.value ?? ""}
-                        onChange={(event) =>
-                          setFilters((current) => ({
-                            ...current,
-                            [field.field_name]: {
-                              ...(current[field.field_name] ?? {
-                                match_mode:
-                                  usesContainsMatch(field.response_type)
-                                    ? "contains"
-                                    : "exact",
-                              }),
-                              value: event.target.value,
-                            },
-                          }))
-                        }
-                        placeholder="Filter value"
-                        className="flex-1 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
-                      />
+                      {field.response_type === "yes_no" ? (
+                        <select
+                          value={filters[field.field_name]?.value ?? ""}
+                          onChange={(event) =>
+                            setFilters((current) => ({
+                              ...current,
+                              [field.field_name]: {
+                                ...createFilterState(
+                                  field.response_type,
+                                  current[field.field_name]
+                                ),
+                                value: event.target.value,
+                              },
+                            }))
+                          }
+                          className="flex-1 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                        >
+                          <option value="">No value</option>
+                          {YES_NO_VALUE_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          value={filters[field.field_name]?.value ?? ""}
+                          onChange={(event) =>
+                            setFilters((current) => ({
+                              ...current,
+                              [field.field_name]: {
+                                ...createFilterState(
+                                  field.response_type,
+                                  current[field.field_name]
+                                ),
+                                value: event.target.value,
+                              },
+                            }))
+                          }
+                          placeholder={
+                            field.response_type === "number"
+                              ? "Number value"
+                              : "Filter value"
+                          }
+                          className="flex-1 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                        />
+                      )}
                       <select
-                        value={filters[field.field_name]?.match_mode ?? "exact"}
+                        value={
+                          filters[field.field_name]?.match_mode ?? DEFAULT_MATCH_MODE
+                        }
                         onChange={(event) =>
                           setFilters((current) => ({
                             ...current,
-                            [field.field_name]: {
-                              value: current[field.field_name]?.value ?? "",
-                              match_mode: event.target.value as MatchMode,
-                            },
+                            [field.field_name]: createFilterState(
+                              field.response_type,
+                              {
+                                value: current[field.field_name]?.value ?? "",
+                                match_mode: event.target.value as MatchMode,
+                              }
+                            ),
                           }))
                         }
                         className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                       >
-                        <option value="exact">Exact</option>
-                        <option value="contains">Contains</option>
+                        {getMatchModeOptions(field.response_type).map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
                       </select>
                     </div>
                   </div>
@@ -560,7 +720,55 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
 
         {images.length > 0 && (
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-            <ImageGallery images={images} />
+            <div className="flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-sm text-gray-600">
+                Показаны {pageStart + 1}-{Math.min(pageStart + imagesPerPage, images.length)} из {images.length}
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <label className="flex items-center gap-2 text-sm text-gray-600">
+                  Картинок на странице
+                  <select
+                    value={imagesPerPage}
+                    onChange={(event) => {
+                      setImagesPerPage(Number(event.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+                  >
+                    {IMAGES_PER_PAGE_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                    disabled={currentPage === 1}
+                    className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    ← Назад
+                  </button>
+                  <div className="min-w-24 text-center text-sm font-medium text-gray-700">
+                    {currentPage} / {totalPages}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCurrentPage((page) => Math.min(totalPages, page + 1))
+                    }
+                    disabled={currentPage === totalPages}
+                    className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Вперёд →
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <ImageGallery images={paginatedImages} />
           </div>
         )}
       </div>

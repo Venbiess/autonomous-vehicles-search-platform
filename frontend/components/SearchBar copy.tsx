@@ -8,24 +8,16 @@ interface SearchBarProps {
 
 export default function SearchBar({ onSearch }: SearchBarProps) {
   const [query, setQuery] = useState("");
-  const [typing, setTyping] = useState(false);
-  const [active, setActive] = useState(false);
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const typing = query.length > 0 && query !== debouncedQuery;
+  const active = debouncedQuery.trim().length > 0 && !typing;
 
   useEffect(() => {
-    if (query.length > 0) {
-      setTyping(true);
-      setActive(false);
+    const timeout = setTimeout(() => {
+      setDebouncedQuery(query);
+    }, 500);
 
-      const timeout = setTimeout(() => {
-        setTyping(false);
-        setActive(true);
-      }, 500);
-
-      return () => clearTimeout(timeout);
-    } else {
-      setTyping(false);
-      setActive(false);
-    }
+    return () => clearTimeout(timeout);
   }, [query]);
 
   const handleSubmit = (e: React.FormEvent) => {
