@@ -144,6 +144,20 @@ export default function SystemMonitor() {
     return new Date(timestamp * 1000).toLocaleString("ru-RU");
   };
 
+  const formatDataSize = (bytes: number): string => {
+    const safe = Math.max(0, Number(bytes) || 0);
+    if (safe >= 1024 ** 3) {
+      return `${(safe / (1024 ** 3)).toFixed(2)} GB`;
+    }
+    if (safe >= 1024 ** 2) {
+      return `${(safe / (1024 ** 2)).toFixed(2)} MB`;
+    }
+    if (safe >= 1024) {
+      return `${(safe / 1024).toFixed(2)} KB`;
+    }
+    return `${safe} B`;
+  };
+
   const formatDuration = (seconds: number): string => {
     const safe = Math.max(0, Math.floor(seconds));
     const hours = Math.floor(safe / 3600);
@@ -381,10 +395,12 @@ export default function SystemMonitor() {
                     job.status === "running" &&
                     !job.cancel_requested;
                   const isVlmJob = job.job_type === "backfill_vlm";
+                  const isWaymoInstallJob = job.job_type === "install_waymo";
                   const plannedTotal = job.total_planned ?? job.total_limit;
                   const progressLabel = `${job.total_seen} / ${plannedTotal}`;
                   const processedLabel = `${job.total_seen} / ${plannedTotal}`;
                   const scenesSavedLabel = `Сцен сохранено: ${job.total_inserted}`;
+                  const downloadedFilesLabel = `Скачано файлов: ${job.total_seen}`;
                   const currentSceneTasksCompleted = job.current_scene_tasks_completed ?? 0;
                   const currentSceneTasksTotal = job.current_scene_tasks_total ?? 0;
                   const currentSceneProgress =
@@ -397,6 +413,19 @@ export default function SystemMonitor() {
                   const currentSceneLabel = `VLM calls: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
                   const currentSceneIndex = job.current_scene_index ?? 0;
                   const timing = getJobTiming(job);
+                  const installFileLabel = `Download: ${formatDataSize(
+                    currentSceneTasksCompleted
+                  )} / ${formatDataSize(currentSceneTasksTotal)}`;
+                  const secondaryProgressLabel = isWaymoInstallJob
+                    ? installFileLabel
+                    : currentSceneLabel;
+                  const secondaryProgressGradient = isWaymoInstallJob
+                    ? "linear-gradient(90deg, hsl(200 78% 48%), hsl(160 78% 45%))"
+                    : getSceneTaskGradient(currentSceneIndex);
+                  const showSecondaryProgress =
+                    job.status === "running" &&
+                    currentSceneTasksTotal > 0 &&
+                    (isVlmJob || isWaymoInstallJob);
                   
                   return (
                     <tr key={job.job_id} className="hover:bg-gray-50">
@@ -408,7 +437,13 @@ export default function SystemMonitor() {
                           ? "Backfill Embeddings"
                           : job.job_type === "backfill_vlm"
                             ? "Backfill VLM"
-                            : job.job_type}
+                            : job.job_type === "install_waymo"
+                              ? "Install Waymo"
+                              : job.job_type === "install_argoverse"
+                                ? "Install Argoverse"
+                                : job.job_type === "install_nuscenes"
+                                  ? "Install NuScenes"
+                                  : job.job_type}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="w-full">
@@ -425,16 +460,26 @@ export default function SystemMonitor() {
                             ></div>
                           </div>
                           <div className="text-xs text-gray-500 mt-1">
-                            {isVlmJob ? scenesSavedLabel : `Вставлено: ${job.total_inserted}`}
+                            {isVlmJob
+                              ? scenesSavedLabel
+                              : isWaymoInstallJob
+                                ? downloadedFilesLabel
+                                : `Вставлено: ${job.total_inserted}`}
                           </div>
-                          {isVlmJob &&
-                            job.status === "running" &&
-                            currentSceneTasksTotal > 0 && (
+                          {showSecondaryProgress && (
                             <div className="mt-3">
                               <div className="flex justify-between text-xs mb-1">
-                                <span className="text-gray-600">{currentSceneLabel}</span>
+                                <span className="text-gray-600">{secondaryProgressLabel}</span>
                                 <span className="font-medium">
-                                  Scene {Math.min(currentSceneIndex, plannedTotal || currentSceneIndex)}
+                                  {isWaymoInstallJob
+                                    ? `File ${Math.min(
+                                        currentSceneIndex,
+                                        plannedTotal || currentSceneIndex
+                                      )}`
+                                    : `Scene ${Math.min(
+                                        currentSceneIndex,
+                                        plannedTotal || currentSceneIndex
+                                      )}`}
                                 </span>
                               </div>
                               <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
@@ -442,7 +487,7 @@ export default function SystemMonitor() {
                                   className="h-2 rounded-full transition-all duration-300"
                                   style={{
                                     width: `${currentSceneProgress}%`,
-                                    backgroundImage: getSceneTaskGradient(currentSceneIndex),
+                                    backgroundImage: secondaryProgressGradient,
                                   }}
                                 ></div>
                               </div>

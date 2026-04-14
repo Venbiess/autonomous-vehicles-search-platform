@@ -1,10 +1,8 @@
 from .preprocessor import Preprocessor
 from google.cloud import storage
-from typing import List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from pathlib import Path
-import subprocess
 import pandas as pd
-import shutil
 import os
 
 from configs.common import WAYMO_DIR, DATA_DIR
@@ -12,9 +10,6 @@ from configs.common import WAYMO_DIR, DATA_DIR
 BUCKET_NAME = "waymo_open_dataset_v_2_0_1"
 PREFIX = "training/camera_image"
 PROJECT_NAME = "avsp-479717"
-REMOTE_PATH = f"gs://{BUCKET_NAME}/{PREFIX}/"
-
-GOOGLE_CLOUD_GSUTIL_PATH = shutil.which("gsutil")
 DATA_FOLDER = Path(DATA_DIR) / WAYMO_DIR
 
 
@@ -62,29 +57,89 @@ class WaymoPreprocessor(Preprocessor):
 
         # for iterable
         self.iteration = 0
+        self.download_progress_callback: Optional[
+            Callable[[Dict[str, Any]], None]
+        ] = None
 
-    def download_blob(self, name: str, dst_path: str):
+    def _report_progress(
+        self,
+        file_index: int,
+        total_files: int,
+        file_name: str,
+        downloaded_bytes: int,
+        total_bytes: int,
+        done: bool = False,
+    ) -> None:
+        if not self.download_progress_callback:
+            return
+        self.download_progress_callback(
+            {
+                "file_index": file_index,
+                "total_files": total_files,
+                "file_name": file_name,
+                "downloaded_bytes": int(downloaded_bytes),
+                "total_bytes": int(total_bytes),
+                "done": bool(done),
+            }
+        )
+
+    def download_blob(self, name: str, dst_path: str, file_index: int):
+        total_files = max(len(self.episodes), 1)
         if not os.path.exists(dst_path) or not self.exist_skip:
-            cmd = [
-                GOOGLE_CLOUD_GSUTIL_PATH,
-                "cp",
-                os.path.join(REMOTE_PATH, name),
-                dst_path
-            ]
+            blob_name = f"{PREFIX}/{name}"
+            blob = self.bucket.blob(blob_name)
+            blob.reload()
+            total_bytes = int(blob.size or 0)
+            self._report_progress(
+                file_index=file_index,
+                total_files=total_files,
+                file_name=name,
+                downloaded_bytes=0,
+                total_bytes=total_bytes,
+                done=False,
+            )
 
-            subprocess.run(cmd)
-
-        # if not os.path.exists(dst_path):
-        #     blob = self.bucket.blob(blob_name)
-        #     try:
-        #         blob.download_to_filename(dst_path)
-        #     except Exception as e:
-        #         print("DOWNLOAD FAILED")
-        #         print("type:", type(e))
-        #         print("error:", e)
-        #         if os.path.exists(dst_path) and os.path.getsize(dst_path) == 0:
-        #             os.remove(dst_path)
-        #         raise
+            downloaded_bytes = 0
+            chunk_size = 8 * 1024 * 1024
+            with open(dst_path, "wb") as f:
+                if total_bytes <= 0:
+                    blob.download_to_file(f)
+                    downloaded_bytes = int(os.path.getsize(dst_path))
+                    total_bytes = max(total_bytes, downloaded_bytes)
+                    self._report_progress(
+                        file_index=file_index,
+                        total_files=total_files,
+                        file_name=name,
+                        downloaded_bytes=downloaded_bytes,
+                        total_bytes=total_bytes,
+                        done=True,
+                    )
+                else:
+                    start = 0
+                    while start < total_bytes:
+                        end = min(start + chunk_size - 1, total_bytes - 1)
+                        payload = blob.download_as_bytes(start=start, end=end)
+                        f.write(payload)
+                        downloaded_bytes = end + 1
+                        self._report_progress(
+                            file_index=file_index,
+                            total_files=total_files,
+                            file_name=name,
+                            downloaded_bytes=downloaded_bytes,
+                            total_bytes=total_bytes,
+                            done=downloaded_bytes >= total_bytes,
+                        )
+                        start = end + 1
+        else:
+            file_size = int(os.path.getsize(dst_path))
+            self._report_progress(
+                file_index=file_index,
+                total_files=total_files,
+                file_name=name,
+                downloaded_bytes=file_size,
+                total_bytes=file_size,
+                done=True,
+            )
 
     def process_parquet(self, path: str) -> pd.DataFrame:
         df = pd.read_parquet(path)
@@ -152,11 +207,11 @@ class WaymoPreprocessor(Preprocessor):
         df["image_path"] = image_paths
         return df
 
-    def process_sample(self, blob_name: str) -> pd.DataFrame:
+    def process_sample(self, blob_name: str, file_index: int) -> pd.DataFrame:
         name = os.path.basename(blob_name)
         dst_path = DATA_FOLDER / name
 
-        self.download_blob(name, dst_path)
+        self.download_blob(name, dst_path, file_index=file_index)
         result_df = self.process_parquet(dst_path)
         if self.remove_local_images:
             os.remove(dst_path)
@@ -170,9 +225,10 @@ class WaymoPreprocessor(Preprocessor):
         if self.iteration >= len(self.episodes):
             raise StopIteration
 
+        file_index = self.iteration + 1
         blob_name = self.episodes[self.iteration]
         self.iteration += 1
-        return self.process_sample(blob_name)
+        return self.process_sample(blob_name, file_index=file_index)
 
     def __len__(self):
         return len(self.episodes)

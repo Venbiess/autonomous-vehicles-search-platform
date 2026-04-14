@@ -42,6 +42,49 @@ function createFieldDraft(): FieldDraft {
   };
 }
 
+const DATASET_OPTIONS = [
+  { key: "waymo", label: "Waymo" },
+  { key: "argoverse", label: "Argoverse" },
+  { key: "nuscenes", label: "NuScenes" },
+] as const;
+
+const DEFAULT_DATASET_CONFIG_TEXT: Record<string, string> = {
+  waymo: JSON.stringify(
+    {
+      bucket: "waymo",
+      cameras: ["FRONT"],
+      resample_seconds: 0.1,
+      exist_skip: false,
+    },
+    null,
+    2
+  ),
+  argoverse: JSON.stringify(
+    {
+      bucket: "argoverse",
+      cameras: ["FRONT"],
+      resample_seconds: 0.5,
+      download_parts: {
+        train: [0, 1],
+        val: [0],
+        test: [0],
+      },
+      remove_after_load: false,
+    },
+    null,
+    2
+  ),
+  nuscenes: JSON.stringify(
+    {
+      bucket: "nuscenes",
+      cameras: ["FRONT"],
+      resample_seconds: 0.5,
+    },
+    null,
+    2
+  ),
+};
+
 export default function AnnotationPanel({
   onOpenJobsMonitor,
 }: AnnotationPanelProps) {
@@ -68,6 +111,24 @@ export default function AnnotationPanel({
   const [vlmErrorMessage, setVlmErrorMessage] = useState<string | null>(null);
   const [showVlmJobsLink, setShowVlmJobsLink] = useState(false);
   const [sourceWarning, setSourceWarning] = useState<string | null>(null);
+  const [installDatasets, setInstallDatasets] = useState<
+    Record<"waymo" | "argoverse" | "nuscenes", boolean>
+  >({
+    waymo: true,
+    argoverse: false,
+    nuscenes: false,
+  });
+  const [datasetConfigText, setDatasetConfigText] = useState<
+    Record<string, string>
+  >(DEFAULT_DATASET_CONFIG_TEXT);
+  const [isStartingInstall, setIsStartingInstall] = useState(false);
+  const [installStatusMessage, setInstallStatusMessage] = useState<string | null>(
+    null
+  );
+  const [installErrorMessage, setInstallErrorMessage] = useState<string | null>(
+    null
+  );
+  const [showInstallJobsLink, setShowInstallJobsLink] = useState(false);
 
   useEffect(() => {
     const loadSchema = async () => {
@@ -310,9 +371,183 @@ export default function AnnotationPanel({
     }
   };
 
+  const startDatasetInstall = async () => {
+    const selectedDatasets = DATASET_OPTIONS
+      .map((option) => option.key)
+      .filter((datasetKey) => installDatasets[datasetKey]);
+
+    if (selectedDatasets.length === 0) {
+      setInstallStatusMessage(null);
+      setShowInstallJobsLink(false);
+      setInstallErrorMessage("Select at least one dataset for installation.");
+      return;
+    }
+
+    const configs: Record<string, Record<string, unknown>> = {};
+    for (const dataset of selectedDatasets) {
+      try {
+        const parsed = JSON.parse(datasetConfigText[dataset] || "{}");
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          configs[dataset] = parsed as Record<string, unknown>;
+        } else {
+          throw new Error("Config must be a JSON object.");
+        }
+      } catch (error) {
+        setInstallStatusMessage(null);
+        setShowInstallJobsLink(false);
+        setInstallErrorMessage(
+          `Invalid JSON config for ${dataset}: ${
+            error instanceof Error ? error.message : "Parse error"
+          }`
+        );
+        return;
+      }
+    }
+
+    setIsStartingInstall(true);
+    setInstallStatusMessage(null);
+    setInstallErrorMessage(null);
+    setShowInstallJobsLink(false);
+
+    try {
+      const response = await axios.post("/api/datasets/install", {
+        datasets: selectedDatasets,
+        configs,
+      });
+      const jobs = response.data?.jobs ?? [];
+      const jobsInfo = jobs
+        .map((job: { dataset?: string; job_id?: string }) =>
+          `${job.dataset ?? "dataset"} (${String(job.job_id ?? "").slice(0, 8)}...)`
+        )
+        .join(", ");
+      setInstallStatusMessage(
+        jobs.length > 0
+          ? `Installation jobs started: ${jobsInfo}.`
+          : "Installation request sent."
+      );
+      setShowInstallJobsLink(true);
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && error.response?.data?.detail
+          ? error.response.data.detail
+          : axios.isAxiosError(error) && error.response?.data?.error
+            ? error.response.data.error
+            : error instanceof Error
+              ? error.message
+              : "Failed to start dataset installation";
+      setInstallErrorMessage(message);
+    } finally {
+      setIsStartingInstall(false);
+    }
+  };
+
   return (
     <section className="px-6 pt-10 pb-16">
       <div className="mx-auto flex max-w-5xl flex-col gap-8">
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="mb-5">
+            <h2 className="text-2xl font-semibold text-slate-900">
+              Dataset Installation
+            </h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Select datasets, edit config JSON, and start installation jobs.
+              Each dataset runs as a separate job in Job Monitor.
+            </p>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-3">
+            {DATASET_OPTIONS.map((option) => (
+              <label
+                key={option.key}
+                className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-700"
+              >
+                <input
+                  type="checkbox"
+                  checked={installDatasets[option.key]}
+                  onChange={(event) =>
+                    setInstallDatasets((current) => ({
+                      ...current,
+                      [option.key]: event.target.checked,
+                    }))
+                  }
+                  className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                />
+                {option.label}
+              </label>
+            ))}
+          </div>
+
+          <div className="mt-5 grid gap-4 lg:grid-cols-3">
+            {DATASET_OPTIONS.map((option) => (
+              <div
+                key={`${option.key}-config`}
+                className={`rounded-2xl border p-4 ${
+                  installDatasets[option.key]
+                    ? "border-sky-200 bg-sky-50/30"
+                    : "border-slate-200 bg-slate-50"
+                }`}
+              >
+                <div className="mb-2 text-sm font-semibold text-slate-800">
+                  {option.label} config (JSON)
+                </div>
+                <textarea
+                  value={datasetConfigText[option.key] ?? "{}"}
+                  onChange={(event) =>
+                    setDatasetConfigText((current) => ({
+                      ...current,
+                      [option.key]: event.target.value,
+                    }))
+                  }
+                  rows={10}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 outline-none focus:border-sky-500"
+                />
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={startDatasetInstall}
+              disabled={isStartingInstall}
+              className="rounded-full bg-blue-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isStartingInstall ? "Starting..." : "Start dataset installation"}
+            </button>
+            <button
+              type="button"
+              onClick={onOpenJobsMonitor}
+              className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+            >
+              Open Job Monitor
+            </button>
+          </div>
+
+          {installStatusMessage && (
+            <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+              <span>{installStatusMessage}</span>
+              {showInstallJobsLink && (
+                <>
+                  {" "}
+                  <button
+                    type="button"
+                    onClick={onOpenJobsMonitor}
+                    className="font-bold text-teal-600 underline decoration-teal-500 underline-offset-2 transition hover:text-teal-700"
+                  >
+                    Go to Job Monitor
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {installErrorMessage && (
+            <div className="mt-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+              {installErrorMessage}
+            </div>
+          )}
+        </div>
+
         {sourceWarning && (
           <div className="rounded-3xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 shadow-sm">
             {sourceWarning}
