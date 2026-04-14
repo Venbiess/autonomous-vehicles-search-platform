@@ -15,14 +15,14 @@ class AnalyticsAPI:
         if field_names:
             params["field_names"] = ",".join(field_names)
         with httpx.Client(timeout=self.timeout) as client:
-            response = client.get(f"{self.endpoint}/vlm/fields", params=params)
+            response = client.get(f"{self.endpoint}/fields", params=params)
             response.raise_for_status()
             payload = response.json()
         return payload.get("fields", [])
 
     def upsert_fields(self, fields: List[Dict[str, str]]) -> List[Dict[str, str]]:
         with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(f"{self.endpoint}/vlm/fields", json={"fields": fields})
+            response = client.post(f"{self.endpoint}/fields", json={"fields": fields})
             response.raise_for_status()
             payload = response.json()
         return payload.get("fields", [])
@@ -32,7 +32,7 @@ class AnalyticsAPI:
             return 0
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(
-                f"{self.endpoint}/vlm/annotations/upsert",
+                f"{self.endpoint}/annotations/upsert",
                 json={"rows": rows},
             )
             response.raise_for_status()
@@ -44,7 +44,7 @@ class AnalyticsAPI:
             return 0
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(
-                f"{self.endpoint}/vlm/annotations/delete",
+                f"{self.endpoint}/annotations/delete",
                 json={"object_ids": object_ids},
             )
             response.raise_for_status()
@@ -53,7 +53,7 @@ class AnalyticsAPI:
 
     def clear_annotations(self) -> Dict[str, Any]:
         with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(f"{self.endpoint}/vlm/annotations/clear")
+            response = client.post(f"{self.endpoint}/annotations/clear")
             response.raise_for_status()
             return response.json()
 
@@ -62,7 +62,7 @@ class AnalyticsAPI:
             return []
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(
-                f"{self.endpoint}/vlm/annotations/completed-object-ids",
+                f"{self.endpoint}/annotations/completed-object-ids",
                 json={"object_ids": object_ids, "field_names": field_names},
             )
             response.raise_for_status()
@@ -72,7 +72,7 @@ class AnalyticsAPI:
     def search(self, filters: List[Dict[str, str]], limit: int) -> List[Dict[str, Any]]:
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(
-                f"{self.endpoint}/vlm/search",
+                f"{self.endpoint}/search",
                 json={"filters": filters, "limit": limit},
             )
             response.raise_for_status()

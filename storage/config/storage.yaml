@@ -1,0 +1,99 @@
+object_server:
+  server_name: object-server
+  addr: ":9010"
+  write_token: change-me-storage-write-token
+  kv_path: /data/object-pebble
+  default_bucket: avsp
+  object_cache:
+    enabled: true
+    max_items: 5000
+    max_total_bytes: 536870912
+    max_object_size_bytes: 8388608
+    ttl_seconds: 120
+  object_store:
+    provider: s3
+    endpoint_url: http://minio:9000
+    access_key: minioadmin
+    secret_key: minioadmin
+    session_token: ""
+    region: us-east-1
+    use_ssl: false
+    force_path_style: true
+  object_stores: []
+  # object_stores:
+  #   - provider: s3
+  #     endpoint_url: http://minio-a:9000
+  #     access_key: minioadmin
+  #     secret_key: minioadmin
+  #     session_token: ""
+  #     region: us-east-1
+  #     use_ssl: false
+  #     force_path_style: true
+  #   - provider: s3
+  #     endpoint_url: http://minio-b:9000
+  #     access_key: minioadmin
+  #     secret_key: minioadmin
+  #     session_token: ""
+  #     region: us-east-1
+  #     use_ssl: false
+  #     force_path_style: true
+
+vector_server:
+  server_name: vector-server
+  addr: ":9011"
+  write_token: change-me-storage-write-token
+  vector_index:
+    provider: pgvector
+    conn_str: host=postgres port=5432 dbname=avsp user=postgres password=postgres sslmode=disable
+    schema: public
+    table: image_embeddings
+    endpoint_url: ""
+    api_key: ""
+    collection: ""
+    distance: cosine
+    vector_size: 0
+    timeout_sec: 10
+  # vector_index:
+  #   provider: qdrant
+  #   endpoint_url: http://qdrant:6333
+  #   api_key: ""
+  #   collection: image_embeddings
+  #   distance: cosine
+  #   vector_size: 768
+  #   timeout_sec: 10
+  vector_indexes: []
+  # vector_indexes:
+  #   - provider: pgvector
+  #     conn_str: host=pg-a port=5432 dbname=avsp user=postgres password=postgres sslmode=disable
+  #     schema: public
+  #     table: image_embeddings
+  #   - provider: pgvector
+  #     conn_str: host=pg-b port=5432 dbname=avsp user=postgres password=postgres sslmode=disable
+  #     schema: public
+  #     table: image_embeddings
+
+coordinator_server:
+  server_name: coordinator-server
+  addr: ":9013"
+  node_id: coordinator-node-1
+  data_plane:
+    object_endpoint: http://object-server:9010
+    vector_endpoint: http://vector-server:9011
+    write_token: change-me-storage-write-token
+    timeout_seconds: 30
+  backend:
+    provider: etcd
+    endpoints:
+      - http://etcd:2379
+    prefix: /avsp/coordinator
+    lease_ttl_seconds: 10
+    operation_ttl_seconds: 86400
+    reconcile_interval_seconds: 15
+    reconcile_batch_limit: 200
+  # backend:
+  #   provider: memory
+  #   endpoints:
+  #     - http://etcd:2379
+  #   prefix: /avsp/coordinator
+  #   lease_ttl_seconds: 10
+  #   operation_ttl_seconds: 86400

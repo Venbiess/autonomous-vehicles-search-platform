@@ -1,0 +1,5 @@
+./adapters.go
+./pgvector.go
+./resolvers.go
+./routed_adapters.go
+./s3.go

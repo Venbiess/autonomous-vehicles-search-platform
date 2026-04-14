@@ -1,0 +1,123 @@
+package infra
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net/url"
+	"strings"
+
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
+)
+
+type ObjectStoreConfig struct {
+	Provider       string `yaml:"provider"`
+	EndpointURL    string `yaml:"endpoint_url"`
+	AccessKey      string `yaml:"access_key"`
+	SecretKey      string `yaml:"secret_key"`
+	SessionToken   string `yaml:"session_token"`
+	Region         string `yaml:"region"`
+	UseSSL         bool   `yaml:"use_ssl"`
+	ForcePathStyle bool   `yaml:"force_path_style"`
+}
+
+type S3Adapter struct {
+	client *minio.Client
+}
+
+func NewS3Adapter(cfg ObjectStoreConfig) (*S3Adapter, error) {
+	if strings.TrimSpace(cfg.EndpointURL) == "" {
+		return nil, errors.New("s3 endpoint is required")
+	}
+
+	secure := cfg.UseSSL
+	parsed, err := url.Parse(cfg.EndpointURL)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(parsed.Path) != "" && strings.TrimSpace(parsed.Path) != "/" {
+		return nil, errors.New("s3 endpoint must not include URL path")
+	}
+	if parsed.Scheme == "https" {
+		secure = true
+	}
+
+	endpoint := parsed.Host
+	if endpoint == "" {
+		endpoint = strings.TrimPrefix(strings.TrimPrefix(cfg.EndpointURL, "http://"), "https://")
+	}
+
+	creds := credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, cfg.SessionToken)
+	bucketLookup := minio.BucketLookupAuto
+	if cfg.ForcePathStyle {
+		bucketLookup = minio.BucketLookupPath
+	}
+	cli, err := minio.New(endpoint, &minio.Options{
+		Creds:        creds,
+		Secure:       secure,
+		Region:       cfg.Region,
+		BucketLookup: bucketLookup,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &S3Adapter{client: cli}, nil
+}
+
+func (m *S3Adapter) GetBytes(ctx context.Context, bucket, key string) ([]byte, string, error) {
+	obj, err := m.client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, "", err
+	}
+	defer obj.Close()
+	stat, err := obj.Stat()
+	if err != nil {
+		return nil, "", err
+	}
+	body, err := io.ReadAll(obj)
+	if err != nil {
+		return nil, "", err
+	}
+	contentType := stat.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return body, contentType, nil
+}
+
+func (m *S3Adapter) HeadObject(ctx context.Context, bucket, key string) (ObjectInfo, error) {
+	stat, err := m.client.StatObject(ctx, bucket, key, minio.StatObjectOptions{})
+	if err != nil {
+		return ObjectInfo{}, err
+	}
+	contentType := stat.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return ObjectInfo{
+		SizeBytes:   stat.Size,
+		ContentType: contentType,
+	}, nil
+}
+
+func (m *S3Adapter) PutBytes(ctx context.Context, bucket, key string, data []byte, contentType string) (PutResult, error) {
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	res, err := m.client.PutObject(ctx, bucket, key, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{ContentType: contentType})
+	if err != nil {
+		return PutResult{}, err
+	}
+	return PutResult{SizeBytes: res.Size, ContentType: contentType}, nil
+}
+
+func (m *S3Adapter) Delete(ctx context.Context, bucket, key string) error {
+	return m.client.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{})
+}
+
+func (m *S3Adapter) Health(ctx context.Context) error {
+	_, err := m.client.ListBuckets(ctx)
+	return err
+}

@@ -1,0 +1,9 @@
+analytics_server:
+  server_name: analytics-server
+  addr: ":9012"
+  analytics_db:
+    provider: clickhouse
+    dsn: clickhouse://default:@clickhouse:8123/default
+    field_catalog_table: vlm_field_specs
+    annotation_store_table: vlm_annotations
+  analytics_dbs: []
