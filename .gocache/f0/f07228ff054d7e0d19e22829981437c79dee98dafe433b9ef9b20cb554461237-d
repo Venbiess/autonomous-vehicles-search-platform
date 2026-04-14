@@ -1,5 +1,0 @@
-./common.go
-./object_cache.go
-./object_server.go
-./types.go
-./vector_server.go

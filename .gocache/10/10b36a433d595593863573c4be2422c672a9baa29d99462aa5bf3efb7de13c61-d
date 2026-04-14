@@ -1,6 +1,0 @@
-./resolver.go
-./service.go
-./store.go
-./store_etcd.go
-./store_memory.go
-./types.go

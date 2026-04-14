@@ -1,6 +1,0 @@
-./funcs.go
-./id.go
-./logging.go
-./types.go
-./types_linux.go
-./util_linux.go

@@ -1,6 +1,0 @@
-./adapters.go
-./pgvector.go
-./qdrant.go
-./resolvers.go
-./routed_adapters.go
-./s3.go
