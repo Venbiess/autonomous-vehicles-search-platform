@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"log"
 	"net/http"
 	"time"
@@ -10,28 +11,34 @@ import (
 	"avsp/storage/observability"
 	core "avsp/storage/server"
 	apiv1 "avsp/storage/transport/http"
-	"github.com/cockroachdb/pebble"
+	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
-	cfg, err := config.LoadObjectServerConfig()
+	cfg, err := config.LoadStorageServerConfig()
 	if err != nil {
-		log.Fatalf("failed to load object server config: %v", err)
+		log.Fatalf("failed to load storage server config: %v", err)
 	}
 
-	adapter, err := infra.ResolveObjectAdapterSet(cfg.ObjectStore, cfg.ObjectStores)
+	objectAdapter, err := infra.ResolveObjectAdapter(cfg.ObjectStore)
 	if err != nil {
 		log.Fatalf("failed to initialize object adapter: %v", err)
 	}
-	kv, err := pebble.Open(cfg.KVPath, &pebble.Options{})
+	vectorAdapter, err := infra.ResolveVectorAdapter(cfg.VectorIndex)
 	if err != nil {
-		log.Fatalf("failed to open pebble db: %v", err)
+		log.Fatalf("failed to initialize vector adapter: %v", err)
 	}
-	defer kv.Close()
+	metaDB, err := sql.Open("postgres", cfg.MetadataDB.DSN)
+	if err != nil {
+		log.Fatalf("failed to open metadata postgres: %v", err)
+	}
+	defer metaDB.Close()
 
-	svc := core.NewObjectServer(adapter, kv, core.ObjectConfig{
-		DefaultBucket: cfg.DefaultBucket,
+	svc, err := core.NewStorageServer(objectAdapter, vectorAdapter, metaDB, core.StorageConfig{
+		DefaultBucket:  cfg.DefaultBucket,
+		MetadataSchema: cfg.MetadataDB.Schema,
+		MetadataTable:  cfg.MetadataDB.Table,
 		Cache: core.ObjectCacheConfig{
 			Enabled:            cfg.ObjectCache.Enabled,
 			MaxItems:           cfg.ObjectCache.MaxItems,
@@ -40,7 +47,11 @@ func main() {
 			TTL:                time.Duration(cfg.ObjectCache.TTLSeconds) * time.Second,
 		},
 	})
-	handler := apiv1.NewObjectHandler(svc, cfg.WriteToken)
+	if err != nil {
+		log.Fatalf("failed to initialize storage service: %v", err)
+	}
+
+	handler := apiv1.NewStorageHandler(svc, cfg.WriteToken)
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
@@ -54,18 +65,16 @@ func main() {
 	handler.Register(mux)
 
 	observability.LogInfo("server_start", map[string]any{
-		"service":                     cfg.ServerName,
-		"addr":                        cfg.Addr,
-		"default_bucket":              cfg.DefaultBucket,
-		"kv_path":                     cfg.KVPath,
-		"object_stores":               len(cfg.ObjectStores),
-		"cache_enabled":               cfg.ObjectCache.Enabled,
-		"cache_max_items":             cfg.ObjectCache.MaxItems,
-		"cache_max_total_bytes":       cfg.ObjectCache.MaxTotalBytes,
-		"cache_max_object_size_bytes": cfg.ObjectCache.MaxObjectSizeBytes,
-		"cache_ttl_seconds":           cfg.ObjectCache.TTLSeconds,
-		"write_guard_enabled":         cfg.WriteToken != "",
+		"service":             cfg.ServerName,
+		"addr":                cfg.Addr,
+		"default_bucket":      cfg.DefaultBucket,
+		"metadata_schema":     cfg.MetadataDB.Schema,
+		"metadata_table":      cfg.MetadataDB.Table,
+		"object_provider":     cfg.ObjectStore.Provider,
+		"vector_provider":     cfg.VectorIndex.Provider,
+		"write_guard_enabled": cfg.WriteToken != "",
 	})
+
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           observability.Middleware(cfg.ServerName, mux),

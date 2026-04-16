@@ -1,0 +1,388 @@
+package server
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	infra "avsp/storage/infra"
+)
+
+var ErrInvalidArgument = errors.New("invalid argument")
+
+func invalidArgument(msg string) error { return fmt.Errorf("%w: %s", ErrInvalidArgument, msg) }
+
+const maxBatchContentWorkers = 16
+
+type vectorBatchUpserter interface {
+	UpsertBatch(ctx context.Context, objectIDs []string, embeddings [][]float64) error
+}
+
+type StorageConfig struct {
+	DefaultBucket  string
+	MetadataSchema string
+	MetadataTable  string
+	Cache          ObjectCacheConfig
+}
+
+type StorageServer struct {
+	objectAdapter infra.ObjectAdapter
+	vectorAdapter infra.VectorAdapter
+	metaDB        *sql.DB
+	cfg           StorageConfig
+	cache         *ObjectCache
+}
+
+func NewStorageServer(objectAdapter infra.ObjectAdapter, vectorAdapter infra.VectorAdapter, metaDB *sql.DB, cfg StorageConfig) (*StorageServer, error) {
+	if metaDB == nil {
+		return nil, errors.New("metadata db is required")
+	}
+	if strings.TrimSpace(cfg.MetadataSchema) == "" {
+		cfg.MetadataSchema = "public"
+	}
+	if strings.TrimSpace(cfg.MetadataTable) == "" {
+		cfg.MetadataTable = "objects"
+	}
+	s := &StorageServer{
+		objectAdapter: objectAdapter,
+		vectorAdapter: vectorAdapter,
+		metaDB:        metaDB,
+		cfg:           cfg,
+		cache:         NewObjectCache(cfg.Cache),
+	}
+	if err := s.ensureMetadataTable(context.Background()); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *StorageServer) Health(ctx context.Context) error {
+	if err := s.metaDB.PingContext(ctx); err != nil {
+		return err
+	}
+	if err := s.objectAdapter.Health(ctx); err != nil {
+		return err
+	}
+	if err := s.vectorAdapter.Health(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *StorageServer) ResolvePath(ctx context.Context, storagePath string) (ObjectMetadata, error) {
+	storagePath = normalizeStoragePath(storagePath)
+	if storagePath == "" {
+		return ObjectMetadata{}, invalidArgument("storage_path is required")
+	}
+
+	canonicalPath, bucket, key, err := canonicalStoragePath(storagePath, s.cfg.DefaultBucket)
+	if err != nil {
+		return ObjectMetadata{}, err
+	}
+
+	if m, err := s.getMetadataByPath(ctx, canonicalPath); err == nil {
+		return m, nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return ObjectMetadata{}, err
+	}
+
+	info, err := s.objectAdapter.HeadObject(ctx, bucket, key)
+	if err != nil {
+		return ObjectMetadata{}, err
+	}
+	m := ObjectMetadata{
+		ObjectID:    objectIDFromStoragePath(canonicalPath),
+		StoragePath: canonicalPath,
+		Bucket:      bucket,
+		Key:         key,
+		SizeBytes:   info.SizeBytes,
+		ContentType: info.ContentType,
+		CreatedAt:   time.Now().UTC(),
+	}
+	return s.upsertMetadata(ctx, m)
+}
+
+func (s *StorageServer) RegisterPaths(ctx context.Context, storagePaths []string) ([]RegisterPathItem, error) {
+	items := make([]RegisterPathItem, 0, len(storagePaths))
+	for _, rawPath := range storagePaths {
+		m, err := s.ResolvePath(ctx, rawPath)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, RegisterPathItem{ObjectID: m.ObjectID, StoragePath: m.StoragePath})
+	}
+	return items, nil
+}
+
+func (s *StorageServer) GetMetadataByID(ctx context.Context, objectID string) (ObjectMetadata, error) {
+	objectID = strings.TrimSpace(objectID)
+	if objectID == "" {
+		return ObjectMetadata{}, invalidArgument("object_id is required")
+	}
+	return s.getMetadataByID(ctx, objectID)
+}
+
+func (s *StorageServer) ListObjects(ctx context.Context, limit int, cursor string) ([]ObjectMetadata, string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	cursor = strings.TrimSpace(cursor)
+
+	query := fmt.Sprintf(
+		`SELECT object_id, storage_path, bucket, object_key, size_bytes, content_type, created_at
+		 FROM %s.%s
+		 WHERE ($1 = '' OR object_id > $1)
+		 ORDER BY object_id ASC
+		 LIMIT $2`,
+		pqIdent(s.cfg.MetadataSchema),
+		pqIdent(s.cfg.MetadataTable),
+	)
+	rows, err := s.metaDB.QueryContext(ctx, query, cursor, limit+1)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	out := make([]ObjectMetadata, 0, limit)
+	nextCursor := ""
+	for rows.Next() {
+		var m ObjectMetadata
+		if err := rows.Scan(&m.ObjectID, &m.StoragePath, &m.Bucket, &m.Key, &m.SizeBytes, &m.ContentType, &m.CreatedAt); err != nil {
+			return nil, "", err
+		}
+		if len(out) == limit {
+			nextCursor = m.ObjectID
+			break
+		}
+		out = append(out, m)
+	}
+	return out, nextCursor, rows.Err()
+}
+
+func (s *StorageServer) GetContent(ctx context.Context, objectID string) ([]byte, string, error) {
+	objectID = strings.TrimSpace(objectID)
+	if objectID == "" {
+		return nil, "", invalidArgument("object_id is required")
+	}
+	if cached, ok := s.cache.Get(objectID); ok {
+		return cached.Content, cached.ContentType, nil
+	}
+	m, err := s.getMetadataByID(ctx, objectID)
+	if err != nil {
+		return nil, "", err
+	}
+	body, contentType, err := s.objectAdapter.GetBytes(ctx, m.Bucket, m.Key)
+	if err != nil {
+		return nil, "", err
+	}
+	s.cache.Put(objectID, body, contentType)
+	return body, contentType, nil
+}
+
+func (s *StorageServer) GetBatchContent(ctx context.Context, objectIDs []string) []ObjectBatchItem {
+	items := make([]ObjectBatchItem, len(objectIDs))
+	if len(objectIDs) == 0 {
+		return items
+	}
+
+	workers := len(objectIDs)
+	if workers > maxBatchContentWorkers {
+		workers = maxBatchContentWorkers
+	}
+	jobs := make(chan int, len(objectIDs))
+	var wg sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				rawID := objectIDs[idx]
+				objectID := strings.TrimSpace(rawID)
+				if objectID == "" {
+					items[idx] = ObjectBatchItem{ObjectID: rawID, Error: "object_id is required"}
+					continue
+				}
+				body, contentType, err := s.GetContent(ctx, objectID)
+				if err != nil {
+					items[idx] = ObjectBatchItem{ObjectID: objectID, Error: err.Error()}
+					continue
+				}
+				items[idx] = ObjectBatchItem{
+					ObjectID:    objectID,
+					Content:     body,
+					ContentType: contentType,
+					SizeBytes:   int64(len(body)),
+				}
+			}
+		}()
+	}
+
+	for idx := range objectIDs {
+		jobs <- idx
+	}
+	close(jobs)
+	wg.Wait()
+	return items
+}
+
+func (s *StorageServer) DeleteObject(ctx context.Context, objectID string) (bool, error) {
+	objectID = strings.TrimSpace(objectID)
+	if objectID == "" {
+		return false, invalidArgument("object_id is required")
+	}
+	m, err := s.getMetadataByID(ctx, objectID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := s.vectorAdapter.Delete(ctx, []string{objectID}); err != nil {
+		return false, err
+	}
+	if err := s.objectAdapter.Delete(ctx, m.Bucket, m.Key); err != nil {
+		return false, err
+	}
+	deleted, err := s.deleteMetadataByID(ctx, objectID)
+	if err != nil {
+		return false, err
+	}
+	s.cache.Delete(objectID)
+	return deleted, nil
+}
+
+func (s *StorageServer) UpsertVectors(ctx context.Context, vectors []UpsertVector) error {
+	if len(vectors) == 0 {
+		return invalidArgument("vectors are required")
+	}
+	objectIDs := make([]string, 0, len(vectors))
+	embeddings := make([][]float64, 0, len(vectors))
+	for _, v := range vectors {
+		if strings.TrimSpace(v.ObjectID) == "" {
+			return invalidArgument("object_id is required")
+		}
+		if len(v.Embedding) == 0 {
+			return invalidArgument("embedding is required")
+		}
+		objectIDs = append(objectIDs, strings.TrimSpace(v.ObjectID))
+		embeddings = append(embeddings, v.Embedding)
+	}
+	if batch, ok := s.vectorAdapter.(vectorBatchUpserter); ok {
+		return batch.UpsertBatch(ctx, objectIDs, embeddings)
+	}
+	for i := range objectIDs {
+		if err := s.vectorAdapter.Upsert(ctx, objectIDs[i], embeddings[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *StorageServer) QueryVectors(ctx context.Context, embedding []float64, topK int) ([]QueryResult, error) {
+	if len(embedding) == 0 {
+		return nil, invalidArgument("embedding is required")
+	}
+	if topK <= 0 {
+		return nil, invalidArgument("top_k must be > 0")
+	}
+	results, err := s.vectorAdapter.QueryTopK(ctx, embedding, topK)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]QueryResult, 0, len(results))
+	for _, item := range results {
+		out = append(out, QueryResult{
+			ObjectID:   item.ObjectID,
+			Distance:   item.Distance,
+			Similarity: item.Similarity,
+		})
+	}
+	return out, nil
+}
+
+func (s *StorageServer) ensureMetadataTable(ctx context.Context) error {
+	if _, err := s.metaDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", pqIdent(s.cfg.MetadataSchema))); err != nil {
+		return err
+	}
+	query := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s.%s (
+			object_id TEXT PRIMARY KEY,
+			storage_path TEXT NOT NULL UNIQUE,
+			bucket TEXT NOT NULL,
+			object_key TEXT NOT NULL,
+			size_bytes BIGINT NOT NULL,
+			content_type TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)
+	`, pqIdent(s.cfg.MetadataSchema), pqIdent(s.cfg.MetadataTable))
+	_, err := s.metaDB.ExecContext(ctx, query)
+	return err
+}
+
+func (s *StorageServer) upsertMetadata(ctx context.Context, m ObjectMetadata) (ObjectMetadata, error) {
+	query := fmt.Sprintf(`
+		INSERT INTO %s.%s (
+			object_id, storage_path, bucket, object_key, size_bytes, content_type, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, now(), now())
+		ON CONFLICT (object_id) DO UPDATE SET
+			storage_path = EXCLUDED.storage_path,
+			bucket = EXCLUDED.bucket,
+			object_key = EXCLUDED.object_key,
+			size_bytes = EXCLUDED.size_bytes,
+			content_type = EXCLUDED.content_type,
+			updated_at = now()
+		RETURNING object_id, storage_path, bucket, object_key, size_bytes, content_type, created_at
+	`, pqIdent(s.cfg.MetadataSchema), pqIdent(s.cfg.MetadataTable))
+	if err := s.metaDB.QueryRowContext(ctx, query, m.ObjectID, m.StoragePath, m.Bucket, m.Key, m.SizeBytes, m.ContentType).
+		Scan(&m.ObjectID, &m.StoragePath, &m.Bucket, &m.Key, &m.SizeBytes, &m.ContentType, &m.CreatedAt); err != nil {
+		return ObjectMetadata{}, err
+	}
+	return m, nil
+}
+
+func (s *StorageServer) getMetadataByID(ctx context.Context, objectID string) (ObjectMetadata, error) {
+	query := fmt.Sprintf(`
+		SELECT object_id, storage_path, bucket, object_key, size_bytes, content_type, created_at
+		FROM %s.%s
+		WHERE object_id = $1
+	`, pqIdent(s.cfg.MetadataSchema), pqIdent(s.cfg.MetadataTable))
+	var m ObjectMetadata
+	err := s.metaDB.QueryRowContext(ctx, query, objectID).Scan(
+		&m.ObjectID, &m.StoragePath, &m.Bucket, &m.Key, &m.SizeBytes, &m.ContentType, &m.CreatedAt,
+	)
+	return m, err
+}
+
+func (s *StorageServer) getMetadataByPath(ctx context.Context, storagePath string) (ObjectMetadata, error) {
+	query := fmt.Sprintf(`
+		SELECT object_id, storage_path, bucket, object_key, size_bytes, content_type, created_at
+		FROM %s.%s
+		WHERE storage_path = $1
+	`, pqIdent(s.cfg.MetadataSchema), pqIdent(s.cfg.MetadataTable))
+	var m ObjectMetadata
+	err := s.metaDB.QueryRowContext(ctx, query, storagePath).Scan(
+		&m.ObjectID, &m.StoragePath, &m.Bucket, &m.Key, &m.SizeBytes, &m.ContentType, &m.CreatedAt,
+	)
+	return m, err
+}
+
+func (s *StorageServer) deleteMetadataByID(ctx context.Context, objectID string) (bool, error) {
+	query := fmt.Sprintf(`DELETE FROM %s.%s WHERE object_id = $1`, pqIdent(s.cfg.MetadataSchema), pqIdent(s.cfg.MetadataTable))
+	res, err := s.metaDB.ExecContext(ctx, query, objectID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+func pqIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }

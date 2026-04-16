@@ -81,6 +81,26 @@ class PostgresWriter:
         with self.conn.cursor() as cur:
             cur.execute(create_schema_stmt)
             cur.execute(create_table_stmt)
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = %s
+                """,
+                (self.config.schema, self.config.table),
+            )
+            existing_columns = {row[0] for row in cur.fetchall()}
+            for col in columns:
+                if col in existing_columns:
+                    continue
+                pg_type = self._map_dtype(df[col].dtype)
+                alter_stmt = sql.SQL("ALTER TABLE {}.{} ADD COLUMN {} {}").format(
+                    sql.Identifier(self.config.schema),
+                    sql.Identifier(self.config.table),
+                    sql.Identifier(col),
+                    sql.SQL(pg_type),
+                )
+                cur.execute(alter_stmt)
 
     def _column_definitions(
         self, df: pd.DataFrame, columns: Iterable[str]

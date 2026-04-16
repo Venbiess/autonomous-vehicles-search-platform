@@ -1,25 +1,4 @@
 services:
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.17
-    container_name: "etcd-${USER}"
-    command:
-      - /usr/local/bin/etcd
-      - --name=etcd-1
-      - --data-dir=/etcd-data
-      - --advertise-client-urls=http://0.0.0.0:2379
-      - --listen-client-urls=http://0.0.0.0:2379
-      - --initial-advertise-peer-urls=http://0.0.0.0:2380
-      - --listen-peer-urls=http://0.0.0.0:2380
-      - --initial-cluster=etcd-1=http://0.0.0.0:2380
-      - --initial-cluster-state=new
-      - --initial-cluster-token=avsp-coordinator
-    volumes:
-      - etcd-data:/etcd-data
-    ports:
-      - "2379:2379"
-    networks:
-      - avsp-net
-
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
     container_name: "clickhouse-${USER}"
@@ -115,37 +94,6 @@ services:
     networks:
       - avsp-net
 
-  object-server:
-    build:
-      context: ../..
-      dockerfile: docker/storage/object-server.Dockerfile
-    container_name: "object-server-${USER}"
-    depends_on:
-      - minio
-      - minio-init
-    volumes:
-      - object-kv-data:/data
-    environment:
-      STORAGE_CONFIG_PATH: /app/storage/config/storage.yaml
-    ports:
-      - "9010:9010"
-    networks:
-      - avsp-net
-
-  vector-server:
-    build:
-      context: ../..
-      dockerfile: docker/storage/vector-server.Dockerfile
-    container_name: "vector-server-${USER}"
-    depends_on:
-      - postgres
-    environment:
-      STORAGE_CONFIG_PATH: /app/storage/config/storage.yaml
-    ports:
-      - "9011:9011"
-    networks:
-      - avsp-net
-
   analytics-server:
     build:
       context: ../..
@@ -160,19 +108,19 @@ services:
     networks:
       - avsp-net
 
-  coordinator-server:
+  storage-server:
     build:
       context: ../..
-      dockerfile: docker/storage/coordinator-server.Dockerfile
-    container_name: "coordinator-server-${USER}"
+      dockerfile: docker/storage/storage-server.Dockerfile
+    container_name: "storage-server-${USER}"
     depends_on:
-      - etcd
-      - object-server
-      - vector-server
+      - postgres
+      - minio
+      - minio-init
     environment:
       STORAGE_CONFIG_PATH: /app/storage/config/storage.yaml
     ports:
-      - "9013:9013"
+      - "9013:9012"
     networks:
       - avsp-net
 
@@ -188,10 +136,8 @@ services:
       - minio-init
       - embedder
       - vlm
-      - object-server
-      - vector-server
+      - storage-server
       - analytics-server
-      - coordinator-server
     volumes:
       - "${PWD}/../..:/app"
       - "vscode-server:/root/.vscode-server"
@@ -210,12 +156,8 @@ services:
       VLM_ENDPOINT: http://vlm:8001
       ANALYTICS_SERVER_ENDPOINT: http://analytics-server:9012
       ANALYTICS_SERVER_TIMEOUT_SEC: 30
-      OBJECT_SERVER_ENDPOINT: http://object-server:9010
-      OBJECT_SERVER_TIMEOUT_SEC: 30
-      VECTOR_SERVER_ENDPOINT: http://vector-server:9011
-      VECTOR_SERVER_TIMEOUT_SEC: 30
-      COORDINATOR_SERVER_ENDPOINT: http://coordinator-server:9013
-      COORDINATOR_SERVER_TIMEOUT_SEC: 30
+      STORAGE_SERVER_ENDPOINT: http://storage-server:9012
+      STORAGE_SERVER_TIMEOUT_SEC: 30
       STORAGE_WRITE_TOKEN: change-me-storage-write-token
     networks:
       - avsp-net
@@ -241,7 +183,6 @@ services:
       - avsp-net
 
 volumes:
-  etcd-data:
   clickhouse-data:
   frontend-node-modules:
   minio-data:

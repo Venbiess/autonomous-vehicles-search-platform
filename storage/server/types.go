@@ -26,8 +26,8 @@ type ObjectBatchItem struct {
 }
 
 type UpsertVector struct {
-	ObjectID  string
-	Embedding []float64
+	ObjectID  string    `json:"object_id"`
+	Embedding []float64 `json:"embedding"`
 }
 
 type QueryResult struct {

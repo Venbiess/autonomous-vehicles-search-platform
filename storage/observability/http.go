@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,14 +21,14 @@ type contextKey string
 const requestIDKey contextKey = "request_id"
 
 var (
-	registerMetrics  sync.Once
-	requestsTotal    *prometheus.CounterVec
-	requestDuration  *prometheus.HistogramVec
-	inFlight         *prometheus.GaugeVec
-	requestSizeBytes *prometheus.HistogramVec
-	responseSize     *prometheus.HistogramVec
-	panicTotal       *prometheus.CounterVec
+	registerMetrics sync.Once
+	requestsTotal   *prometheus.CounterVec
+	requestDuration *prometheus.HistogramVec
+	inFlight        *prometheus.GaugeVec
+	panicTotal      *prometheus.CounterVec
 )
+
+const slowRequestThreshold = 2 * time.Second
 
 func Middleware(service string, next http.Handler) http.Handler {
 	registerMetrics.Do(func() {
@@ -38,15 +37,15 @@ func Middleware(service string, next http.Handler) http.Handler {
 				Name: "avsp_storage_http_requests_total",
 				Help: "Total HTTP requests processed by storage servers.",
 			},
-			[]string{"service", "method", "path", "status", "status_class"},
+			[]string{"service", "method", "path", "status_class"},
 		)
 		requestDuration = prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Name:    "avsp_storage_http_request_duration_seconds",
 				Help:    "HTTP request latency in seconds for storage servers.",
-				Buckets: prometheus.DefBuckets,
+				Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
 			},
-			[]string{"service", "method", "path"},
+			[]string{"service", "method", "path", "status_class"},
 		)
 		inFlight = prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -55,30 +54,14 @@ func Middleware(service string, next http.Handler) http.Handler {
 			},
 			[]string{"service"},
 		)
-		requestSizeBytes = prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "avsp_storage_http_request_size_bytes",
-				Help:    "HTTP request payload size in bytes.",
-				Buckets: []float64{256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304},
-			},
-			[]string{"service", "method", "path"},
-		)
-		responseSize = prometheus.NewHistogramVec(
-			prometheus.HistogramOpts{
-				Name:    "avsp_storage_http_response_size_bytes",
-				Help:    "HTTP response payload size in bytes.",
-				Buckets: []float64{256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304},
-			},
-			[]string{"service", "method", "path", "status_class"},
-		)
 		panicTotal = prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "avsp_storage_http_panics_total",
 				Help: "Total recovered panics in HTTP handlers.",
 			},
-			[]string{"service", "path"},
+			[]string{"service"},
 		)
-		prometheus.MustRegister(requestsTotal, requestDuration, inFlight, requestSizeBytes, responseSize, panicTotal)
+		prometheus.MustRegister(requestsTotal, requestDuration, inFlight, panicTotal)
 	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,12 +81,10 @@ func Middleware(service string, next http.Handler) http.Handler {
 
 		path := normalizePathLabel(r.URL.Path)
 		method := r.Method
-		reqSize := requestContentLength(r)
-		requestSizeBytes.WithLabelValues(service, method, path).Observe(float64(reqSize))
 
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				panicTotal.WithLabelValues(service, path).Inc()
+				panicTotal.WithLabelValues(service).Inc()
 				rec.status = http.StatusInternalServerError
 				http.Error(rec, "internal server error", http.StatusInternalServerError)
 				LogError("http_panic_recovered", map[string]any{
@@ -117,30 +98,21 @@ func Middleware(service string, next http.Handler) http.Handler {
 			}
 
 			duration := time.Since(started)
-			status := strconv.Itoa(rec.status)
 			statusClass := statusClass(rec.status)
-			requestsTotal.WithLabelValues(service, method, path, status, statusClass).Inc()
-			requestDuration.WithLabelValues(service, method, path).Observe(duration.Seconds())
-			responseSize.WithLabelValues(service, method, path, statusClass).Observe(float64(rec.bytesWritten))
+			requestsTotal.WithLabelValues(service, method, path, statusClass).Inc()
+			requestDuration.WithLabelValues(service, method, path, statusClass).Observe(duration.Seconds())
 
-			LogInfo("http_request", map[string]any{
-				"service":              service,
-				"request_id":           requestID,
-				"method":               method,
-				"path":                 path,
-				"status":               rec.status,
-				"status_class":         statusClass,
-				"duration_ms":          duration.Milliseconds(),
-				"request_size_bytes":   reqSize,
-				"response_size_bytes":  rec.bytesWritten,
-				"remote_addr":          r.RemoteAddr,
-				"user_agent":           r.UserAgent(),
-				"x_forwarded_for":      strings.TrimSpace(r.Header.Get("X-Forwarded-For")),
-				"x_forwarded_proto":    strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")),
-				"x_forwarded_host":     strings.TrimSpace(r.Header.Get("X-Forwarded-Host")),
-				"x_real_ip":            strings.TrimSpace(r.Header.Get("X-Real-IP")),
-				"request_content_type": strings.TrimSpace(r.Header.Get("Content-Type")),
-			})
+			// Keep logging lightweight: emit only errors or slow requests.
+			if rec.status >= 500 || duration >= slowRequestThreshold {
+				LogInfo("http_request", map[string]any{
+					"service":     service,
+					"request_id":  requestID,
+					"method":      method,
+					"path":        path,
+					"status":      rec.status,
+					"duration_ms": duration.Milliseconds(),
+				})
+			}
 		}()
 
 		next.ServeHTTP(rec, r)
@@ -186,13 +158,6 @@ func getOrCreateRequestID(incoming string) string {
 		return incoming
 	}
 	return uuid.NewString()
-}
-
-func requestContentLength(r *http.Request) int64 {
-	if r.ContentLength > 0 {
-		return r.ContentLength
-	}
-	return 0
 }
 
 func statusClass(code int) string {
@@ -247,8 +212,7 @@ func looksLikeUUID(value string) bool {
 
 type statusRecorder struct {
 	http.ResponseWriter
-	status       int
-	bytesWritten int
+	status int
 }
 
 func (r *statusRecorder) WriteHeader(statusCode int) {
@@ -257,7 +221,5 @@ func (r *statusRecorder) WriteHeader(statusCode int) {
 }
 
 func (r *statusRecorder) Write(p []byte) (int, error) {
-	n, err := r.ResponseWriter.Write(p)
-	r.bytesWritten += n
-	return n, err
+	return r.ResponseWriter.Write(p)
 }

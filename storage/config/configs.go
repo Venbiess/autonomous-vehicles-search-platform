@@ -12,20 +12,24 @@ import (
 const defaultStorageConfigPath = "./config/storage.yaml"
 
 type StorageConfig struct {
-	ObjectServer      ObjectServerConfig      `yaml:"object_server"`
-	VectorServer      VectorServerConfig      `yaml:"vector_server"`
-	CoordinatorServer CoordinatorServerConfig `yaml:"coordinator_server"`
+	StorageServer StorageServerConfig `yaml:"storage_server"`
 }
 
-type ObjectServerConfig struct {
-	ServerName    string                    `yaml:"server_name"`
-	Addr          string                    `yaml:"addr"`
-	KVPath        string                    `yaml:"kv_path"`
-	DefaultBucket string                    `yaml:"default_bucket"`
-	WriteToken    string                    `yaml:"write_token"`
-	ObjectCache   ObjectCacheConfig         `yaml:"object_cache"`
-	ObjectStore   infra.ObjectStoreConfig   `yaml:"object_store"`
-	ObjectStores  []infra.ObjectStoreConfig `yaml:"object_stores"`
+type StorageServerConfig struct {
+	ServerName    string                  `yaml:"server_name"`
+	Addr          string                  `yaml:"addr"`
+	WriteToken    string                  `yaml:"write_token"`
+	DefaultBucket string                  `yaml:"default_bucket"`
+	ObjectCache   ObjectCacheConfig       `yaml:"object_cache"`
+	MetadataDB    StorageMetadataDBConfig `yaml:"metadata_db"`
+	ObjectStore   infra.ObjectStoreConfig `yaml:"object_store"`
+	VectorIndex   infra.VectorIndexConfig `yaml:"vector_index"`
+}
+
+type StorageMetadataDBConfig struct {
+	DSN    string `yaml:"dsn"`
+	Schema string `yaml:"schema"`
+	Table  string `yaml:"table"`
 }
 
 type ObjectCacheConfig struct {
@@ -36,61 +40,12 @@ type ObjectCacheConfig struct {
 	TTLSeconds         int   `yaml:"ttl_seconds"`
 }
 
-type VectorServerConfig struct {
-	ServerName    string                    `yaml:"server_name"`
-	Addr          string                    `yaml:"addr"`
-	WriteToken    string                    `yaml:"write_token"`
-	VectorIndex   infra.VectorIndexConfig   `yaml:"vector_index"`
-	VectorIndexes []infra.VectorIndexConfig `yaml:"vector_indexes"`
-}
-
-type CoordinatorServerConfig struct {
-	ServerName string                     `yaml:"server_name"`
-	Addr       string                     `yaml:"addr"`
-	NodeID     string                     `yaml:"node_id"`
-	Backend    CoordinatorBackendConfig   `yaml:"backend"`
-	DataPlane  CoordinatorDataPlaneConfig `yaml:"data_plane"`
-}
-
-type CoordinatorBackendConfig struct {
-	Provider                 string   `yaml:"provider"`
-	Endpoints                []string `yaml:"endpoints"`
-	Prefix                   string   `yaml:"prefix"`
-	LeaseTTLSeconds          int      `yaml:"lease_ttl_seconds"`
-	OperationTTLSeconds      int      `yaml:"operation_ttl_seconds"`
-	ReconcileIntervalSeconds int      `yaml:"reconcile_interval_seconds"`
-	ReconcileBatchLimit      int      `yaml:"reconcile_batch_limit"`
-}
-
-type CoordinatorDataPlaneConfig struct {
-	ObjectEndpoint string `yaml:"object_endpoint"`
-	VectorEndpoint string `yaml:"vector_endpoint"`
-	WriteToken     string `yaml:"write_token"`
-	TimeoutSeconds int    `yaml:"timeout_seconds"`
-}
-
-func LoadObjectServerConfig() (ObjectServerConfig, error) {
+func LoadStorageServerConfig() (StorageServerConfig, error) {
 	cfg, err := loadStorageConfigFromPath(configPath())
 	if err != nil {
-		return ObjectServerConfig{}, err
+		return StorageServerConfig{}, err
 	}
-	return cfg.ObjectServer, nil
-}
-
-func LoadVectorServerConfig() (VectorServerConfig, error) {
-	cfg, err := loadStorageConfigFromPath(configPath())
-	if err != nil {
-		return VectorServerConfig{}, err
-	}
-	return cfg.VectorServer, nil
-}
-
-func LoadCoordinatorServerConfig() (CoordinatorServerConfig, error) {
-	cfg, err := loadStorageConfigFromPath(configPath())
-	if err != nil {
-		return CoordinatorServerConfig{}, err
-	}
-	return cfg.CoordinatorServer, nil
+	return cfg.StorageServer, nil
 }
 
 func configPath() string {

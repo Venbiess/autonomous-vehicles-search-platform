@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"strings"
@@ -69,11 +70,17 @@ func NewS3Adapter(cfg ObjectStoreConfig) (*S3Adapter, error) {
 func (m *S3Adapter) GetBytes(ctx context.Context, bucket, key string) ([]byte, string, error) {
 	obj, err := m.client.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
 	if err != nil {
+		if isMinioNotFound(err) {
+			return nil, "", fmt.Errorf("%w: object %s/%s", ErrNotFound, bucket, key)
+		}
 		return nil, "", err
 	}
 	defer obj.Close()
 	stat, err := obj.Stat()
 	if err != nil {
+		if isMinioNotFound(err) {
+			return nil, "", fmt.Errorf("%w: object %s/%s", ErrNotFound, bucket, key)
+		}
 		return nil, "", err
 	}
 	body, err := io.ReadAll(obj)
@@ -90,6 +97,9 @@ func (m *S3Adapter) GetBytes(ctx context.Context, bucket, key string) ([]byte, s
 func (m *S3Adapter) HeadObject(ctx context.Context, bucket, key string) (ObjectInfo, error) {
 	stat, err := m.client.StatObject(ctx, bucket, key, minio.StatObjectOptions{})
 	if err != nil {
+		if isMinioNotFound(err) {
+			return ObjectInfo{}, fmt.Errorf("%w: object %s/%s", ErrNotFound, bucket, key)
+		}
 		return ObjectInfo{}, err
 	}
 	contentType := stat.ContentType
@@ -114,10 +124,24 @@ func (m *S3Adapter) PutBytes(ctx context.Context, bucket, key string, data []byt
 }
 
 func (m *S3Adapter) Delete(ctx context.Context, bucket, key string) error {
-	return m.client.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{})
+	err := m.client.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{})
+	if err != nil && isMinioNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func (m *S3Adapter) Health(ctx context.Context) error {
 	_, err := m.client.ListBuckets(ctx)
 	return err
+}
+
+func isMinioNotFound(err error) bool {
+	resp := minio.ToErrorResponse(err)
+	switch strings.TrimSpace(resp.Code) {
+	case "NoSuchKey", "NoSuchBucket", "NotFound":
+		return true
+	default:
+		return false
+	}
 }

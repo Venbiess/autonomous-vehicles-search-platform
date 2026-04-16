@@ -1,6 +1,11 @@
 package infra
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+var ErrNotFound = errors.New("not found")
 
 type PutResult struct {
 	SizeBytes   int64

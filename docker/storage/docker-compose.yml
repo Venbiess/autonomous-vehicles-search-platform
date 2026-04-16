@@ -1,25 +1,4 @@
 services:
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.17
-    container_name: "avsp-storage-etcd-${USER}"
-    command:
-      - /usr/local/bin/etcd
-      - --name=etcd-1
-      - --data-dir=/etcd-data
-      - --advertise-client-urls=http://0.0.0.0:2379
-      - --listen-client-urls=http://0.0.0.0:2379
-      - --initial-advertise-peer-urls=http://0.0.0.0:2380
-      - --listen-peer-urls=http://0.0.0.0:2380
-      - --initial-cluster=etcd-1=http://0.0.0.0:2380
-      - --initial-cluster-state=new
-      - --initial-cluster-token=avsp-coordinator
-    volumes:
-      - storage-etcd-data:/etcd-data
-    ports:
-      - "2379:2379"
-    networks:
-      - storage-net
-
   postgres:
     image: pgvector/pgvector:pg16
     container_name: "avsp-storage-postgres-${USER}"
@@ -31,31 +10,11 @@ services:
       - storage-postgres-data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
-    networks:
-      - storage-net
-
-  qdrant:
-    image: qdrant/qdrant:v1.13.6
-    container_name: "avsp-storage-qdrant-${USER}"
-    volumes:
-      - storage-qdrant-data:/qdrant/storage
-    ports:
-      - "6333:6333"
-    networks:
-      - storage-net
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:24.8
-    container_name: "avsp-storage-clickhouse-${USER}"
-    environment:
-      CLICKHOUSE_DB: default
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: ""
-    volumes:
-      - storage-clickhouse-data:/var/lib/clickhouse
-    ports:
-      - "8123:8123"
-      - "9000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d avsp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     networks:
       - storage-net
 
@@ -91,34 +50,47 @@ services:
     networks:
       - storage-net
 
-  object-server:
+  storage-server:
     build:
       context: ../..
-      dockerfile: docker/storage/object-server.Dockerfile
-    container_name: "avsp-storage-object-server-${USER}"
+      dockerfile: docker/storage/storage-server.Dockerfile
+    container_name: "avsp-storage-storage-server-${USER}"
     depends_on:
-      - minio
-      - minio-init
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
     environment:
       STORAGE_CONFIG_PATH: /app/storage/config/storage.yaml
-    volumes:
-      - storage-object-kv-data:/data
     ports:
-      - "9010:9010"
+      - "9012:9012"
     networks:
       - storage-net
 
-  vector-server:
-    build:
-      context: ../..
-      dockerfile: docker/storage/vector-server.Dockerfile
-    container_name: "avsp-storage-vector-server-${USER}"
-    depends_on:
-      - postgres
-    environment:
-      STORAGE_CONFIG_PATH: /app/storage/config/storage.yaml
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    container_name: "avsp-storage-qdrant-${USER}"
+    volumes:
+      - storage-qdrant-data:/qdrant/storage
     ports:
-      - "9011:9011"
+      - "6333:6333"
+    networks:
+      - storage-net
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: "avsp-storage-clickhouse-${USER}"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    volumes:
+      - storage-clickhouse-data:/var/lib/clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
     networks:
       - storage-net
 
@@ -132,33 +104,15 @@ services:
     environment:
       COLUMN_STORAGE_CONFIG_PATH: /app/backend/column-storage/settings.yaml
     ports:
-      - "9012:9012"
-    networks:
-      - storage-net
-
-  coordinator-server:
-    build:
-      context: ../..
-      dockerfile: docker/storage/coordinator-server.Dockerfile
-    container_name: "avsp-storage-coordinator-server-${USER}"
-    depends_on:
-      - etcd
-      - object-server
-      - vector-server
-    environment:
-      STORAGE_CONFIG_PATH: /app/storage/config/storage.yaml
-    ports:
-      - "9013:9013"
+      - "9014:9012"
     networks:
       - storage-net
 
 volumes:
-  storage-etcd-data:
   storage-postgres-data:
+  storage-minio-data:
   storage-qdrant-data:
   storage-clickhouse-data:
-  storage-minio-data:
-  storage-object-kv-data:
 
 networks:
   storage-net:

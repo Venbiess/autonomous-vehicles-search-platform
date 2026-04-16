@@ -9,35 +9,21 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 import psutil
-import psycopg2
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
-from psycopg2 import sql
 
 from configs.common import (
     ANALYTICS_SERVER_ENDPOINT,
     ANALYTICS_SERVER_TIMEOUT_SEC,
-    COORDINATOR_SERVER_ENDPOINT,
-    COORDINATOR_SERVER_TIMEOUT_SEC,
     EMBEDDER_ENDPOINT,
     EMBEDDER_TIMEOUT_SEC,
-    OBJECT_SERVER_ENDPOINT,
-    OBJECT_SERVER_TIMEOUT_SEC,
-    POSTGRES_DB,
-    POSTGRES_HOST,
-    POSTGRES_PASSWORD,
-    POSTGRES_PORT,
-    POSTGRES_SCHEMA,
-    POSTGRES_TABLE,
-    POSTGRES_USER,
+    STORAGE_SERVER_ENDPOINT,
+    STORAGE_SERVER_TIMEOUT_SEC,
     STORAGE_WRITE_TOKEN,
-    VECTOR_SERVER_ENDPOINT,
-    VECTOR_SERVER_TIMEOUT_SEC,
     VLM_ENDPOINT,
     VLM_TIMEOUT_SEC,
 )
 from backend.server.analytics_api import AnalyticsAPI
-from backend.server.coordinator_api import CoordinatorAPI
 from backend.server.storage_api import StorageAPI
 
 logger = logging.getLogger("avsp.master")
@@ -113,11 +99,6 @@ class CancelJobRequest(BaseModel):
     job_id: str = Field(..., min_length=1)
 
 
-class SyncObjectsRequest(BaseModel):
-    limit: int = Field(100000, ge=1)
-    batch_size: int = Field(500, ge=1)
-
-
 @dataclass(frozen=True)
 class EmbedResult:
     object_id: str
@@ -125,15 +106,9 @@ class EmbedResult:
     dim: int
 
 storage_api = StorageAPI(
-    object_endpoint=OBJECT_SERVER_ENDPOINT,
-    vector_endpoint=VECTOR_SERVER_ENDPOINT,
-    object_timeout_sec=OBJECT_SERVER_TIMEOUT_SEC,
-    vector_timeout_sec=VECTOR_SERVER_TIMEOUT_SEC,
+    endpoint=STORAGE_SERVER_ENDPOINT,
+    timeout_sec=STORAGE_SERVER_TIMEOUT_SEC,
     write_token=STORAGE_WRITE_TOKEN,
-)
-coordinator_api = CoordinatorAPI(
-    endpoint=COORDINATOR_SERVER_ENDPOINT,
-    timeout_sec=COORDINATOR_SERVER_TIMEOUT_SEC,
 )
 analytics_api = AnalyticsAPI(
     endpoint=ANALYTICS_SERVER_ENDPOINT,
@@ -223,15 +198,6 @@ def _normalize_vlm_response(response_text: str, response_type: str) -> str:
     return value
 
 
-def _db_conn():
-    return psycopg2.connect(
-        host=POSTGRES_HOST,
-        port=POSTGRES_PORT,
-        dbname=POSTGRES_DB,
-        user=POSTGRES_USER,
-        password=POSTGRES_PASSWORD,
-    )
-
 def _validate_existing_vlm_fields(field_names: List[str]) -> List[Dict[str, str]]:
     normalized_names = [_normalize_field_name(name) for name in field_names]
     fields = analytics_api.get_fields(normalized_names)
@@ -240,25 +206,6 @@ def _validate_existing_vlm_fields(field_names: List[str]) -> List[Dict[str, str]
         missing = sorted(set(normalized_names) - existing)
         raise ValueError(f"Unknown VLM fields: {missing}")
     return fields
-
-
-def _fetch_source_paths(conn, limit: int) -> List[str]:
-    query = sql.SQL(
-        """
-        SELECT DISTINCT src.storage_path
-        FROM {}.{} AS src
-        WHERE src.storage_path IS NOT NULL
-          AND src.storage_path <> ''
-        LIMIT %s
-        """
-    ).format(
-        sql.Identifier(POSTGRES_SCHEMA),
-        sql.Identifier(POSTGRES_TABLE),
-    )
-    with conn.cursor() as cur:
-        cur.execute(query, (limit,))
-        rows = cur.fetchall()
-    return [row[0] for row in rows]
 
 
 def _upsert_vlm_annotations(rows: List[Dict[str, Any]]) -> int:
@@ -306,21 +253,24 @@ def _fetch_image_bytes(object_id: str) -> bytes:
     return content
 
 
-def _coordinated_vector_upsert(object_id: str, embedding: List[float], source: str) -> None:
-    coordinator_api.workflow_vector_upsert(
-        object_id=object_id,
-        embedding=embedding,
-        source=source,
-        idempotency_key=f"vector-upsert:{source}:{object_id}",
+def _storage_vector_upsert(object_id: str, embedding: List[float]) -> None:
+    storage_api.upsert_vectors(
+        [
+            {
+                "object_id": object_id,
+                "embedding": embedding,
+            }
+        ]
     )
 
 
-def _coordinated_object_and_vector_delete(object_id: str) -> None:
-    coordinator_api.workflow_delete_object(
-        object_id=object_id,
-        source="master_delete_endpoint",
-        idempotency_key=f"delete-object:{object_id}",
-    )
+def _raise_upstream_http_error(exc: httpx.HTTPStatusError) -> None:
+    detail: Any
+    try:
+        detail = exc.response.json()
+    except Exception:  # noqa: BLE001
+        detail = exc.response.text or str(exc)
+    raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
 
 def _embed_image(client: httpx.Client, image_bytes: bytes) -> Tuple[List[float], int]:
@@ -401,6 +351,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
             "job_id": job_id,
             "job_type": "backfill_embeddings",
             "status": JobStatus.RUNNING.value,
+            "cancel_requested": False,
             "progress": 0,
             "total_seen": 0,
             "total_inserted": 0,
@@ -427,14 +378,21 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
         object_ids = _list_object_ids(payload.limit)
         with httpx.Client(timeout=timeout) as client:
             for i in range(0, len(object_ids), payload.batch_size):
+                if _job_cancel_requested(job_id):
+                    _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
+                    return
                 batch_ids = object_ids[i : i + payload.batch_size]
                 rows: List[EmbedResult] = []
+                processed_in_batch = 0
                 batch_payload = storage_api.get_object_bytes_batch(batch_ids)
                 by_object_id = {
                     item.get("object_id"): item for item in batch_payload if item.get("object_id")
                 }
 
                 for object_id in batch_ids:
+                    if _job_cancel_requested(job_id):
+                        _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
+                        return
                     try:
                         batch_item = by_object_id.get(object_id)
                         if not batch_item:
@@ -457,17 +415,19 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                         errors.append(
                             {"object_id": object_id, "error": str(exc)}
                         )
+                        processed_in_batch += 1
                         if payload.stop_on_error:
                             break
+                    else:
+                        processed_in_batch += 1
 
-                total_seen += len(batch_ids)
+                total_seen += processed_in_batch
                 if rows and not payload.dry_run:
                     for row in rows:
                         try:
-                            _coordinated_vector_upsert(
+                            _storage_vector_upsert(
                                 object_id=row.object_id,
                                 embedding=row.embedding,
-                                source="embeddings_backfill",
                             )
                             total_inserted += 1
                         except Exception as exc:  # noqa: BLE001
@@ -757,10 +717,15 @@ def backfill_embeddings(payload: BackfillRequest):
 
 @app.post("/search/text")
 def search_text(payload: TextSearchRequest):
-    timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
-    with httpx.Client(timeout=timeout) as client:
-        query_embedding, _ = _embed_text(client, payload.query)
-    results = storage_api.query_vectors(query_embedding, payload.top_k)
+    try:
+        timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
+        with httpx.Client(timeout=timeout) as client:
+            query_embedding, _ = _embed_text(client, payload.query)
+        results = storage_api.query_vectors(query_embedding, payload.top_k)
+    except httpx.HTTPStatusError as exc:
+        _raise_upstream_http_error(exc)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {
         "mode": "vector_server",
         "results": results,
@@ -778,10 +743,15 @@ async def search_image_bytes(
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Image bytes are required")
 
-    timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
-    with httpx.Client(timeout=timeout) as client:
-        query_embedding, _ = _embed_image(client, image_bytes)
-    results = storage_api.query_vectors(query_embedding, max(1, top_k))
+    try:
+        timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
+        with httpx.Client(timeout=timeout) as client:
+            query_embedding, _ = _embed_image(client, image_bytes)
+        results = storage_api.query_vectors(query_embedding, max(1, top_k))
+    except httpx.HTTPStatusError as exc:
+        _raise_upstream_http_error(exc)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {
         "mode": "vector_server",
         "results": results,
@@ -834,30 +804,6 @@ def cancel_job(payload: CancelJobRequest):
     return {"job_id": payload.job_id, "status": "cancellation_requested"}
 
 
-@app.post("/objects/sync-from-frames")
-def sync_objects_from_frames(payload: SyncObjectsRequest):
-    with _db_conn() as conn:
-        paths = _fetch_source_paths(conn, payload.limit)
-    total_registered = 0
-    errors: List[Dict[str, str]] = []
-    for storage_path in paths:
-        try:
-            coordinator_api.workflow_register_path(
-                storage_path=storage_path,
-                source="sync_from_frames",
-                idempotency_key=f"register-path:{storage_path}",
-            )
-            total_registered += 1
-        except Exception as exc:  # noqa: BLE001
-            errors.append({"storage_path": storage_path, "error": str(exc)})
-    return {
-        "status": "ok",
-        "source_paths": len(paths),
-        "registered_objects": total_registered,
-        "errors": errors,
-    }
-
-
 @app.post("/search/vlm")
 def search_vlm(payload: VLMSearchRequest):
     try:
@@ -892,11 +838,14 @@ def delete_object(object_id: str):
     errors: Dict[str, str] = {}
 
     try:
-        _coordinated_object_and_vector_delete(object_id)
+        deleted = storage_api.delete_object(object_id)
         result["vectors"]["requested"] = 1
-        result["object"] = {"object_id": object_id, "deleted": True}
+        result["object"] = {
+            "object_id": object_id,
+            "deleted": bool(deleted.get("deleted", False)),
+        }
     except Exception as exc:  # noqa: BLE001
-        errors["coordinator_storage"] = str(exc)
+        errors["storage_server"] = str(exc)
 
     try:
         result["annotations"]["requested"] = analytics_api.delete_annotations([object_id])
@@ -919,6 +868,8 @@ def delete_object(object_id: str):
 def get_object_content(object_id: str):
     try:
         image_bytes, content_type = storage_api.get_object_bytes(object_id)
+    except httpx.HTTPStatusError as exc:
+        _raise_upstream_http_error(exc)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return Response(content=image_bytes, media_type=content_type)

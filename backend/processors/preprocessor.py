@@ -1,9 +1,12 @@
 from abc import abstractmethod
+from typing import Optional
+
 import boto3
 import requests
 from botocore.client import Config
 from configs.common import (
     OBJECT_SERVER_ENDPOINT,
+    STORAGE_WRITE_TOKEN,
     S3_ENDPOINT_URL,
     S3_ACCESS_KEY_ID,
     S3_SECRET_ACCESS_KEY,
@@ -63,16 +66,25 @@ class Preprocessor:
             Key=object_name
         )
 
-    def register_storage_path(self, storage_path: str):
+    def register_storage_path(self, storage_path: str) -> Optional[str]:
         try:
-            requests.post(
-                f"{OBJECT_SERVER_ENDPOINT}/objects",
+            headers = {}
+            token = STORAGE_WRITE_TOKEN.strip()
+            if token:
+                headers["X-Storage-Write-Token"] = token
+            response = requests.post(
+                f"{OBJECT_SERVER_ENDPOINT}/objects/resolve-path",
                 json={"storage_path": storage_path},
+                headers=headers,
                 timeout=30,
-            ).raise_for_status()
+            )
+            response.raise_for_status()
+            payload = response.json()
+            object_id = str(payload.get("object_id", "")).strip()
+            return object_id or None
         except Exception:
             # Ingestion should not fail if object-server is temporarily unavailable.
-            pass
+            return None
 
     @abstractmethod
     def __iter__(self):
@@ -105,6 +117,7 @@ class Preprocessor:
         try:
             for episode_df in tqdm(self):
                 episode_df["storage_path"] = None
+                episode_df["object_id"] = None
 
                 for idx, row in episode_df.iterrows():
                     local_path = row["image_path"]
@@ -114,7 +127,8 @@ class Preprocessor:
                     episode_df.at[idx, "storage_path"] = storage_path
 
                     self.upload_to_s3(local_path, bucket, name)
-                    self.register_storage_path(storage_path)
+                    object_id = self.register_storage_path(storage_path)
+                    episode_df.at[idx, "object_id"] = object_id
                     if self.remove_local_images:
                         os.remove(local_path)
 
