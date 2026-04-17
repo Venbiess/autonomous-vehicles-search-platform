@@ -1,4 +1,4 @@
-const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
+import { storageEndpoint } from "../../../lib/storageServer";
 
 export const config = {
   api: {
@@ -18,7 +18,7 @@ export default async function handler(req, res) {
 
   try {
     const response = await fetch(
-      `${masterEndpoint}/objects/${encodeURIComponent(objectId)}/content`
+      `${storageEndpoint()}/objects/${encodeURIComponent(objectId)}/content`
     );
     if (!response.ok) {
       const text = await response.text();

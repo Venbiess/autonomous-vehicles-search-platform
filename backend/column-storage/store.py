@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
+import time
 from datetime import datetime, timezone
-from typing import Dict, List, Sequence
+from typing import Dict, List, Sequence, Tuple
 from urllib.parse import unquote, urlparse
 
 import clickhouse_connect
@@ -10,13 +12,21 @@ import clickhouse_connect
 from config import AnalyticsDBConfig
 from models import AnalyticsField, AnnotationRow, SearchFilter, SearchResult
 
+IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 def _q(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _now_utc_str() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+def _ident(value: str) -> str:
+    if not IDENT_RE.fullmatch(value):
+        raise ValueError(f"invalid ClickHouse identifier: {value!r}")
+    return f"`{value}`"
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _fnv_shard(key: str, total: int) -> int:
@@ -41,21 +51,38 @@ class ClickHouseShard:
 
         self.fields_table = cfg.field_catalog_table
         self.annotations_table = cfg.annotation_store_table
-        self.client = clickhouse_connect.get_client(
+        self.fields_table_sql = _ident(cfg.field_catalog_table)
+        self.annotations_table_sql = _ident(cfg.annotation_store_table)
+        self.client = self._connect_with_retry(
             host=host,
             port=port,
             username=username,
             password=password,
             database=database,
             secure=secure,
-            connect_timeout=5,
-            send_receive_timeout=30,
         )
+
+    @staticmethod
+    def _connect_with_retry(**kwargs):
+        last_exc: Exception | None = None
+        for attempt in range(1, 11):
+            try:
+                return clickhouse_connect.get_client(
+                    **kwargs,
+                    connect_timeout=5,
+                    send_receive_timeout=30,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt == 10:
+                    break
+                time.sleep(min(attempt, 5))
+        raise last_exc or RuntimeError("failed to connect to ClickHouse")
 
     def ensure(self) -> None:
         self.client.command(
             f"""
-            CREATE TABLE IF NOT EXISTS {self.fields_table} (
+            CREATE TABLE IF NOT EXISTS {self.fields_table_sql} (
                 field_name String,
                 prompt String,
                 response_type String,
@@ -67,7 +94,7 @@ class ClickHouseShard:
         )
         self.client.command(
             f"""
-            CREATE TABLE IF NOT EXISTS {self.annotations_table} (
+            CREATE TABLE IF NOT EXISTS {self.annotations_table_sql} (
                 object_id String,
                 values_json String,
                 updated_at DateTime64(3, 'UTC')
@@ -82,8 +109,8 @@ class ClickHouseShard:
 
     def get_fields(self, field_names: Sequence[str]) -> List[AnalyticsField]:
         query = (
-            f"SELECT field_name, argMax(prompt, updated_at), argMax(response_type, updated_at) "
-            f"FROM {self.fields_table}"
+            "SELECT field_name, argMax(prompt, updated_at), argMax(response_type, updated_at) "
+            f"FROM {self.fields_table_sql}"
         )
         if field_names:
             values = ", ".join(_q(name) for name in field_names)
@@ -98,8 +125,16 @@ class ClickHouseShard:
     def upsert_fields(self, fields: Sequence[AnalyticsField]) -> None:
         if not fields:
             return
-        now = _now_utc_str()
-        data = [[item.field_name, item.prompt, item.response_type, now] for item in fields]
+        now = _now_utc()
+        data = [
+            [
+                item.field_name.strip(),
+                item.prompt.strip(),
+                item.response_type.strip().lower(),
+                now,
+            ]
+            for item in fields
+        ]
         self.client.insert(
             self.fields_table,
             data,
@@ -109,7 +144,7 @@ class ClickHouseShard:
     def _get_annotation_values(self, object_id: str) -> Dict[str, str]:
         query = (
             f"SELECT argMax(values_json, updated_at) "
-            f"FROM {self.annotations_table} WHERE object_id = {_q(object_id)}"
+            f"FROM {self.annotations_table_sql} WHERE object_id = {_q(object_id)}"
         )
         rows = self.client.query(query).result_rows
         if not rows or not rows[0] or rows[0][0] in (None, ""):
@@ -123,7 +158,7 @@ class ClickHouseShard:
     def upsert_annotations(self, rows: Sequence[AnnotationRow]) -> None:
         if not rows:
             return
-        now = _now_utc_str()
+        now = _now_utc()
         data = []
         for row in rows:
             merged = self._get_annotation_values(row.object_id)
@@ -140,15 +175,15 @@ class ClickHouseShard:
             return
         values = ", ".join(_q(item) for item in object_ids)
         self.client.command(
-            f"ALTER TABLE {self.annotations_table} DELETE WHERE object_id IN ({values})"
+            f"ALTER TABLE {self.annotations_table_sql} DELETE WHERE object_id IN ({values})"
         )
 
     def clear_annotations(self) -> int:
         count_rows = self.client.query(
-            f"SELECT COUNT() FROM (SELECT object_id FROM {self.annotations_table} GROUP BY object_id)"
+            f"SELECT COUNT() FROM (SELECT object_id FROM {self.annotations_table_sql} GROUP BY object_id)"
         ).result_rows
         count = int(count_rows[0][0]) if count_rows else 0
-        self.client.command(f"TRUNCATE TABLE {self.annotations_table}")
+        self.client.command(f"TRUNCATE TABLE {self.annotations_table_sql}")
         return count
 
     def completed_object_ids(self, object_ids: Sequence[str], field_names: Sequence[str]) -> List[str]:
@@ -158,7 +193,7 @@ class ClickHouseShard:
         rows = self.client.query(
             f"""
             SELECT object_id, argMax(values_json, updated_at)
-            FROM {self.annotations_table}
+            FROM {self.annotations_table_sql}
             WHERE object_id IN ({values})
             GROUP BY object_id
             """
@@ -178,13 +213,13 @@ class ClickHouseShard:
                 completed.append(object_id)
         return completed
 
-    def search(self, filters: Sequence[SearchFilter], limit: int) -> List[SearchResult]:
+    def search(self, filters: Sequence[SearchFilter], limit: int) -> List[Tuple[datetime, SearchResult]]:
         if not filters:
             return []
         limit = max(limit, 1)
         subquery = (
-            f"SELECT object_id, argMax(values_json, updated_at) AS values_json, max(updated_at) AS updated_at "
-            f"FROM {self.annotations_table} GROUP BY object_id"
+            f"SELECT object_id, argMax(values_json, updated_at) AS values_json, max(updated_at) AS latest_updated_at "
+            f"FROM {self.annotations_table_sql} GROUP BY object_id"
         )
         clauses: List[str] = []
         for flt in filters:
@@ -196,12 +231,12 @@ class ClickHouseShard:
 
         where_sql = " AND ".join(clauses) if clauses else "1"
         query = (
-            f"SELECT object_id, values_json FROM ({subquery}) "
-            f"WHERE {where_sql} ORDER BY updated_at DESC LIMIT {int(limit)}"
+            f"SELECT object_id, values_json, latest_updated_at FROM ({subquery}) "
+            f"WHERE {where_sql} ORDER BY latest_updated_at DESC LIMIT {int(limit)}"
         )
         rows = self.client.query(query).result_rows
-        out: List[SearchResult] = []
-        for object_id, values_json in rows:
+        out: List[Tuple[datetime, SearchResult]] = []
+        for object_id, values_json, latest_updated_at in rows:
             try:
                 attrs = json.loads(values_json) if values_json else {}
             except json.JSONDecodeError:
@@ -211,7 +246,12 @@ class ClickHouseShard:
                 for flt in filters
                 if flt.field_name in attrs
             }
-            out.append(SearchResult(object_id=object_id, attributes=selected))
+            out.append(
+                (
+                    latest_updated_at,
+                    SearchResult(object_id=object_id, attributes=selected),
+                )
+            )
         return out
 
 
@@ -271,14 +311,13 @@ class AnalyticsStore:
         return out
 
     def search(self, filters: Sequence[SearchFilter], limit: int) -> List[SearchResult]:
-        merged: List[SearchResult] = []
+        merged: List[Tuple[datetime, SearchResult]] = []
         seen: set[str] = set()
         for shard in self.shards:
-            for item in shard.search(filters, limit):
+            for updated_at, item in shard.search(filters, limit):
                 if item.object_id in seen:
                     continue
                 seen.add(item.object_id)
-                merged.append(item)
-                if len(merged) >= limit:
-                    return merged
-        return merged
+                merged.append((updated_at, item))
+        merged.sort(key=lambda item: item[0], reverse=True)
+        return [item for _, item in merged[:limit]]

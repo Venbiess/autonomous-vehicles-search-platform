@@ -1,5 +1,7 @@
 FROM python:3.10-slim
 
+ARG TARGETARCH
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
@@ -30,11 +32,17 @@ RUN pip install --upgrade pip setuptools wheel
 
 # ---- torch ----
 RUN . /etc/app.env && \
+    TORCH_VERSION="${TORCH_VERSION:-2.9.1}" && \
+    TORCH_CUDA_TAG="${TORCH_CUDA_TAG:-cpu}" && \
     if [ "$TORCH_CUDA_TAG" = "cpu" ] || [ "$TORCH_CUDA_TAG" = "None" ]; then \
-      pip install --no-cache-dir torch==${TORCH_VERSION} \
-        --index-url https://download.pytorch.org/whl/cpu ; \
+      if [ "$TARGETARCH" = "arm64" ]; then \
+        pip install --no-cache-dir --retries 10 --timeout 120 torch==${TORCH_VERSION} ; \
+      else \
+        pip install --no-cache-dir --retries 10 --timeout 120 torch==${TORCH_VERSION} \
+          --index-url https://download.pytorch.org/whl/cpu ; \
+      fi ; \
     else \
-      pip install --no-cache-dir torch==${TORCH_VERSION}+${TORCH_CUDA_TAG} \
+      pip install --no-cache-dir --retries 10 --timeout 120 torch==${TORCH_VERSION} \
         --index-url https://download.pytorch.org/whl/${TORCH_CUDA_TAG} ; \
     fi
 

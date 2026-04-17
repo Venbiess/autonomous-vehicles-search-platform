@@ -34,11 +34,10 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
       libgl1 libglib2.0-0 curl gnupg ca-certificates; \
     \
+    NEED_WAYMO=0; \
     . /tmp/build.env; \
-# -----------------------------
-# Install Google Cloud SDK
-# -----------------------------
-    if [ "$NEED_WAYMO" = "1" ]; then \
+    if [ "${NEED_WAYMO:-0}" = "1" ]; then \
+      install -d -m 0755 /usr/share/keyrings /etc/apt/sources.list.d; \
       curl -sSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
         | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg; \
       echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
