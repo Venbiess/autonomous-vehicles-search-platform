@@ -305,6 +305,10 @@ func (s *StorageServer) QueryVectors(ctx context.Context, embedding []float64, t
 	return out, nil
 }
 
+func (s *StorageServer) CountVectors(ctx context.Context) (int64, error) {
+	return s.vectorAdapter.Count(ctx)
+}
+
 func (s *StorageServer) ensureMetadataTable(ctx context.Context) error {
 	if _, err := s.metaDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", pqIdent(s.cfg.MetadataSchema))); err != nil {
 		return err

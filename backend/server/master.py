@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 import psutil
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from configs.common import (
@@ -248,18 +248,16 @@ def _list_object_ids(limit: int, page_size: int = 500) -> List[str]:
     return object_ids
 
 
-def _fetch_image_bytes(object_id: str) -> bytes:
-    content, _ = storage_api.get_object_bytes(object_id)
-    return content
-
-
-def _storage_vector_upsert(object_id: str, embedding: List[float]) -> None:
-    storage_api.upsert_vectors(
+def _storage_vector_upsert_batch(rows: List[EmbedResult]) -> int:
+    if not rows:
+        return 0
+    return storage_api.upsert_vectors(
         [
             {
-                "object_id": object_id,
-                "embedding": embedding,
+                "object_id": row.object_id,
+                "embedding": row.embedding,
             }
+            for row in rows
         ]
     )
 
@@ -423,20 +421,27 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
 
                 total_seen += processed_in_batch
                 if rows and not payload.dry_run:
-                    for row in rows:
-                        try:
-                            _storage_vector_upsert(
-                                object_id=row.object_id,
-                                embedding=row.embedding,
+                    try:
+                        upserted = _storage_vector_upsert_batch(rows)
+                        total_inserted += upserted
+                        if upserted != len(rows):
+                            errors.append(
+                                {
+                                    "error": (
+                                        f"vector upsert mismatch: expected={len(rows)} "
+                                        f"actual={upserted}"
+                                    )
+                                }
                             )
-                            total_inserted += 1
-                        except Exception as exc:  # noqa: BLE001
-                            logger.exception(
-                                "Coordinated upsert failed for object_id=%s", row.object_id
-                            )
-                            errors.append({"object_id": row.object_id, "error": str(exc)})
                             if payload.stop_on_error:
                                 break
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception(
+                            "Batch vector upsert failed for rows=%s", len(rows)
+                        )
+                        errors.append({"error": str(exc)})
+                        if payload.stop_on_error:
+                            break
 
                 progress = min(int((total_seen / max(payload.limit, 1)) * 100), 100)
                 with jobs_lock:
@@ -535,76 +540,96 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                 )
 
         with httpx.Client(timeout=timeout) as client:
-            for object_id in object_ids:
+            for i in range(0, len(object_ids), payload.batch_size):
                 if _job_cancel_requested(job_id):
                     _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
                     return
-                try:
-                    image_bytes = _fetch_image_bytes(object_id)
-                    values: Dict[str, str] = {}
-                    current_scene_index = total_seen + 1
-                    current_scene_tasks_total = len(fields)
+                batch_ids = object_ids[i : i + payload.batch_size]
+                batch_payload = storage_api.get_object_bytes_batch(batch_ids)
+                by_object_id = {
+                    item.get("object_id"): item for item in batch_payload if item.get("object_id")
+                }
+
+                for object_id in batch_ids:
+                    if _job_cancel_requested(job_id):
+                        _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
+                        return
+                    try:
+                        batch_item = by_object_id.get(object_id)
+                        if not batch_item:
+                            raise ValueError("object not returned in batch response")
+                        if batch_item.get("error"):
+                            raise ValueError(str(batch_item.get("error")))
+                        image_bytes = batch_item.get("content", b"")
+                        if not image_bytes:
+                            raise ValueError("empty content")
+                        values: Dict[str, str] = {}
+                        current_scene_index = total_seen + 1
+                        current_scene_tasks_total = len(fields)
+                        with jobs_lock:
+                            if job_id in jobs_store:
+                                jobs_store[job_id].update(
+                                    {
+                                        "current_scene_index": current_scene_index,
+                                        "current_scene_tasks_completed": 0,
+                                        "current_scene_tasks_total": current_scene_tasks_total,
+                                        "updated_at": time.time(),
+                                    }
+                                )
+                        for field_index, field in enumerate(fields):
+                            if _job_cancel_requested(job_id):
+                                _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
+                                return
+                            prompt = _build_vlm_prompt(field["prompt"], field["response_type"])
+                            task_index = completed_tasks + field_index + 1
+                            values[field["field_name"]] = _run_vlm(
+                                client,
+                                image_bytes,
+                                prompt,
+                                payload.max_new_tokens,
+                                job_id=job_id,
+                                task_index=task_index,
+                                task_total=total_tasks_planned if total_tasks_planned > 0 else None,
+                                field_name=field["field_name"],
+                                object_id=object_id,
+                            )
+                            values[field["field_name"]] = _normalize_vlm_response(
+                                values[field["field_name"]],
+                                field["response_type"],
+                            )
+                            completed_tasks += 1
+                        if not payload.dry_run:
+                            total_inserted += _upsert_vlm_annotations(
+                                [{"object_id": object_id, "values": values}]
+                            )
+                        total_seen += 1
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception("VLM failed for object_id=%s", object_id)
+                        errors.append({"object_id": object_id, "error": str(exc)})
+                        total_seen += 1
+                        if payload.stop_on_error:
+                            break
+
+                    progress = min(int((total_seen / max(len(object_ids), 1)) * 100), 100)
                     with jobs_lock:
                         if job_id in jobs_store:
                             jobs_store[job_id].update(
                                 {
-                                    "current_scene_index": current_scene_index,
+                                    "progress": progress,
+                                    "total_seen": total_seen,
+                                    "total_inserted": total_inserted,
+                                    "total_tasks_completed": completed_tasks,
+                                    "total_tasks_planned": total_tasks_planned,
                                     "current_scene_tasks_completed": 0,
-                                    "current_scene_tasks_total": current_scene_tasks_total,
+                                    "current_scene_tasks_total": len(fields),
+                                    "errors": errors,
+                                    "field_names": field_names,
                                     "updated_at": time.time(),
                                 }
                             )
-                    for field_index, field in enumerate(fields):
-                        if _job_cancel_requested(job_id):
-                            _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
-                            return
-                        prompt = _build_vlm_prompt(field["prompt"], field["response_type"])
-                        task_index = completed_tasks + field_index + 1
-                        values[field["field_name"]] = _run_vlm(
-                            client,
-                            image_bytes,
-                            prompt,
-                            payload.max_new_tokens,
-                            job_id=job_id,
-                            task_index=task_index,
-                            task_total=total_tasks_planned if total_tasks_planned > 0 else None,
-                            field_name=field["field_name"],
-                            object_id=object_id,
-                        )
-                        values[field["field_name"]] = _normalize_vlm_response(
-                            values[field["field_name"]],
-                            field["response_type"],
-                        )
-                        completed_tasks += 1
-                    if not payload.dry_run:
-                        total_inserted += _upsert_vlm_annotations(
-                            [{"object_id": object_id, "values": values}]
-                        )
-                    total_seen += 1
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception("VLM failed for object_id=%s", object_id)
-                    errors.append({"object_id": object_id, "error": str(exc)})
-                    total_seen += 1
-                    if payload.stop_on_error:
-                        break
 
-                progress = min(int((total_seen / max(len(object_ids), 1)) * 100), 100)
-                with jobs_lock:
-                    if job_id in jobs_store:
-                        jobs_store[job_id].update(
-                            {
-                                "progress": progress,
-                                "total_seen": total_seen,
-                                "total_inserted": total_inserted,
-                                "total_tasks_completed": completed_tasks,
-                                "total_tasks_planned": total_tasks_planned,
-                                "current_scene_tasks_completed": 0,
-                                "current_scene_tasks_total": len(fields),
-                                "errors": errors,
-                                "field_names": field_names,
-                                "updated_at": time.time(),
-                            }
-                        )
+                    if payload.stop_on_error and errors:
+                        break
 
                 if payload.stop_on_error and errors:
                     break
@@ -863,13 +888,3 @@ def delete_object(object_id: str):
         )
     return {"status": "ok", "result": result}
 
-
-@app.get("/objects/{object_id}/content")
-def get_object_content(object_id: str):
-    try:
-        image_bytes, content_type = storage_api.get_object_bytes(object_id)
-    except httpx.HTTPStatusError as exc:
-        _raise_upstream_http_error(exc)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return Response(content=image_bytes, media_type=content_type)

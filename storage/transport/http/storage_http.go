@@ -7,15 +7,25 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	core "avsp/storage/server"
 )
 
 const maxUnifiedBatchObjectIDs = 256
+const defaultListObjectsLimit = 100
+const maxListObjectsLimit = 1000
+const vectorCountCacheTTL = 15 * time.Second
 
 type StorageHandler struct {
 	svc        *core.StorageServer
 	writeToken string
+
+	vectorCountMu        sync.Mutex
+	vectorCountCachedAt  time.Time
+	vectorCountCachedVal int64
+	vectorCountHasCache  bool
 }
 
 func NewStorageHandler(svc *core.StorageServer, writeToken string) *StorageHandler {
@@ -31,6 +41,7 @@ func (h *StorageHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/objects/", h.handleObjectByID)
 	mux.HandleFunc("/vectors/upsert", h.handleVectorUpsert)
 	mux.HandleFunc("/vectors/query", h.handleVectorQuery)
+	mux.HandleFunc("/vectors/count", h.handleVectorCount)
 }
 
 func (h *StorageHandler) authorizeWrite(r *http.Request) error {
@@ -75,11 +86,14 @@ type storageListObjectsResponse struct {
 func (h *StorageHandler) handleObjects(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		limit := 100
+		limit := defaultListObjectsLimit
 		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 			if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
 				limit = parsed
 			}
+		}
+		if limit > maxListObjectsLimit {
+			limit = maxListObjectsLimit
 		}
 		items, nextCursor, err := h.svc.ListObjects(r.Context(), limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 		if err != nil {
@@ -199,90 +213,8 @@ type storageDeleteObjectResponse struct {
 	Deleted  bool   `json:"deleted"`
 }
 
-func (h *StorageHandler) handleObjectByID(w http.ResponseWriter, r *http.Request) {
-	tail := strings.TrimPrefix(r.URL.Path, "/objects/")
-	tail = strings.Trim(tail, "/")
-	if tail == "" {
-		writeTypedError(w, r, http.StatusNotFound, "not_found", errors.New("not found"))
-		return
-	}
-	parts := strings.Split(tail, "/")
-	objectID := parts[0]
-	if len(parts) == 2 && parts[1] == "content" {
-		if r.Method != http.MethodGet {
-			writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
-			return
-		}
-		body, contentType, err := h.svc.GetContent(r.Context(), objectID)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				writeTypedError(w, r, http.StatusNotFound, "not_found", err)
-				return
-			}
-			status, code := classifyError(err)
-			writeTypedError(w, r, status, code, err)
-			return
-		}
-		w.Header().Set("Content-Type", contentType)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-		return
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		m, err := h.svc.GetMetadataByID(r.Context(), objectID)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				writeTypedError(w, r, http.StatusNotFound, "not_found", err)
-				return
-			}
-			status, code := classifyError(err)
-			writeTypedError(w, r, status, code, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, m)
-	case http.MethodDelete:
-		if err := h.authorizeWrite(r); err != nil {
-			writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
-			return
-		}
-		deleted, err := h.svc.DeleteObject(r.Context(), objectID)
-		if err != nil {
-			status, code := classifyError(err)
-			writeTypedError(w, r, status, code, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, storageDeleteObjectResponse{ObjectID: objectID, Deleted: deleted})
-	default:
-		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
-	}
-}
-
 type storageUpsertVectorsRequest struct {
 	Vectors []core.UpsertVector `json:"vectors"`
-}
-
-func (h *StorageHandler) handleVectorUpsert(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
-		return
-	}
-	if err := h.authorizeWrite(r); err != nil {
-		writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
-		return
-	}
-	var req storageUpsertVectorsRequest
-	if err := decodeJSONBody(r, &req); err != nil {
-		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
-		return
-	}
-	if err := h.svc.UpsertVectors(r.Context(), req.Vectors); err != nil {
-		status, code := classifyError(err)
-		writeTypedError(w, r, status, code, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]int{"upserted": len(req.Vectors)})
 }
 
 type storageQueryVectorsRequest struct {
@@ -314,4 +246,138 @@ func (h *StorageHandler) handleVectorQuery(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, storageQueryVectorsResponse{Results: results})
+}
+
+func (h *StorageHandler) handleVectorCount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	total, ok := h.readVectorCountCache()
+	if !ok {
+		var err error
+		total, err = h.svc.CountVectors(r.Context())
+		if err != nil {
+			status, code := classifyError(err)
+			writeTypedError(w, r, status, code, err)
+			return
+		}
+		h.writeVectorCountCache(total)
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"count": total})
+}
+
+func (h *StorageHandler) readVectorCountCache() (int64, bool) {
+	h.vectorCountMu.Lock()
+	defer h.vectorCountMu.Unlock()
+	if !h.vectorCountHasCache {
+		return 0, false
+	}
+	if time.Since(h.vectorCountCachedAt) > vectorCountCacheTTL {
+		h.vectorCountHasCache = false
+		return 0, false
+	}
+	return h.vectorCountCachedVal, true
+}
+
+func (h *StorageHandler) writeVectorCountCache(count int64) {
+	h.vectorCountMu.Lock()
+	defer h.vectorCountMu.Unlock()
+	h.vectorCountCachedVal = count
+	h.vectorCountCachedAt = time.Now().UTC()
+	h.vectorCountHasCache = true
+}
+
+func (h *StorageHandler) invalidateVectorCountCache() {
+	h.vectorCountMu.Lock()
+	defer h.vectorCountMu.Unlock()
+	h.vectorCountHasCache = false
+}
+
+func (h *StorageHandler) handleVectorUpsert(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	if err := h.authorizeWrite(r); err != nil {
+		writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
+		return
+	}
+	var req storageUpsertVectorsRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	if err := h.svc.UpsertVectors(r.Context(), req.Vectors); err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	h.invalidateVectorCountCache()
+	writeJSON(w, http.StatusOK, map[string]int{"upserted": len(req.Vectors)})
+}
+
+func (h *StorageHandler) handleObjectByID(w http.ResponseWriter, r *http.Request) {
+	tail := strings.TrimPrefix(r.URL.Path, "/objects/")
+	tail = strings.Trim(tail, "/")
+	if tail == "" {
+		writeTypedError(w, r, http.StatusNotFound, "not_found", errors.New("not found"))
+		return
+	}
+	parts := strings.Split(tail, "/")
+	objectID := parts[0]
+	if len(parts) == 2 && parts[1] == "content" {
+		if r.Method != http.MethodGet {
+			writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+			return
+		}
+		body, contentType, err := h.svc.GetContent(r.Context(), objectID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeTypedError(w, r, http.StatusNotFound, "not_found", err)
+				return
+			}
+			status, code := classifyError(err)
+			writeTypedError(w, r, status, code, err)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+		return
+	}
+	if len(parts) > 1 {
+		writeTypedError(w, r, http.StatusNotFound, "not_found", errors.New("not found"))
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		m, err := h.svc.GetMetadataByID(r.Context(), objectID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeTypedError(w, r, http.StatusNotFound, "not_found", err)
+				return
+			}
+			status, code := classifyError(err)
+			writeTypedError(w, r, status, code, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, m)
+	case http.MethodDelete:
+		if err := h.authorizeWrite(r); err != nil {
+			writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
+			return
+		}
+		deleted, err := h.svc.DeleteObject(r.Context(), objectID)
+		if err != nil {
+			status, code := classifyError(err)
+			writeTypedError(w, r, status, code, err)
+			return
+		}
+		h.invalidateVectorCountCache()
+		writeJSON(w, http.StatusOK, storageDeleteObjectResponse{ObjectID: objectID, Deleted: deleted})
+	default:
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+	}
 }

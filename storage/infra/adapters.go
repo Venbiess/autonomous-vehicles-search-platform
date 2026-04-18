@@ -35,5 +35,6 @@ type VectorAdapter interface {
 	Upsert(ctx context.Context, objectID string, embedding []float64) error
 	QueryTopK(ctx context.Context, embedding []float64, topK int) ([]VectorQueryResult, error)
 	Delete(ctx context.Context, objectIDs []string) error
+	Count(ctx context.Context) (int64, error)
 	Health(ctx context.Context) error
 }

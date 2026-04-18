@@ -145,6 +145,29 @@ func (q *QdrantAdapter) Delete(ctx context.Context, objectIDs []string) error {
 	return err
 }
 
+func (q *QdrantAdapter) Count(ctx context.Context) (int64, error) {
+	var resp struct {
+		Result struct {
+			Count int64 `json:"count"`
+		} `json:"result"`
+	}
+	err := q.doJSONExpectOK(
+		ctx,
+		http.MethodPost,
+		fmt.Sprintf("/collections/%s/points/count", q.collection),
+		map[string]any{"exact": true},
+		&resp,
+		true,
+	)
+	if isNotFoundErr(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return resp.Result.Count, nil
+}
+
 func (q *QdrantAdapter) Health(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, q.baseURL+"/healthz", nil)
 	if err != nil {

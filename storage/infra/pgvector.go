@@ -225,6 +225,15 @@ func (p *PgVectorAdapter) Delete(ctx context.Context, objectIDs []string) error 
 	return err
 }
 
+func (p *PgVectorAdapter) Count(ctx context.Context) (int64, error) {
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", p.qualifiedTable())
+	var total int64
+	if err := p.db.QueryRowContext(ctx, query).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 func (p *PgVectorAdapter) Health(ctx context.Context) error { return p.db.PingContext(ctx) }
 
 func (p *PgVectorAdapter) qualifiedTable() string {

@@ -15,39 +15,38 @@ class StorageAPI:
     ):
         self.endpoint = endpoint.rstrip("/")
         self.timeout_sec = timeout_sec
+        self._timeout = httpx.Timeout(self.timeout_sec)
+        self._client = httpx.Client(timeout=self._timeout)
         self.write_headers = (
             {"X-Storage-Write-Token": write_token.strip()} if write_token.strip() else {}
         )
 
     def resolve_object_id(self, storage_path: str) -> str:
-        with httpx.Client(timeout=httpx.Timeout(self.timeout_sec)) as client:
-            response = client.post(
-                f"{self.endpoint}/objects/resolve-path",
-                json={"storage_path": storage_path},
-                headers=self.write_headers,
-            )
-            response.raise_for_status()
-            payload = response.json()
+        response = self._client.post(
+            f"{self.endpoint}/objects/resolve-path",
+            json={"storage_path": storage_path},
+            headers=self.write_headers,
+        )
+        response.raise_for_status()
+        payload = response.json()
         return payload["object_id"]
 
     def get_object_bytes(self, object_id: str) -> tuple[bytes, str]:
-        with httpx.Client(timeout=httpx.Timeout(self.timeout_sec)) as client:
-            response = client.get(f"{self.endpoint}/objects/{object_id}/content")
-            response.raise_for_status()
-            return response.content, response.headers.get(
-                "content-type", "application/octet-stream"
-            )
+        response = self._client.get(f"{self.endpoint}/objects/{object_id}/content")
+        response.raise_for_status()
+        return response.content, response.headers.get(
+            "content-type", "application/octet-stream"
+        )
 
     def get_object_bytes_batch(self, object_ids: List[str]) -> List[Dict[str, Any]]:
         if not object_ids:
             return []
-        with httpx.Client(timeout=httpx.Timeout(self.timeout_sec)) as client:
-            response = client.post(
-                f"{self.endpoint}/objects/get-batch",
-                json={"object_ids": object_ids},
-            )
-            response.raise_for_status()
-            payload = response.json()
+        response = self._client.post(
+            f"{self.endpoint}/objects/get-batch",
+            json={"object_ids": object_ids},
+        )
+        response.raise_for_status()
+        payload = response.json()
 
         results: List[Dict[str, Any]] = []
         for item in payload.get("items", []):
@@ -68,34 +67,14 @@ class StorageAPI:
             )
         return results
 
-    def get_object_meta(self, object_id: str) -> Dict[str, Any]:
-        with httpx.Client(timeout=httpx.Timeout(self.timeout_sec)) as client:
-            response = client.get(f"{self.endpoint}/objects/{object_id}")
-            response.raise_for_status()
-            return response.json()
-
     def query_vectors(self, embedding: List[float], top_k: int) -> List[Dict[str, Any]]:
-        with httpx.Client(timeout=httpx.Timeout(self.timeout_sec)) as client:
-            response = client.post(
-                f"{self.endpoint}/vectors/query",
-                json={"embedding": embedding, "top_k": top_k},
-            )
-            response.raise_for_status()
-            payload = response.json()
+        response = self._client.post(
+            f"{self.endpoint}/vectors/query",
+            json={"embedding": embedding, "top_k": top_k},
+        )
+        response.raise_for_status()
+        payload = response.json()
         return payload.get("results", [])
-
-    def register_paths(self, storage_paths: List[str]) -> List[Dict[str, str]]:
-        if not storage_paths:
-            return []
-        with httpx.Client(timeout=httpx.Timeout(self.timeout_sec)) as client:
-            response = client.post(
-                f"{self.endpoint}/objects/register-paths",
-                json={"storage_paths": storage_paths},
-                headers=self.write_headers,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        return payload.get("items", [])
 
     def list_objects(
         self,
@@ -105,32 +84,29 @@ class StorageAPI:
         params: Dict[str, Any] = {"limit": limit}
         if cursor:
             params["cursor"] = cursor
-        with httpx.Client(timeout=httpx.Timeout(self.timeout_sec)) as client:
-            response = client.get(f"{self.endpoint}/objects", params=params)
-            response.raise_for_status()
-            return response.json()
+        response = self._client.get(f"{self.endpoint}/objects", params=params)
+        response.raise_for_status()
+        return response.json()
 
     def upsert_vectors(self, vectors: List[Dict[str, Any]]) -> int:
         if not vectors:
             return 0
-        with httpx.Client(timeout=httpx.Timeout(self.timeout_sec)) as client:
-            response = client.post(
-                f"{self.endpoint}/vectors/upsert",
-                json={"vectors": vectors},
-                headers=self.write_headers,
-            )
-            response.raise_for_status()
-            payload = response.json()
+        response = self._client.post(
+            f"{self.endpoint}/vectors/upsert",
+            json={"vectors": vectors},
+            headers=self.write_headers,
+        )
+        response.raise_for_status()
+        payload = response.json()
         return int(payload.get("upserted", 0))
 
     def delete_object(self, object_id: str) -> Dict[str, Any]:
-        with httpx.Client(timeout=httpx.Timeout(self.timeout_sec)) as client:
-            if self.write_headers:
-                response = client.delete(
-                    f"{self.endpoint}/objects/{object_id}",
-                    headers=self.write_headers,
-                )
-            else:
-                response = client.delete(f"{self.endpoint}/objects/{object_id}")
-            response.raise_for_status()
-            return response.json()
+        if self.write_headers:
+            response = self._client.delete(
+                f"{self.endpoint}/objects/{object_id}",
+                headers=self.write_headers,
+            )
+        else:
+            response = self._client.delete(f"{self.endpoint}/objects/{object_id}")
+        response.raise_for_status()
+        return response.json()

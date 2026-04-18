@@ -88,6 +88,21 @@ interface StorageStatsResponse {
   timestamp: string;
 }
 
+interface ObjectListItem {
+  object_id: string;
+  storage_path: string;
+  bucket: string;
+  key: string;
+  size_bytes: number;
+  content_type: string;
+  created_at: string;
+}
+
+interface ObjectListResponse {
+  items: ObjectListItem[];
+  next_cursor?: string;
+}
+
 interface PieSlice {
   label: string;
   percent: number;
@@ -317,12 +332,17 @@ export default function StoragePanel() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
+  const [objectsLoading, setObjectsLoading] = useState(false);
+  const [objects, setObjects] = useState<ObjectListItem[]>([]);
+  const [objectsPageSize, setObjectsPageSize] = useState(20);
+  const [objectsCursor, setObjectsCursor] = useState("");
+  const [objectsPrevCursors, setObjectsPrevCursors] = useState<string[]>([]);
+  const [objectsNextCursor, setObjectsNextCursor] = useState("");
+  const [objectsPage, setObjectsPage] = useState(1);
+  const [previewObjectId, setPreviewObjectId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [warningMessage, setWarningMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [embeddingsRandomCount, setEmbeddingsRandomCount] = useState(100);
-  const [vlmRandomCount, setVlmRandomCount] = useState(100);
-  const [imagesDeleteCount, setImagesDeleteCount] = useState(10);
 
   const loadStats = async (showLoader = false) => {
     if (showLoader) {
@@ -352,17 +372,51 @@ export default function StoragePanel() {
     loadStats(true);
   }, []);
 
-  const runStorageAction = async (
-    actionId: string,
-    fn: () => Promise<void>
+  const loadObjectsPage = async (
+    cursor: string,
+    prevCursors: string[],
+    page: number
   ) => {
+    setObjectsLoading(true);
+    setErrorMessage(null);
+    try {
+      const response = await axios.get<ObjectListResponse>("/api/storage/objects", {
+        params: {
+          limit: objectsPageSize,
+          ...(cursor ? { cursor } : {}),
+        },
+      });
+      setObjects(response.data.items ?? []);
+      setObjectsCursor(cursor);
+      setObjectsPrevCursors(prevCursors);
+      setObjectsNextCursor(response.data.next_cursor ?? "");
+      setObjectsPage(page);
+    } catch (error) {
+      const message =
+        axios.isAxiosError(error) && error.response?.data?.detail
+          ? error.response.data.detail
+          : axios.isAxiosError(error) && error.response?.data?.error
+            ? error.response.data.error
+            : error instanceof Error
+              ? error.message
+              : "Failed to load objects";
+      setErrorMessage(message);
+    } finally {
+      setObjectsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadObjectsPage("", [], 1);
+  }, [objectsPageSize]);
+
+  const runStorageAction = async (actionId: string, fn: () => Promise<void>) => {
     setActionInProgress(actionId);
     setStatusMessage(null);
     setWarningMessage(null);
     setErrorMessage(null);
     try {
       await fn();
-      await loadStats(false);
     } catch (error) {
       const message =
         axios.isAxiosError(error) && error.response?.data?.detail
@@ -378,73 +432,62 @@ export default function StoragePanel() {
     }
   };
 
-  const deleteRandomEmbeddings = async () => {
-    if (!stats) return;
-    if (stats.embeddings.annotated_rows <= 0) {
-      setWarningMessage("Векторных аннотаций для удаления нет.");
-      return;
-    }
-    await runStorageAction("delete-embeddings", async () => {
-      const response = await axios.post("/api/storage/delete-random-embeddings", {
-        count: Math.max(1, embeddingsRandomCount),
-      });
-      setStatusMessage(
-        `Удалено векторных аннотаций: ${response.data.deleted_rows} (из ${response.data.selected_rows}).`
-      );
-    });
+  const goToNextObjectsPage = async () => {
+    if (!objectsNextCursor || objectsLoading) return;
+    await loadObjectsPage(
+      objectsNextCursor,
+      [...objectsPrevCursors, objectsCursor],
+      objectsPage + 1
+    );
   };
 
-  const deleteRandomVlm = async () => {
-    if (!stats) return;
-    if (stats.vlm.annotated_rows <= 0) {
-      setWarningMessage("VLM-аннотаций для удаления нет.");
-      return;
-    }
-    await runStorageAction("delete-vlm", async () => {
-      const response = await axios.post("/api/storage/delete-random-vlm", {
-        count: Math.max(1, vlmRandomCount),
-      });
-      setStatusMessage(
-        `Удалено VLM-аннотаций: ${response.data.deleted_rows} (из ${response.data.selected_rows}).`
-      );
-    });
+  const goToPrevObjectsPage = async () => {
+    if (objectsPrevCursors.length === 0 || objectsLoading) return;
+    const prevCursor = objectsPrevCursors[objectsPrevCursors.length - 1] ?? "";
+    const nextPrev = objectsPrevCursors.slice(0, -1);
+    await loadObjectsPage(prevCursor, nextPrev, Math.max(1, objectsPage - 1));
   };
 
-  const deleteDuplicates = async () => {
+  const deleteObject = async (objectId: string) => {
     const confirmed = window.confirm(
-      "Удалить дубликаты в source-таблице по storage_path? Будет оставлена 1 запись на storage_path."
+      `Удалить объект ${objectId} из storage, векторов и связанных аннотаций?`
     );
     if (!confirmed) return;
 
-    await runStorageAction("delete-duplicates", async () => {
-      const response = await axios.post("/api/storage/delete-duplicates", {
-        confirm: true,
-      });
-      setStatusMessage(`Удалено дубликатов: ${response.data.deleted_rows}.`);
-    });
-  };
-
-  const deleteRandomImages = async () => {
-    const count = Math.max(1, imagesDeleteCount);
-    const confirmed = window.confirm(
-      `Удалить ${count} случайных изображений из стоража и все связанные записи/разметку? Действие необратимо.`
-    );
-    if (!confirmed) return;
-
-    await runStorageAction("delete-images", async () => {
-      const response = await axios.post("/api/storage/delete-random-images", {
-        count,
-        confirm: true,
-      });
-      setStatusMessage(
-        `Удалено изображений: ${response.data.deleted_images}. Удалено строк source: ${response.data.deleted_source_rows}. Ошибок: ${response.data.failed_images}.`
-      );
-      if (Number(response.data.failed_images || 0) > 0) {
-        setWarningMessage(
-          "Часть изображений не удалось удалить. Проверьте details в ответе backend (errors)."
-        );
+    await runStorageAction(`delete-object-${objectId}`, async () => {
+      await axios.delete(`/api/storage/objects/${encodeURIComponent(objectId)}`);
+      setStatusMessage(`Объект ${objectId} удален.`);
+      const shouldGoPrev = objects.length === 1 && objectsPrevCursors.length > 0;
+      const cursor = shouldGoPrev
+        ? objectsPrevCursors[objectsPrevCursors.length - 1] ?? ""
+        : objectsCursor;
+      const prevCursors = shouldGoPrev
+        ? objectsPrevCursors.slice(0, -1)
+        : objectsPrevCursors;
+      const page = shouldGoPrev ? Math.max(1, objectsPage - 1) : objectsPage;
+      await Promise.all([
+        loadStats(false),
+        loadObjectsPage(cursor, prevCursors, page),
+      ]);
+      if (previewObjectId === objectId) {
+        setPreviewObjectId(null);
       }
     });
+  };
+
+  const refreshAll = async () => {
+    setStatusMessage(null);
+    setWarningMessage(null);
+    setErrorMessage(null);
+    setIsRefreshing(true);
+    try {
+      await Promise.all([
+        loadStats(false),
+        loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
+      ]);
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   if (isLoading) {
@@ -538,7 +581,7 @@ export default function StoragePanel() {
             </div>
             <button
               type="button"
-              onClick={() => loadStats(false)}
+              onClick={refreshAll}
               disabled={isRefreshing}
               className="ml-auto rounded-full bg-sky-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -570,90 +613,113 @@ export default function StoragePanel() {
         </div>
 
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h3 className="text-lg font-semibold text-slate-900">Cleanup & Re-Annotation</h3>
-          <p className="mt-1 text-sm text-slate-600">
-            Управление случайной де-разметкой, дубликатами и удалением изображений.
-          </p>
-          <div className="mt-5 grid gap-4 lg:grid-cols-2">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <label className="flex items-center gap-3 text-sm text-slate-700">
-                Random N for vector reset
-                <input
-                  type="number"
-                  min={1}
-                  value={embeddingsRandomCount}
-                  onChange={(event) =>
-                    setEmbeddingsRandomCount(Number(event.target.value) || 1)
-                  }
-                  className="w-28 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
-                />
-                <button
-                  type="button"
-                  onClick={deleteRandomEmbeddings}
-                  disabled={actionInProgress !== null}
-                  className="rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {actionInProgress === "delete-embeddings" ? "Working..." : "Delete random embeddings"}
-                </button>
-              </label>
+          <div className="flex flex-wrap items-center gap-3">
+            <div>
+              <h3 className="text-lg font-semibold text-slate-900">Object Browser</h3>
+              <p className="mt-1 text-sm text-slate-600">
+                Листинг объектов с постраничным просмотром, превью и удалением конкретного объекта.
+              </p>
             </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <label className="flex items-center gap-3 text-sm text-slate-700">
-                Random N for VLM reset
-                <input
-                  type="number"
-                  min={1}
-                  value={vlmRandomCount}
-                  onChange={(event) => setVlmRandomCount(Number(event.target.value) || 1)}
-                  className="w-28 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
-                />
-                <button
-                  type="button"
-                  onClick={deleteRandomVlm}
-                  disabled={actionInProgress !== null}
-                  className="rounded-full bg-violet-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {actionInProgress === "delete-vlm" ? "Working..." : "Delete random VLM"}
-                </button>
-              </label>
+            <div className="ml-auto flex items-center gap-2 text-sm text-slate-700">
+              <span>На странице:</span>
+              <select
+                value={objectsPageSize}
+                onChange={(event) => setObjectsPageSize(Number(event.target.value))}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
+              >
+                {[10, 20, 50, 100].map((size) => (
+                  <option key={size} value={size}>
+                    {size}
+                  </option>
+                ))}
+              </select>
             </div>
+          </div>
 
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div className="flex items-center gap-3 text-sm text-slate-700">
-                <button
-                  type="button"
-                  onClick={deleteDuplicates}
-                  disabled={actionInProgress !== null}
-                  className="rounded-full bg-amber-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {actionInProgress === "delete-duplicates" ? "Working..." : "Delete duplicates"}
-                </button>
-                <span>Удаляет дубликаты строк в source по `storage_path`.</span>
-              </div>
+          <div className="mt-5 overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-200">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Object ID</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Bucket / Key</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Size</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Created</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 bg-white">
+                {objects.length === 0 && !objectsLoading && (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-6 text-center text-sm text-slate-500">
+                      Объекты не найдены.
+                    </td>
+                  </tr>
+                )}
+                {objects.map((item) => (
+                  <tr key={item.object_id}>
+                    <td className="px-4 py-3 text-xs text-slate-800">{item.object_id}</td>
+                    <td className="px-4 py-3 text-sm text-slate-700">
+                      <div className="font-medium">{item.bucket}</div>
+                      <div className="text-xs text-slate-500 break-all">{item.key}</div>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-700">{formatBytes(item.size_bytes)}</td>
+                    <td className="px-4 py-3 text-sm text-slate-700">
+                      {item.created_at ? new Date(item.created_at).toLocaleString("ru-RU") : "-"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setPreviewObjectId(item.object_id)}
+                          className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                        >
+                          Preview
+                        </button>
+                        <a
+                          href={`/api/objects/${encodeURIComponent(item.object_id)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                        >
+                          Open
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => deleteObject(item.object_id)}
+                          disabled={actionInProgress !== null}
+                          className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {actionInProgress === `delete-object-${item.object_id}` ? "Deleting..." : "Delete"}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-4 flex items-center justify-between">
+            <div className="text-sm text-slate-600">
+              Страница {objectsPage} {objectsLoading ? "• loading..." : ""}
             </div>
-
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
-              <label className="flex items-center gap-3 text-sm text-rose-800">
-                Random N images hard delete
-                <input
-                  type="number"
-                  min={1}
-                  value={imagesDeleteCount}
-                  onChange={(event) =>
-                    setImagesDeleteCount(Number(event.target.value) || 1)
-                  }
-                  className="w-24 rounded-lg border border-rose-300 bg-white px-3 py-2 text-slate-900"
-                />
-                <button
-                  type="button"
-                  onClick={deleteRandomImages}
-                  disabled={actionInProgress !== null}
-                  className="rounded-full bg-rose-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {actionInProgress === "delete-images" ? "Working..." : "Delete images + metadata"}
-                </button>
-              </label>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={goToPrevObjectsPage}
+                disabled={objectsPrevCursors.length === 0 || objectsLoading}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                ← Назад
+              </button>
+              <button
+                type="button"
+                onClick={goToNextObjectsPage}
+                disabled={!objectsNextCursor || objectsLoading}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Вперёд →
+              </button>
             </div>
           </div>
         </div>
@@ -785,6 +851,41 @@ export default function StoragePanel() {
           </div>
         </div>
       </div>
+
+      {previewObjectId && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+          onClick={() => setPreviewObjectId(null)}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-5xl overflow-auto rounded-2xl bg-white p-4 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between gap-4">
+              <div>
+                <div className="text-xs uppercase tracking-wide text-slate-500">
+                  Object Preview
+                </div>
+                <div className="break-all text-sm font-semibold text-slate-900">
+                  {previewObjectId}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewObjectId(null)}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+            <img
+              src={`/api/objects/${encodeURIComponent(previewObjectId)}`}
+              alt={previewObjectId}
+              className="max-h-[75vh] w-full rounded-xl border border-slate-200 bg-slate-100 object-contain"
+            />
+          </div>
+        </div>
+      )}
     </section>
   );
 }
