@@ -60,6 +60,7 @@ class NuImagesPreprocessor(Preprocessor):
         self.limit = limit
         self.download_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
         self.cancel_requested_callback: Optional[Callable[[], bool]] = None
+        self.install_log_callback: Optional[Callable[[str], None]] = None
 
         DATA_FOLDER.mkdir(parents=True, exist_ok=True)
 
@@ -105,6 +106,11 @@ class NuImagesPreprocessor(Preprocessor):
             }
         )
 
+    def _log(self, message: str) -> None:
+        print(message, flush=True)
+        if self.install_log_callback:
+            self.install_log_callback(message)
+
     def _discover_archives(self) -> List[Path]:
         archives: List[Path] = []
         for pattern in self.ARCHIVE_PATTERNS:
@@ -123,10 +129,7 @@ class NuImagesPreprocessor(Preprocessor):
             raise InterruptedError("Dataset installation cancelled by user")
         if not self.archives:
             if self._has_extracted_images():
-                print(
-                    "[NuImages] Archives not found, using already extracted data.",
-                    flush=True,
-                )
+                self._log("[NuImages] Archives not found, using already extracted data.")
                 return
             raise FileNotFoundError(
                 f"No archives found in {DATA_FOLDER}. "
@@ -149,9 +152,8 @@ class NuImagesPreprocessor(Preprocessor):
         archive_size = int(archive_path.stat().st_size if archive_path.exists() else 0)
 
         if marker_path.exists() and self._has_extracted_images():
-            print(
-                f"[NuImages] Skip extract {archive_index}/{total_archives}: {archive_path.name} (already extracted)",
-                flush=True,
+            self._log(
+                f"[NuImages] Skip extract {archive_index}/{total_archives}: {archive_path.name} (already extracted)"
             )
             self._report_progress(
                 file_index=archive_index,
@@ -163,9 +165,8 @@ class NuImagesPreprocessor(Preprocessor):
             )
             return
 
-        print(
-            f"[NuImages] Start extract {archive_index}/{total_archives}: {archive_path.name}",
-            flush=True,
+        self._log(
+            f"[NuImages] Start extract {archive_index}/{total_archives}: {archive_path.name}"
         )
         self._report_progress(
             file_index=archive_index,
@@ -177,10 +178,7 @@ class NuImagesPreprocessor(Preprocessor):
         )
         extracted_files = None
         if self.extract_with_progress:
-            print(
-                "[NuImages] INFO: progress mode enabled (slower).",
-                flush=True,
-            )
+            self._log("[NuImages] INFO: progress mode enabled (slower).")
             extracted_files = self._extract_archive_with_progress_bar(
                 archive_path=archive_path,
                 archive_index=archive_index,
@@ -199,11 +197,10 @@ class NuImagesPreprocessor(Preprocessor):
             done=True,
         )
         if extracted_files is None:
-            print(f"[NuImages] Done extract: {archive_path.name}", flush=True)
+            self._log(f"[NuImages] Done extract: {archive_path.name}")
         else:
-            print(
+            self._log(
                 f"[NuImages] Done extract: {archive_path.name} (files: {extracted_files})",
-                flush=True,
             )
 
     def _extract_archive_fast(self, archive_path: Path) -> None:

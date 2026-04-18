@@ -1,5 +1,5 @@
 from .preprocessor import Preprocessor
-from typing import List, Optional, Dict
+from typing import Any, Callable, List, Optional, Dict
 from tqdm import tqdm
 import pandas as pd
 import requests
@@ -65,11 +65,44 @@ class ArgoversePreprocessor(Preprocessor):
 
         # for iterable
         self.iteration = 0
+        self.install_log_callback: Optional[Callable[[str], None]] = None
+        self.download_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+        self.cancel_requested_callback: Optional[Callable[[], bool]] = None
 
-    def download_part(self, split: str, part: int):
+    def _log(self, message: str) -> None:
+        print(message, flush=True)
+        if self.install_log_callback:
+            self.install_log_callback(message)
+
+    def _should_stop(self) -> bool:
+        return bool(self.cancel_requested_callback and self.cancel_requested_callback())
+
+    def _report_progress(
+        self,
+        file_index: int,
+        file_name: str,
+        downloaded_bytes: int,
+        total_bytes: int,
+        done: bool = False,
+    ) -> None:
+        if not self.download_progress_callback:
+            return
+        self.download_progress_callback(
+            {
+                "file_index": int(file_index),
+                "total_files": int(max(self.total_parts, 1)),
+                "file_name": str(file_name),
+                "downloaded_bytes": int(max(downloaded_bytes, 0)),
+                "total_bytes": int(max(total_bytes, 0)),
+                "done": bool(done),
+            }
+        )
+
+    def download_part(self, split: str, part: int, part_index: int):
         filename = f"{split}-{part:03d}.tar"
         url = os.path.join(S3_DATASET_LINK, filename)
         out_path = os.path.join(DATA_FOLDER, filename)
+        self._log(f"[Argoverse] Download start {part_index}/{self.total_parts}: {filename}")
 
         with requests.get(url, stream=True, timeout=60) as r:
             r.raise_for_status()
@@ -83,9 +116,22 @@ class ArgoversePreprocessor(Preprocessor):
             headers = {}
 
             if remote_size and local_size >= remote_size:
+                self._log(
+                    f"[Argoverse] Archive already downloaded {filename} ({local_size} bytes), skip download"
+                )
+                self._report_progress(
+                    file_index=part_index,
+                    file_name=filename,
+                    downloaded_bytes=local_size,
+                    total_bytes=remote_size,
+                    done=True,
+                )
                 self._extract_tar_with_progress(out_path)
                 return out_path
             if downloaded > 0:
+                self._log(
+                    f"[Argoverse] Resume download {filename} from byte {downloaded}"
+                )
                 headers = {"Range": f"bytes={downloaded}-"}
                 r.close()
                 r = requests.get(url, stream=True, timeout=60, headers=headers)
@@ -93,6 +139,14 @@ class ArgoversePreprocessor(Preprocessor):
 
                 remaining = int(r.headers.get("Content-Length", 0))
                 remote_size = downloaded + remaining
+
+            self._report_progress(
+                file_index=part_index,
+                file_name=filename,
+                downloaded_bytes=downloaded,
+                total_bytes=remote_size,
+                done=False,
+            )
 
             pbar = tqdm(
                 total=remote_size,
@@ -104,9 +158,31 @@ class ArgoversePreprocessor(Preprocessor):
             )
             with open(out_path, mode) as f:
                 for chunk in r.iter_content(chunk_size=self.CHUNK_SIZE):
+                    if self._should_stop():
+                        raise InterruptedError("Dataset installation cancelled by user")
                     if chunk:
                         f.write(chunk)
                         pbar.update(len(chunk))
+                        downloaded += len(chunk)
+                        self._report_progress(
+                            file_index=part_index,
+                            file_name=filename,
+                            downloaded_bytes=downloaded,
+                            total_bytes=remote_size,
+                            done=False,
+                        )
+
+        final_size = os.path.getsize(out_path) if os.path.exists(out_path) else downloaded
+        self._report_progress(
+            file_index=part_index,
+            file_name=filename,
+            downloaded_bytes=final_size,
+            total_bytes=remote_size if remote_size > 0 else final_size,
+            done=True,
+        )
+        self._log(
+            f"[Argoverse] Download done {part_index}/{self.total_parts}: {filename} ({final_size} bytes)"
+        )
 
         self._extract_tar_with_progress(out_path)
         return out_path
@@ -122,20 +198,13 @@ class ArgoversePreprocessor(Preprocessor):
         if marker_path.exists() and split_root.exists():
             has_split_files = any(p.is_file() for p in split_root.rglob("*.jpg"))
             if has_split_files:
-                print(
-                    f"[Argoverse] Skip extract for {tar_name}: marker found and files already unpacked.",
-                    flush=True,
+                self._log(
+                    f"[Argoverse] Skip extract for {tar_name}: marker found and files already unpacked."
                 )
                 return
 
-        print(
-            f"[Argoverse] Start extract (stream mode, no pre-scan): {tar_name}",
-            flush=True,
-        )
-        print(
-            f"[Argoverse] INFO: skipping full tar index/size scan for speed on large archives.",
-            flush=True,
-        )
+        self._log(f"[Argoverse] Start extract (stream mode, no pre-scan): {tar_name}")
+        self._log("[Argoverse] INFO: skipping full tar index/size scan for speed on large archives.")
 
         # Stream mode avoids expensive full archive indexing (getmembers) on huge tar files.
         with tarfile.open(tar_path, "r|*") as tar:
@@ -155,10 +224,7 @@ class ArgoversePreprocessor(Preprocessor):
             pbar.close()
         marker_path.write_text("ok\n")
 
-        print(
-            f"[Argoverse] Done extract: {tar_name} (files: {extracted_files})",
-            flush=True,
-        )
+        self._log(f"[Argoverse] Done extract: {tar_name} (files: {extracted_files})")
 
     def filter_by_step_seconds(self, files: List[Path]) -> List[Path]:
         step_ns = int(self.resample_seconds * 1e9)
@@ -259,14 +325,20 @@ class ArgoversePreprocessor(Preprocessor):
         return result
 
     def process_part(self, split: str, part: int):
-        output = self.download_part(split, part)
+        part_index = self.iteration + 1
+        self._log(f"[Argoverse] Process part {part_index}/{self.total_parts}: {split}-{part:03d}")
+        output = self.download_part(split, part, part_index=part_index)
         output = self.fitler_part(Path(output).parent, split, part)
+        self._log(f"[Argoverse] Part complete {part_index}/{self.total_parts}: {split}-{part:03d}")
         return output
 
     def _generate(self):
         for split, parts in self.download_parts.items():
             for part in parts:
+                if self._should_stop():
+                    raise InterruptedError("Dataset installation cancelled by user")
                 yield self.process_part(split, part)
+                self.iteration += 1
 
     def __iter__(self):
         return self._generate()

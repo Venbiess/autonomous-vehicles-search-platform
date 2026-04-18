@@ -38,13 +38,9 @@ preprocessors:
         - FRONT
       resample_seconds: 5.0
       download_parts:
-        train:
-          - 0
-          - 1
-        val:
-          - 0
-        test:
-          - 0
+        train: [0]
+        val: []
+        test: []
       remove_after_load: false
       embed_on_install: false
 

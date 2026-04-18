@@ -166,6 +166,18 @@ def run_preprocessor_method(
             )
 
         preprocessor.download_progress_callback = _download_progress
+    if hasattr(preprocessor, "install_log_callback"):
+        def _install_log(message: str) -> None:
+            if not progress_callback:
+                return
+            progress_callback(
+                {
+                    "event": "log",
+                    "message": str(message),
+                }
+            )
+
+        preprocessor.install_log_callback = _install_log
     if cancel_requested_callback is not None:
         preprocessor.cancel_requested_callback = cancel_requested_callback
 
