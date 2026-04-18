@@ -33,6 +33,8 @@ python -m backend.processors.argoverse_preprocessor
 
 python -m backend.processors.waymo_preprocessor
 
+python -m backend.processors.nuimages_preprocessor
+
 python -m backend.processors.synthetic_preprocessor --num-images 32 --batch-size 8 --bucket synthetic --save-to-db
 ```
 

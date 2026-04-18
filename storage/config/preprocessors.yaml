@@ -10,6 +10,7 @@ preprocessors:
       num_images: 64
       batch_size: 16
       keep_local_images: false
+      embed_on_install: false
 
   - key: waymo
     label: Waymo Open Dataset
@@ -21,8 +22,9 @@ preprocessors:
       bucket: waymo
       cameras:
         - FRONT
-      resample_seconds: 0.5
+      resample_seconds: 5.0
       exist_skip: false
+      embed_on_install: false
 
   - key: argoverse
     label: Argoverse 2
@@ -34,13 +36,28 @@ preprocessors:
       bucket: argoverse
       cameras:
         - FRONT
-      resample_seconds: 0.5
+      resample_seconds: 5.0
       download_parts:
-        train:
-          - 0
-          - 1
-        val:
-          - 0
-        test:
-          - 0
+        train: [0]
+        val: []
+        test: []
       remove_after_load: false
+      embed_on_install: false
+
+  - key: nuimages
+    label: NuImages (nuScenes)
+    description: Read local nuImages archives/frames, preprocess, and upload camera frames to storage.
+    runner:
+      entrypoint: python -m backend.processors.nuimages_preprocessor
+      module: backend.processors.nuimages_preprocessor
+    default_config:
+      bucket: nuimages
+      cameras:
+        - FRONT
+      resample_seconds: 5.0
+      image_roots:
+        - sweeps
+        - samples
+      extract_with_progress: false
+      keep_local_images: true
+      embed_on_install: false

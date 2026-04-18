@@ -1,0 +1,11 @@
+# Available: FRONT, FRONT_LEFT, FRONT_RIGHT, REAR, BACK_LEFT, BACK_RIGHT
+NUSCENES_CAMERAS = [
+    "FRONT"
+]
+
+# Time step
+NUSCENES_RESAMPLE_SECONDS = 0.5
+
+# Path inside DATA_DIR to data (DATA_DIR is initialized in common.py)
+NUIMAGES_DIR = "nuimages/"
+NUSCENES_DIR = NUIMAGES_DIR

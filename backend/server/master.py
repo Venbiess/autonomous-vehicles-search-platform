@@ -1,7 +1,10 @@
 import logging
+from pathlib import Path
+import queue
 import re
 import threading
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
 from enum import Enum
@@ -34,6 +37,8 @@ app = FastAPI(title="AVSP Master Server")
 
 jobs_store: Dict[str, Dict[str, Any]] = {}
 jobs_lock = threading.Lock()
+JOB_LOG_DIR = Path("/tmp/avsp-job-logs")
+JOB_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 VLM_RESPONSE_TYPES = {"short_text", "text", "yes_no", "number", "category"}
 VLM_RESPONSE_HINTS = {
@@ -98,6 +103,7 @@ class VLMSearchRequest(BaseModel):
 
 class CancelJobRequest(BaseModel):
     job_id: str = Field(..., min_length=1)
+    install_cleanup_mode: str = Field("keep", min_length=1)
 
 
 class DatasetInstallRequest(BaseModel):
@@ -254,6 +260,20 @@ def _list_object_ids(limit: int, page_size: int = 500) -> List[str]:
     return object_ids
 
 
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
 def _storage_vector_upsert_batch(rows: List[EmbedResult]) -> int:
     if not rows:
         return 0
@@ -328,6 +348,13 @@ def _job_cancel_requested(job_id: str) -> bool:
         return bool(job and job.get("cancel_requested"))
 
 
+def _job_install_cleanup_mode(job_id: str) -> str:
+    with jobs_lock:
+        job = jobs_store.get(job_id) or {}
+        mode = str(job.get("install_cleanup_mode", "keep")).strip().lower()
+    return mode if mode in {"keep", "delete"} else "keep"
+
+
 def _mark_job_cancelled(
     job_id: str,
     total_seen: int,
@@ -347,6 +374,131 @@ def _mark_job_cancelled(
                     "updated_at": time.time(),
                 }
             )
+
+
+def _append_install_log(job: Dict[str, Any], message: str) -> None:
+    text = str(message or "").strip()
+    if not text:
+        return
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {text}"
+    logs = job.get("install_log")
+    if not isinstance(logs, list):
+        logs = []
+        job["install_log"] = logs
+    logs.append(line)
+    if len(logs) > 5000:
+        del logs[:-5000]
+
+    job_id = str(job.get("job_id", "")).strip()
+    if job_id:
+        log_path = JOB_LOG_DIR / f"{job_id}.log"
+        job["install_log_path"] = str(log_path)
+        try:
+            with log_path.open("a", encoding="utf-8") as fp:
+                fp.write(line + "\n")
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to write install log file for job_id=%s", job_id)
+
+
+def _embed_install_queue_worker(
+    job_id: str,
+    object_queue: "queue.Queue[Optional[str]]",
+    errors: List[Dict[str, str]],
+    batch_size: int = 16,
+) -> None:
+    timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
+    requested_batch = max(1, int(batch_size))
+    producer_done = False
+    pending_ids: List[str] = []
+
+    with httpx.Client(timeout=timeout) as client:
+        while True:
+            if _job_cancel_requested(job_id):
+                raise InterruptedError("Dataset installation cancelled by user")
+
+            queue_wait_timed_out = False
+            if not producer_done and len(pending_ids) < requested_batch:
+                try:
+                    item = object_queue.get(timeout=0.25)
+                    if item is None:
+                        producer_done = True
+                    else:
+                        pending_ids.append(item)
+                except queue.Empty:
+                    queue_wait_timed_out = True
+
+            if not pending_ids:
+                if producer_done:
+                    break
+                continue
+
+            # Do not stall progress waiting for a full batch: if queue is idle,
+            # process whatever has already been downloaded.
+            if len(pending_ids) < requested_batch and not producer_done and not queue_wait_timed_out:
+                continue
+
+            batch_ids = pending_ids[:requested_batch]
+            del pending_ids[:requested_batch]
+
+            batch_payload = storage_api.get_object_bytes_batch(batch_ids)
+            by_object_id = {
+                item.get("object_id"): item for item in batch_payload if item.get("object_id")
+            }
+            rows: List[EmbedResult] = []
+
+            for object_id in batch_ids:
+                if _job_cancel_requested(job_id):
+                    raise InterruptedError("Dataset installation cancelled by user")
+                try:
+                    batch_item = by_object_id.get(object_id)
+                    if not batch_item:
+                        raise ValueError("object not returned in batch response")
+                    if batch_item.get("error"):
+                        raise ValueError(str(batch_item.get("error")))
+                    image_bytes = batch_item.get("content", b"")
+                    if not image_bytes:
+                        raise ValueError("empty content")
+                    embedding, dim = _embed_image(client, image_bytes)
+                    rows.append(
+                        EmbedResult(
+                            object_id=object_id,
+                            embedding=embedding,
+                            dim=dim,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Auto-embedding failed for object_id=%s", object_id)
+                    errors.append({"object_id": object_id, "error": str(exc)})
+
+            upserted = 0
+            if rows:
+                try:
+                    upserted = _storage_vector_upsert_batch(rows)
+                    if upserted != len(rows):
+                        errors.append(
+                            {
+                                "error": (
+                                    f"auto-embedding upsert mismatch: expected={len(rows)} "
+                                    f"actual={upserted}"
+                                )
+                            }
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception(
+                        "Auto-embedding vector upsert failed for rows=%s", len(rows)
+                    )
+                    errors.append({"error": str(exc)})
+
+            with jobs_lock:
+                job = jobs_store.get(job_id)
+                if job:
+                    job["embedding_tasks_completed"] = int(
+                        job.get("embedding_tasks_completed", 0) or 0
+                    ) + len(batch_ids)
+                    job["total_embeddings_inserted"] = int(
+                        job.get("total_embeddings_inserted", 0) or 0
+                    ) + int(upserted)
+                    job["updated_at"] = time.time()
 
 
 def _run_backfill_job(job_id: str, payload: BackfillRequest):
@@ -484,7 +636,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                 jobs_store[job_id].update(
                     {
                         "status": JobStatus.ERROR.value,
-                        "errors": errors + [{"error": str(exc)}],
+                        "errors": errors + [{"error": str(exc), "log": traceback.format_exc()}],
                         "updated_at": time.time(),
                     }
                 )
@@ -664,37 +816,120 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                 jobs_store[job_id].update(
                     {
                         "status": JobStatus.ERROR.value,
-                        "errors": errors + [{"error": str(exc)}],
+                        "errors": errors + [{"error": str(exc), "log": traceback.format_exc()}],
                         "updated_at": time.time(),
                     }
                 )
 
 
 def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[str, Any]):
+    cfg = dict(dataset_cfg or {})
+    embed_on_install = _to_bool(cfg.get("embed_on_install", False), False)
+
     with jobs_lock:
         jobs_store[job_id] = {
             "job_id": job_id,
             "job_type": f"install_{dataset_key}",
             "dataset": dataset_key,
+            "embed_on_install": embed_on_install,
             "status": JobStatus.RUNNING.value,
             "cancel_requested": False,
+            "install_cleanup_mode": "keep",
             "progress": 0,
             "total_seen": 0,
             "total_inserted": 0,
+            "total_embeddings_inserted": 0,
+            "embedding_tasks_completed": 0,
+            "embedding_tasks_total": 0,
+            "embedding_worker_running": bool(embed_on_install),
             "total_limit": 0,
             "total_planned": 0,
             "current_scene_tasks_completed": 0,
             "current_scene_tasks_total": 0,
             "current_scene_index": 0,
             "errors": [],
+            "install_log": [],
+            "install_log_path": str(JOB_LOG_DIR / f"{job_id}.log"),
             "created_at": time.time(),
             "updated_at": time.time(),
         }
 
     errors: List[Dict[str, str]] = []
+    uploaded_object_ids: List[str] = []
+    uploaded_object_ids_seen: set[str] = set()
+    embed_queue: Optional["queue.Queue[Optional[str]]"] = None
+    embed_thread: Optional[threading.Thread] = None
+    embed_worker_state: Dict[str, Any] = {"error": None, "cancelled": False}
+    embed_worker_lock = threading.Lock()
+    embed_worker_stopped = False
+
+    if embed_on_install:
+        embed_queue = queue.Queue(maxsize=4096)
+        with jobs_lock:
+            job = jobs_store.get(job_id)
+            if job:
+                _append_install_log(
+                    job,
+                    "Auto-embedding enabled, running in streaming mode during install.",
+                )
+
+        def _embed_worker_runner() -> None:
+            try:
+                _embed_install_queue_worker(
+                    job_id=job_id,
+                    object_queue=embed_queue,  # type: ignore[arg-type]
+                    errors=errors,
+                )
+            except InterruptedError:
+                with embed_worker_lock:
+                    embed_worker_state["cancelled"] = True
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Streaming auto-embedding worker failed: job_id=%s dataset=%s",
+                    job_id,
+                    dataset_key,
+                )
+                with embed_worker_lock:
+                    embed_worker_state["error"] = {
+                        "error": str(exc),
+                        "log": traceback.format_exc(),
+                    }
+            finally:
+                with jobs_lock:
+                    job = jobs_store.get(job_id)
+                    if job:
+                        job["embedding_worker_running"] = False
+                        job["updated_at"] = time.time()
+
+        embed_thread = threading.Thread(
+            target=_embed_worker_runner,
+            name=f"embed-install-{job_id[:8]}",
+            daemon=True,
+        )
+        embed_thread.start()
+
+    def _stop_embedding_worker(wait: bool = True) -> None:
+        nonlocal embed_worker_stopped
+        if embed_worker_stopped:
+            return
+        worker_alive = bool(embed_thread is not None and embed_thread.is_alive())
+        if worker_alive and embed_queue is not None:
+            while True:
+                try:
+                    embed_queue.put(None, timeout=0.2)
+                    break
+                except queue.Full:
+                    if embed_thread is not None and not embed_thread.is_alive():
+                        break
+                    if _job_cancel_requested(job_id):
+                        continue
+        if wait and embed_thread is not None:
+            embed_thread.join()
+        embed_worker_stopped = True
 
     def _on_progress(event: Dict[str, Any]) -> None:
         ev = str(event.get("event", "")).strip()
+        object_id_to_enqueue: Optional[str] = None
         with jobs_lock:
             job = jobs_store.get(job_id)
             if not job:
@@ -704,6 +939,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 total = int(event.get("total_planned", 0) or 0)
                 job["total_limit"] = total
                 job["total_planned"] = total
+                _append_install_log(job, f"Start installation for dataset={dataset_key}, planned={total}")
 
             if ev == "download":
                 job["current_scene_index"] = int(event.get("current_scene_index", 0) or 0)
@@ -718,6 +954,28 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                     job["total_limit"] = total
                     job["total_planned"] = total
 
+            if ev == "upload_progress":
+                scene_index = int(event.get("episodes_done", job.get("current_scene_index", 0)) or 0)
+                job["current_scene_index"] = scene_index
+                job["current_scene_tasks_completed"] = int(
+                    event.get("current_scene_tasks_completed", 0) or 0
+                )
+                job["current_scene_tasks_total"] = int(
+                    event.get("current_scene_tasks_total", 0) or 0
+                )
+                object_id = str(event.get("last_uploaded_object_id", "") or "").strip()
+                if object_id and object_id not in uploaded_object_ids_seen:
+                    uploaded_object_ids_seen.add(object_id)
+                    uploaded_object_ids.append(object_id)
+                    if embed_on_install and embed_queue is not None:
+                        object_id_to_enqueue = object_id
+                        job["embedding_tasks_total"] = int(
+                            job.get("embedding_tasks_total", 0) or 0
+                        ) + 1
+
+            if ev == "log":
+                _append_install_log(job, str(event.get("message", "") or ""))
+
             if ev == "episode":
                 seen = int(event.get("episodes_done", job.get("total_seen", 0)) or 0)
                 inserted = int(event.get("uploaded_objects", job.get("total_inserted", 0)) or 0)
@@ -729,45 +987,140 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 job["total_inserted"] = inserted
                 if failed > 0:
                     job["errors"] = [{"error": f"failed objects: {failed}"}]
+                    _append_install_log(job, f"Failed objects so far: {failed}")
                 job["current_scene_index"] = seen
 
             job["updated_at"] = time.time()
 
+        if object_id_to_enqueue and embed_queue is not None:
+            while True:
+                if _job_cancel_requested(job_id):
+                    break
+                if embed_thread is not None and not embed_thread.is_alive():
+                    break
+                try:
+                    embed_queue.put(object_id_to_enqueue, timeout=0.2)
+                    break
+                except queue.Full:
+                    continue
+
     try:
         summary = run_preprocessor_method(
             dataset_key,
-            dataset_cfg,
+            cfg,
             progress_callback=_on_progress,
+            cancel_requested_callback=lambda: _job_cancel_requested(job_id),
         )
+        if embed_on_install:
+            with jobs_lock:
+                job = jobs_store.get(job_id)
+                if job:
+                    _append_install_log(
+                        job,
+                        "Dataset download finished, waiting for remaining embedding tasks...",
+                    )
+            _stop_embedding_worker(wait=True)
+            with embed_worker_lock:
+                worker_error = embed_worker_state.get("error")
+            if worker_error:
+                errors.append(worker_error)
+
         failed_objects = int(summary.get("failed_objects", 0) or 0)
         with jobs_lock:
             if job_id in jobs_store:
+                existing_errors = list(jobs_store[job_id].get("errors", []))
+                final_errors = existing_errors + errors
+                total_embeddings_inserted = int(
+                    jobs_store[job_id].get("total_embeddings_inserted", 0) or 0
+                )
                 jobs_store[job_id].update(
                     {
-                        "status": JobStatus.SUCCESS.value if failed_objects == 0 else JobStatus.ERROR.value,
+                        "status": JobStatus.SUCCESS.value
+                        if failed_objects == 0 and not final_errors
+                        else JobStatus.ERROR.value,
                         "progress": 100,
                         "total_seen": int(summary.get("episodes_done", 0) or 0),
                         "total_inserted": int(summary.get("uploaded_objects", 0) or 0),
+                        "total_embeddings_inserted": int(total_embeddings_inserted),
                         "total_limit": int(summary.get("total_planned", jobs_store[job_id].get("total_limit", 0)) or 0),
                         "total_planned": int(summary.get("total_planned", jobs_store[job_id].get("total_planned", 0)) or 0),
+                        "embedding_worker_running": False,
                         "current_scene_tasks_completed": 0,
                         "current_scene_tasks_total": 0,
-                        "errors": jobs_store[job_id].get("errors", []),
+                        "errors": final_errors,
                         "updated_at": time.time(),
                     }
                 )
+                _append_install_log(
+                    jobs_store[job_id],
+                    (
+                        f"Finished with status={jobs_store[job_id]['status']}, "
+                        f"uploaded={jobs_store[job_id].get('total_inserted', 0)}, "
+                        f"embeddings={jobs_store[job_id].get('total_embeddings_inserted', 0)}"
+                    ),
+                )
+    except InterruptedError:
+        _stop_embedding_worker(wait=True)
+        cleanup_mode = _job_install_cleanup_mode(job_id)
+        removed_count = 0
+        cleanup_errors: List[Dict[str, str]] = []
+        if cleanup_mode == "delete":
+            for object_id in uploaded_object_ids:
+                try:
+                    delete_result = storage_api.delete_object(object_id)
+                    if bool(delete_result.get("deleted", False)):
+                        removed_count += 1
+                except Exception as exc:  # noqa: BLE001
+                    cleanup_errors.append(
+                        {"object_id": object_id, "error": f"cleanup failed: {exc}"}
+                    )
+
+        with jobs_lock:
+            if job_id in jobs_store:
+                existing_errors = list(jobs_store[job_id].get("errors", []))
+                if cleanup_mode == "delete":
+                    existing_errors.append(
+                        {
+                            "error": (
+                                f"Cancellation cleanup removed {removed_count} / "
+                                f"{len(uploaded_object_ids)} uploaded objects"
+                            )
+                        }
+                    )
+                jobs_store[job_id].update(
+                    {
+                        "status": JobStatus.CANCELLED.value,
+                        "total_inserted": max(
+                            0,
+                            int(jobs_store[job_id].get("total_inserted", 0) or 0)
+                            - removed_count,
+                        ),
+                        "embedding_worker_running": False,
+                        "current_scene_tasks_completed": 0,
+                        "current_scene_tasks_total": 0,
+                        "errors": existing_errors + cleanup_errors,
+                        "updated_at": time.time(),
+                    }
+                )
+                _append_install_log(
+                    jobs_store[job_id],
+                    f"Cancelled (cleanup_mode={cleanup_mode}, removed={removed_count}/{len(uploaded_object_ids)})",
+                )
     except Exception as exc:  # noqa: BLE001
+        _stop_embedding_worker(wait=True)
         logger.exception("Dataset installation job failed: job_id=%s dataset=%s", job_id, dataset_key)
-        errors.append({"error": str(exc)})
+        errors.append({"error": str(exc), "log": traceback.format_exc()})
         with jobs_lock:
             if job_id in jobs_store:
                 jobs_store[job_id].update(
                     {
                         "status": JobStatus.ERROR.value,
+                        "embedding_worker_running": False,
                         "errors": errors,
                         "updated_at": time.time(),
                     }
                 )
+                _append_install_log(jobs_store[job_id], f"Failed: {exc}")
 
 
 @app.get("/health")
@@ -968,9 +1321,21 @@ def cancel_job(payload: CancelJobRequest):
             raise HTTPException(status_code=404, detail="Job not found")
         if job["status"] != JobStatus.RUNNING.value:
             raise HTTPException(status_code=400, detail="Job is not running")
+        cleanup_mode = str(payload.install_cleanup_mode or "keep").strip().lower()
+        if cleanup_mode not in {"keep", "delete"}:
+            raise HTTPException(
+                status_code=400,
+                detail="install_cleanup_mode must be 'keep' or 'delete'",
+            )
+        if str(job.get("job_type", "")).startswith("install_"):
+            job["install_cleanup_mode"] = cleanup_mode
         job["cancel_requested"] = True
         job["updated_at"] = time.time()
-    return {"job_id": payload.job_id, "status": "cancellation_requested"}
+    return {
+        "job_id": payload.job_id,
+        "status": "cancellation_requested",
+        "install_cleanup_mode": cleanup_mode if str(job.get("job_type", "")).startswith("install_") else None,
+    }
 
 
 @app.post("/search/vlm")

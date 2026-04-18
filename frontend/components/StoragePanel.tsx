@@ -334,7 +334,7 @@ export default function StoragePanel() {
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [objectsLoading, setObjectsLoading] = useState(false);
   const [objects, setObjects] = useState<ObjectListItem[]>([]);
-  const [objectsPageSize, setObjectsPageSize] = useState(20);
+  const [objectsPageSize, setObjectsPageSize] = useState(5);
   const [objectsCursor, setObjectsCursor] = useState("");
   const [objectsPrevCursors, setObjectsPrevCursors] = useState<string[]>([]);
   const [objectsNextCursor, setObjectsNextCursor] = useState("");
@@ -627,7 +627,7 @@ export default function StoragePanel() {
                 onChange={(event) => setObjectsPageSize(Number(event.target.value))}
                 className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
               >
-                {[10, 20, 50, 100].map((size) => (
+                {[5, 10, 20, 50, 100].map((size) => (
                   <option key={size} value={size}>
                     {size}
                   </option>

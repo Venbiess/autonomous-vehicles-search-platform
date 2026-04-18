@@ -32,6 +32,7 @@ interface Job {
   progress: number;
   total_seen: number;
   total_inserted: number;
+  total_embeddings_inserted?: number;
   total_limit: number;
   total_planned?: number;
   total_tasks_completed?: number;
@@ -39,7 +40,13 @@ interface Job {
   current_scene_tasks_completed?: number;
   current_scene_tasks_total?: number;
   current_scene_index?: number;
-  errors: Array<{ storage_path?: string; error: string }>;
+  embed_on_install?: boolean;
+  embedding_tasks_completed?: number;
+  embedding_tasks_total?: number;
+  embedding_worker_running?: boolean;
+  install_log?: string[];
+  install_log_path?: string;
+  errors: Array<{ storage_path?: string; object_id?: string; error: string; log?: string }>;
   created_at: number;
   updated_at: number;
 }
@@ -51,6 +58,8 @@ export default function SystemMonitor() {
   const [error, setError] = useState<string | null>(null);
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
+  const [logViewer, setLogViewer] = useState<{ title: string; content: string } | null>(null);
+  const [cancelDialogJob, setCancelDialogJob] = useState<Job | null>(null);
 
   const fetchSystemInfo = async () => {
     try {
@@ -140,6 +149,33 @@ export default function SystemMonitor() {
     }
   };
 
+  const getJobErrorLog = (job: Job): string => {
+    if (!Array.isArray(job.errors) || job.errors.length === 0) {
+      return "No error details available.";
+    }
+    return job.errors
+      .map((entry, index) => {
+        const base = entry.error || "Unknown error";
+        const source = entry.storage_path
+          ? `storage_path=${entry.storage_path}`
+          : entry.object_id
+            ? `object_id=${entry.object_id}`
+            : "";
+        const prefix = `${index + 1}. ${source ? `${source} | ` : ""}${base}`;
+        const log = typeof entry.log === "string" ? entry.log.trim() : "";
+        return log ? `${prefix}\n${log}` : prefix;
+      })
+      .join("\n\n");
+  };
+
+  const getJobInstallLog = (job: Job): string => {
+    const lines = Array.isArray(job.install_log) ? job.install_log : [];
+    if (lines.length === 0) {
+      return "No install log available.";
+    }
+    return lines.join("\n");
+  };
+
   const formatDate = (timestamp: number): string => {
     return new Date(timestamp * 1000).toLocaleString("ru-RU");
   };
@@ -149,6 +185,7 @@ export default function SystemMonitor() {
     if (jobType === "backfill_vlm") return "Backfill VLM";
     if (jobType === "install_waymo") return "Install Waymo";
     if (jobType === "install_argoverse") return "Install Argoverse";
+    if (jobType === "install_nuimages") return "Install NuImages (nuScenes)";
     if (jobType === "install_nuscenes") return "Install NuScenes";
     if (jobType.startsWith("install_")) {
       const suffix = jobType.slice("install_".length);
@@ -219,14 +256,21 @@ export default function SystemMonitor() {
     return `linear-gradient(90deg, hsl(${hue} 75% 52%), hsl(${nextHue} 82% 58%))`;
   };
 
-  const cancelVlmJob = async (jobId: string) => {
+  const executeCancelJob = async (
+    job: Job,
+    install_cleanup_mode: "keep" | "delete" = "keep"
+  ) => {
     try {
-      setCancellingJobId(jobId);
-      await axios.post("/api/jobs/cancel", { job_id: jobId });
+      setCancellingJobId(job.job_id);
+      await axios.post("/api/jobs/cancel", {
+        job_id: job.job_id,
+        install_cleanup_mode,
+      });
+      setCancelDialogJob(null);
       await fetchJobs();
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Не удалось отменить VLM джобу";
+        err instanceof Error ? err.message : "Не удалось отменить джобу";
       alert(`Ошибка: ${message}`);
     } finally {
       setCancellingJobId(null);
@@ -363,7 +407,7 @@ export default function SystemMonitor() {
       </div>
 
       {/* Таблица джобов */}
-      <div className="max-w-7xl mx-auto bg-white rounded-lg shadow-lg p-6 mt-6">
+      <div className="max-w-[96rem] mx-auto bg-white rounded-lg shadow-lg p-6 mt-6">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-bold text-gray-900">Джобы</h2>
         </div>
@@ -407,18 +451,37 @@ export default function SystemMonitor() {
                 {jobs.map((job) => {
                   const statusColors = getJobStatusColor(job.status);
                   const progress = job.progress;
+                  const isCancellableJobType =
+                    job.job_type === "backfill_vlm" ||
+                    job.job_type === "backfill_embeddings" ||
+                    job.job_type.startsWith("install_");
                   const canCancelJob =
-                    (job.job_type === "backfill_vlm" ||
-                      job.job_type === "backfill_embeddings") &&
-                    job.status === "running" &&
-                    !job.cancel_requested;
+                    isCancellableJobType && job.status === "running" && !job.cancel_requested;
                   const isVlmJob = job.job_type === "backfill_vlm";
-                  const isWaymoInstallJob = job.job_type === "install_waymo";
+                  const isInstallJob = job.job_type.startsWith("install_");
+                  const isInstallDatasetJob = isInstallJob;
                   const plannedTotal = job.total_planned ?? job.total_limit;
                   const progressLabel = `${job.total_seen} / ${plannedTotal}`;
                   const processedLabel = `${job.total_seen} / ${plannedTotal}`;
                   const scenesSavedLabel = `Сцен сохранено: ${job.total_inserted}`;
-                  const downloadedFilesLabel = `Скачано файлов: ${job.total_seen}`;
+                  const installScenesSavedLabel = `Сцен сохранено: ${job.total_inserted}`;
+                  const embeddingTasksCompleted = job.embedding_tasks_completed ?? 0;
+                  const embeddingTasksTotal = job.embedding_tasks_total ?? 0;
+                  const embeddingProgress =
+                    embeddingTasksTotal > 0
+                      ? Math.min((embeddingTasksCompleted / embeddingTasksTotal) * 100, 100)
+                      : 0;
+                  const showEmbeddingProgress =
+                    isInstallJob &&
+                    Boolean(
+                      job.embed_on_install ||
+                        embeddingTasksTotal > 0 ||
+                        (job.total_embeddings_inserted ?? 0) > 0
+                    );
+                  const embeddingStatusLabel =
+                    embeddingTasksTotal > 0
+                      ? `Embedding: ${embeddingTasksCompleted} / ${embeddingTasksTotal}`
+                      : "Embedding: ожидание скачанных сцен";
                   const currentSceneTasksCompleted = job.current_scene_tasks_completed ?? 0;
                   const currentSceneTasksTotal = job.current_scene_tasks_total ?? 0;
                   const currentSceneProgress =
@@ -428,22 +491,33 @@ export default function SystemMonitor() {
                           100
                         )
                       : 0;
-                  const currentSceneLabel = `VLM calls: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
+                  const currentSceneLabel = isInstallJob
+                    ? `Install: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`
+                    : `VLM calls: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
                   const currentSceneIndex = job.current_scene_index ?? 0;
                   const timing = getJobTiming(job);
                   const installFileLabel = `Download: ${formatDataSize(
                     currentSceneTasksCompleted
                   )} / ${formatDataSize(currentSceneTasksTotal)}`;
-                  const secondaryProgressLabel = isWaymoInstallJob
+                  const secondaryProgressLabel = isInstallDatasetJob
                     ? installFileLabel
                     : currentSceneLabel;
-                  const secondaryProgressGradient = isWaymoInstallJob
+                  const secondaryProgressGradient = isInstallDatasetJob
                     ? "linear-gradient(90deg, hsl(200 78% 48%), hsl(160 78% 45%))"
                     : getSceneTaskGradient(currentSceneIndex);
                   const showSecondaryProgress =
                     job.status === "running" &&
                     currentSceneTasksTotal > 0 &&
-                    (isVlmJob || isWaymoInstallJob);
+                    (isVlmJob || isInstallJob);
+                  const hasErrorDetails = job.status === "error" && (job.errors?.length ?? 0) > 0;
+                  const hasInstallLogData =
+                    isInstallJob &&
+                    Array.isArray(job.install_log) &&
+                    job.install_log.length > 0;
+                  const canOpenInstallLogOnSuccess =
+                    job.status === "success" && hasInstallLogData;
+                  const canOpenInstallLogOnRunning =
+                    job.status === "running" && hasInstallLogData;
                   
                   return (
                     <tr key={job.job_id} className="hover:bg-gray-50">
@@ -470,16 +544,21 @@ export default function SystemMonitor() {
                           <div className="text-xs text-gray-500 mt-1">
                             {isVlmJob
                               ? scenesSavedLabel
-                              : isWaymoInstallJob
-                                ? downloadedFilesLabel
+                              : isInstallJob
+                                ? installScenesSavedLabel
                                 : `Вставлено: ${job.total_inserted}`}
                           </div>
+                          {showEmbeddingProgress && (
+                            <div className="text-xs text-gray-500 mt-1">
+                              {`Эмбеддингов сохранено: ${job.total_embeddings_inserted ?? 0}`}
+                            </div>
+                          )}
                           {showSecondaryProgress && (
                             <div className="mt-3">
-                              <div className="flex justify-between text-xs mb-1">
+                              <div className="flex justify-between gap-2 text-xs mb-1">
                                 <span className="text-gray-600">{secondaryProgressLabel}</span>
-                                <span className="font-medium">
-                                  {isWaymoInstallJob
+                                <span className="font-medium pl-2 whitespace-nowrap">
+                                  {isInstallDatasetJob
                                     ? `File ${Math.min(
                                         currentSceneIndex,
                                         plannedTotal || currentSceneIndex
@@ -501,12 +580,75 @@ export default function SystemMonitor() {
                               </div>
                             </div>
                           )}
+                          {showEmbeddingProgress && (
+                            <div className="mt-3">
+                              <div className="flex justify-between gap-2 text-xs mb-1">
+                                <span className="text-gray-600">{embeddingStatusLabel}</span>
+                                <span className="font-medium pl-2 whitespace-nowrap">
+                                  {job.status === "running" && (job.embedding_worker_running ?? false)
+                                    ? "Running"
+                                    : "Done"}
+                                </span>
+                              </div>
+                              <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                                <div
+                                  className="h-2 rounded-full transition-all duration-300"
+                                  style={{
+                                    width: `${embeddingProgress}%`,
+                                    backgroundImage:
+                                      "linear-gradient(90deg, hsl(24 88% 52%), hsl(42 94% 55%))",
+                                  }}
+                                ></div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`font-semibold ${statusColors.text}`}>
-                          {getJobStatusText(job.status, job.cancel_requested)}
-                        </span>
+                        {hasErrorDetails ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLogViewer({
+                                title: `Error log for ${formatJobTypeLabel(job.job_type)}`,
+                                content: getJobErrorLog(job),
+                              })
+                            }
+                            className="font-bold text-red-600 underline decoration-red-600 underline-offset-2 hover:text-red-700"
+                          >
+                            Error
+                          </button>
+                        ) : canOpenInstallLogOnSuccess ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLogViewer({
+                                title: `Install log for ${formatJobTypeLabel(job.job_type)}`,
+                                content: getJobInstallLog(job),
+                              })
+                            }
+                            className="font-bold text-green-700 underline decoration-green-700 underline-offset-2 hover:text-green-800"
+                          >
+                            Success
+                          </button>
+                        ) : canOpenInstallLogOnRunning ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLogViewer({
+                                title: `Install log for ${formatJobTypeLabel(job.job_type)}`,
+                                content: getJobInstallLog(job),
+                              })
+                            }
+                            className="font-bold text-blue-700 underline decoration-blue-700 underline-offset-2 hover:text-blue-800"
+                          >
+                            {getJobStatusText(job.status, job.cancel_requested)}
+                          </button>
+                        ) : (
+                          <span className={`font-semibold ${statusColors.text}`}>
+                            {getJobStatusText(job.status, job.cancel_requested)}
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {processedLabel}
@@ -523,7 +665,7 @@ export default function SystemMonitor() {
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {canCancelJob ? (
                           <button
-                            onClick={() => cancelVlmJob(job.job_id)}
+                            onClick={() => setCancelDialogJob(job)}
                             disabled={cancellingJobId === job.job_id}
                             className={`px-4 py-2 rounded-lg font-semibold transition-all duration-200 ${
                               cancellingJobId === job.job_id
@@ -533,12 +675,9 @@ export default function SystemMonitor() {
                           >
                             {cancellingJobId === job.job_id ? "Отмена..." : "Отменить"}
                           </button>
-                        ) : (job.job_type === "backfill_vlm" ||
-                            job.job_type === "backfill_embeddings") &&
-                          job.status === "cancelled" ? (
+                        ) : isCancellableJobType && job.status === "cancelled" ? (
                           <span className="text-gray-500 font-medium">Отменено</span>
-                        ) : (job.job_type === "backfill_vlm" ||
-                            job.job_type === "backfill_embeddings") &&
+                        ) : isCancellableJobType &&
                           job.status === "running" &&
                           job.cancel_requested ? (
                           <span className="text-red-600 font-medium">Остановка...</span>
@@ -554,6 +693,90 @@ export default function SystemMonitor() {
           </div>
         )}
       </div>
+
+      {logViewer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="max-h-[80vh] w-full max-w-4xl overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">
+                  {logViewer.title}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLogViewer(null)}
+                className="rounded-lg border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="max-h-[calc(80vh-72px)] overflow-auto p-5">
+              <pre className="whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100">
+                {logViewer.content}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {cancelDialogJob && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <div className="text-base font-semibold text-slate-900">
+                Остановить джобу?
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                {formatJobTypeLabel(cancelDialogJob.job_type)} · {cancelDialogJob.job_id}
+              </div>
+            </div>
+            <div className="px-5 py-4 text-sm text-slate-700">
+              {cancelDialogJob.job_type.startsWith("install_")
+                ? "Выберите, что сделать с уже загруженными этой джобой данными."
+                : "Подтвердите остановку джобы."}
+            </div>
+            <div className="flex flex-nowrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setCancelDialogJob(null)}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              >
+                Закрыть
+              </button>
+              {cancelDialogJob.job_type.startsWith("install_") ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => executeCancelJob(cancelDialogJob, "keep")}
+                    disabled={cancellingJobId === cancelDialogJob.job_id}
+                    className="rounded-lg border border-blue-300 px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-60"
+                  >
+                    Остановить и сохранить
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => executeCancelJob(cancelDialogJob, "delete")}
+                    disabled={cancellingJobId === cancelDialogJob.job_id}
+                    className="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+                  >
+                    Остановить и удалить
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => executeCancelJob(cancelDialogJob, "keep")}
+                  disabled={cancellingJobId === cancelDialogJob.job_id}
+                  className="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+                >
+                  Остановить
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

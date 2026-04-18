@@ -4,6 +4,7 @@ import math
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .argoverse_preprocessor import ArgoversePreprocessor
+from .nuimages_preprocessor import NuImagesPreprocessor
 from .synthetic_preprocessor import SyntheticRoadPreprocessor
 from .waymo_preprocessor import WaymoPreprocessor
 
@@ -37,6 +38,15 @@ def _to_float(value: Any, default: float) -> float:
         return float(value)
     except Exception:  # noqa: BLE001
         return default
+
+
+def _to_optional_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _to_str_list(value: Any, default: Optional[List[str]] = None) -> List[str]:
@@ -107,6 +117,20 @@ def _build_preprocessor(
         planned_total = sum(len(v) for v in parts.values())
         return preprocessor, bucket, planned_total
 
+    if key in {"nuimages", "nuscenes"}:
+        preprocessor = NuImagesPreprocessor(
+            cameras=_to_str_list(cfg.get("cameras"), ["FRONT"]),
+            resample_seconds=_to_float(cfg.get("resample_seconds", 0.5), 0.5),
+            image_roots=_to_str_list(cfg.get("image_roots"), ["sweeps", "samples"]),
+            extract_with_progress=_to_bool(cfg.get("extract_with_progress", False), False),
+            limit=_to_optional_int(cfg.get("limit")),
+        )
+        keep_local_images = _to_bool(cfg.get("keep_local_images", True), True)
+        preprocessor.remove_local_images = not keep_local_images
+        bucket = str(cfg.get("bucket", "nuimages")).strip() or "nuimages"
+        planned_total = len(preprocessor)
+        return preprocessor, bucket, planned_total
+
     raise ValueError(f"Unsupported preprocessor method: {method_key}")
 
 
@@ -114,6 +138,7 @@ def run_preprocessor_method(
     method_key: str,
     config: Dict[str, Any],
     progress_callback: Optional[ProgressCallback] = None,
+    cancel_requested_callback: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     cfg = dict(config or {})
     preprocessor, bucket, planned_total = _build_preprocessor(method_key, cfg)
@@ -141,10 +166,25 @@ def run_preprocessor_method(
             )
 
         preprocessor.download_progress_callback = _download_progress
+    if hasattr(preprocessor, "install_log_callback"):
+        def _install_log(message: str) -> None:
+            if not progress_callback:
+                return
+            progress_callback(
+                {
+                    "event": "log",
+                    "message": str(message),
+                }
+            )
 
-    summary = preprocessor.download_to_s3(
+        preprocessor.install_log_callback = _install_log
+    if cancel_requested_callback is not None:
+        preprocessor.cancel_requested_callback = cancel_requested_callback
+
+    summary = preprocessor.download_to_storage(
         bucket=bucket,
         progress_callback=progress_callback,
+        should_stop_callback=cancel_requested_callback,
     )
 
     out = {

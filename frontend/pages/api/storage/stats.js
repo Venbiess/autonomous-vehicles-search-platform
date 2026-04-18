@@ -55,17 +55,21 @@ export default async function handler(req, res) {
     // Embeddings coverage from vector index.
     try {
       const vectorPayload = await readStorageJson("/vectors/count");
-      const annotated = Math.max(
-        0,
-        Math.min(totalObjects, Number(vectorPayload?.count || 0))
-      );
-      const pending = Math.max(0, totalObjects - annotated);
-      stats.embeddings.annotated_rows = annotated;
-      stats.embeddings.pending_rows = pending;
-      stats.embeddings.annotated_percent =
-        totalObjects > 0 ? (annotated / totalObjects) * 100 : 0;
-      stats.embeddings.pending_percent =
-        totalObjects > 0 ? (pending / totalObjects) * 100 : 0;
+      const vectorCount = Math.max(0, Number(vectorPayload?.count || 0));
+      if (vectorCount <= totalObjects) {
+        const annotated = vectorCount;
+        const pending = Math.max(0, totalObjects - annotated);
+        stats.embeddings.annotated_rows = annotated;
+        stats.embeddings.pending_rows = pending;
+        stats.embeddings.annotated_percent =
+          totalObjects > 0 ? (annotated / totalObjects) * 100 : 0;
+        stats.embeddings.pending_percent =
+          totalObjects > 0 ? (pending / totalObjects) * 100 : 0;
+      } else {
+        warnings.push(
+          `vector stats are global (count=${vectorCount}) and exceed current objects (${totalObjects}); showing pending as not annotated`
+        );
+      }
     } catch (error) {
       warnings.push(`vector stats unavailable: ${error.message}`);
     }

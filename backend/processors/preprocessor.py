@@ -51,6 +51,10 @@ class Preprocessor:
             logger.exception("failed to upload object: path=%s bucket=%s key=%s", local_path, bucket, object_name)
             return None
 
+    # Backward compatibility: legacy preprocessors/scripts may still call this name.
+    def upload_to_s3(self, local_path: str, bucket: str, object_name: str) -> Optional[dict]:
+        return self.upload_to_storage(local_path, bucket, object_name)
+
     @abstractmethod
     def __iter__(self):
         raise NotImplementedError("Dataset preprocessor must have __iter__")
@@ -59,12 +63,13 @@ class Preprocessor:
     def __next__(self):
         raise NotImplementedError("Dataset preprocessor must have __next__")
 
-    def download_to_s3(
+    def download_to_storage(
         self,
         bucket: str = "avsp",
         save_to_db: bool = False,
         db_table: str = None,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        should_stop_callback: Optional[Callable[[], bool]] = None,
     ):
         if save_to_db or db_table:
             logger.warning("save_to_db/db_table are ignored: preprocessors now write only to storage")
@@ -75,11 +80,16 @@ class Preprocessor:
         failed_objects = 0
 
         for episode_df in tqdm(self):
+            if should_stop_callback and should_stop_callback():
+                raise InterruptedError("Dataset installation cancelled by user")
             episodes_done += 1
             episode_df["storage_path"] = None
             episode_df["object_id"] = None
+            total_episode_rows = int(len(episode_df.index))
 
-            for idx, row in episode_df.iterrows():
+            for row_idx, (idx, row) in enumerate(episode_df.iterrows(), start=1):
+                if should_stop_callback and should_stop_callback():
+                    raise InterruptedError("Dataset installation cancelled by user")
                 total_rows += 1
                 local_path = str(row["image_path"])
                 name = os.path.basename(local_path)
@@ -96,6 +106,21 @@ class Preprocessor:
 
                 if self.remove_local_images and os.path.exists(local_path):
                     os.remove(local_path)
+
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "event": "upload_progress",
+                            "episodes_done": episodes_done,
+                            "current_scene_tasks_completed": row_idx,
+                            "current_scene_tasks_total": total_episode_rows,
+                            "uploaded_objects": uploaded_objects,
+                            "failed_objects": failed_objects,
+                            "total_rows": total_rows,
+                            "last_uploaded_object_id": uploaded.get("object_id") if uploaded else None,
+                            "last_storage_path": uploaded.get("storage_path") if uploaded else None,
+                        }
+                    )
 
             if progress_callback:
                 progress_callback(
