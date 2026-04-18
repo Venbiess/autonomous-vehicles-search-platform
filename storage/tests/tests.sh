@@ -113,6 +113,9 @@ run_tests() {
 }
 
 cleanup() {
+  if [[ "$KEEP_VENV" -eq 0 && -d "$VENV_DIR" ]]; then
+    rm -rf "$VENV_DIR"
+  fi
   if [[ "$DOWN_AFTER" -eq 1 ]]; then
     docker compose -f "$COMPOSE_FILE" down
   fi

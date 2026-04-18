@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"avsp/storage/config"
@@ -51,7 +52,37 @@ func main() {
 		log.Fatalf("failed to initialize storage service: %v", err)
 	}
 
-	handler := apiv1.NewStorageHandler(svc, cfg.WriteToken)
+	preprocessorMethods := make([]core.PreprocessorMethod, 0)
+	if manifestPath := strings.TrimSpace(cfg.PreprocessorsManifestPath); manifestPath != "" {
+		catalog, err := config.LoadPreprocessorCatalog(manifestPath)
+		if err != nil {
+			observability.LogError("preprocessors_manifest_load_failed", map[string]any{
+				"path":  manifestPath,
+				"error": err.Error(),
+			})
+		} else {
+			preprocessorMethods = make([]core.PreprocessorMethod, 0, len(catalog.Preprocessors))
+			for _, item := range catalog.Preprocessors {
+				key := strings.TrimSpace(item.Key)
+				label := strings.TrimSpace(item.Label)
+				if key == "" || label == "" {
+					continue
+				}
+				preprocessorMethods = append(preprocessorMethods, core.PreprocessorMethod{
+					Key:         key,
+					Label:       label,
+					Description: strings.TrimSpace(item.Description),
+					Runner: core.PreprocessorRunner{
+						Entrypoint: strings.TrimSpace(item.Runner.Entrypoint),
+						Module:     strings.TrimSpace(item.Runner.Module),
+					},
+					DefaultConfig: item.DefaultConfig,
+				})
+			}
+		}
+	}
+
+	handler := apiv1.NewStorageHandler(svc, cfg.WriteToken, preprocessorMethods)
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
@@ -65,14 +96,15 @@ func main() {
 	handler.Register(mux)
 
 	observability.LogInfo("server_start", map[string]any{
-		"service":             cfg.ServerName,
-		"addr":                cfg.Addr,
-		"default_bucket":      cfg.DefaultBucket,
-		"metadata_schema":     cfg.MetadataDB.Schema,
-		"metadata_table":      cfg.MetadataDB.Table,
-		"object_provider":     cfg.ObjectStore.Provider,
-		"vector_provider":     cfg.VectorIndex.Provider,
-		"write_guard_enabled": cfg.WriteToken != "",
+		"service":              cfg.ServerName,
+		"addr":                 cfg.Addr,
+		"default_bucket":       cfg.DefaultBucket,
+		"metadata_schema":      cfg.MetadataDB.Schema,
+		"metadata_table":       cfg.MetadataDB.Table,
+		"object_provider":      cfg.ObjectStore.Provider,
+		"vector_provider":      cfg.VectorIndex.Provider,
+		"preprocessor_methods": len(preprocessorMethods),
+		"write_guard_enabled":  cfg.WriteToken != "",
 	})
 
 	srv := &http.Server{

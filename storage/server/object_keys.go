@@ -1,31 +1,15 @@
 package server
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
+	"time"
 )
-
-func parseStoragePath(storagePath, defaultBucket string) (string, string, error) {
-	path := normalizeStoragePath(storagePath)
-	if strings.HasPrefix(path, "s3://") {
-		path = strings.TrimPrefix(path, "s3://")
-	}
-	path = strings.TrimPrefix(path, "/")
-	if path == "" {
-		return "", "", errors.New("invalid storage path")
-	}
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) == 1 {
-		if defaultBucket == "" {
-			return "", "", errors.New("default bucket is required")
-		}
-		return defaultBucket, parts[0], nil
-	}
-	return parts[0], parts[1], nil
-}
 
 func normalizeStoragePath(s string) string {
 	return strings.TrimSpace(strings.ReplaceAll(s, "\\", "/"))
@@ -36,11 +20,31 @@ func objectIDFromStoragePath(storagePath string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-func canonicalStoragePath(storagePath, defaultBucket string) (string, string, string, error) {
-	bucket, key, err := parseStoragePath(storagePath, defaultBucket)
-	if err != nil {
-		return "", "", "", err
+func chooseObjectKey(explicitKey, filename string) (string, error) {
+	key := strings.Trim(strings.TrimSpace(explicitKey), "/")
+	if key != "" {
+		return key, nil
 	}
-	canonical := fmt.Sprintf("s3://%s/%s", bucket, key)
-	return canonical, bucket, key, nil
+
+	ext := strings.ToLower(strings.TrimSpace(filepath.Ext(filename)))
+	if len(ext) > 10 || strings.Contains(ext, "/") {
+		ext = ""
+	}
+	suffix, err := randomHex(12)
+	if err != nil {
+		return "", err
+	}
+	datePath := time.Now().UTC().Format("2006/01/02")
+	return fmt.Sprintf("uploads/%s/%s%s", datePath, suffix, ext), nil
+}
+
+func randomHex(size int) (string, error) {
+	if size <= 0 {
+		return "", errors.New("size must be > 0")
+	}
+	buf := make([]byte, size)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }

@@ -144,9 +144,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate synthetic road images and push to storage")
     parser.add_argument("--num-images", type=int, default=64)
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--bucket", type=str, default="synthetic")
-    parser.add_argument("--save-to-db", action="store_true")
-    parser.add_argument("--db-table", type=str, default="")
+    parser.add_argument("--bucket", type=str, default="avsp")
     parser.add_argument("--keep-local-images", action="store_true")
     args = parser.parse_args()
 
@@ -155,11 +153,7 @@ def main() -> None:
         batch_size=args.batch_size,
         remove_local_images=not args.keep_local_images,
     )
-    processor.download_to_s3(
-        bucket=args.bucket,
-        save_to_db=args.save_to_db,
-        db_table=args.db_table or None,
-    )
+    processor.download_to_s3(bucket=args.bucket)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,11 +17,13 @@ import (
 const maxUnifiedBatchObjectIDs = 256
 const defaultListObjectsLimit = 100
 const maxListObjectsLimit = 1000
+const maxUploadObjectBytes = 32 << 20
 const vectorCountCacheTTL = 15 * time.Second
 
 type StorageHandler struct {
 	svc        *core.StorageServer
 	writeToken string
+	methods    []core.PreprocessorMethod
 
 	vectorCountMu        sync.Mutex
 	vectorCountCachedAt  time.Time
@@ -28,20 +31,36 @@ type StorageHandler struct {
 	vectorCountHasCache  bool
 }
 
-func NewStorageHandler(svc *core.StorageServer, writeToken string) *StorageHandler {
-	return &StorageHandler{svc: svc, writeToken: strings.TrimSpace(writeToken)}
+func NewStorageHandler(svc *core.StorageServer, writeToken string, methods []core.PreprocessorMethod) *StorageHandler {
+	methodsCopy := make([]core.PreprocessorMethod, len(methods))
+	copy(methodsCopy, methods)
+	return &StorageHandler{
+		svc:        svc,
+		writeToken: strings.TrimSpace(writeToken),
+		methods:    methodsCopy,
+	}
 }
 
 func (h *StorageHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/health", h.handleHealth)
+	mux.HandleFunc("/preprocessors/methods", h.handlePreprocessorMethods)
 	mux.HandleFunc("/objects", h.handleObjects)
-	mux.HandleFunc("/objects/resolve-path", h.handleResolvePath)
-	mux.HandleFunc("/objects/register-paths", h.handleRegisterPaths)
+	mux.HandleFunc("/objects/upload", h.handleUploadObject)
 	mux.HandleFunc("/objects/get-batch", h.handleGetBatch)
 	mux.HandleFunc("/objects/", h.handleObjectByID)
 	mux.HandleFunc("/vectors/upsert", h.handleVectorUpsert)
 	mux.HandleFunc("/vectors/query", h.handleVectorQuery)
 	mux.HandleFunc("/vectors/count", h.handleVectorCount)
+}
+
+func (h *StorageHandler) handlePreprocessorMethods(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": h.methods,
+	})
 }
 
 func (h *StorageHandler) authorizeWrite(r *http.Request) error {
@@ -60,22 +79,6 @@ func (h *StorageHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-type storageResolvePathRequest struct {
-	StoragePath string `json:"storage_path"`
-}
-
-type storageResolvePathResponse struct {
-	ObjectID string `json:"object_id"`
-}
-
-type storageRegisterPathsRequest struct {
-	StoragePaths []string `json:"storage_paths"`
-}
-
-type storageRegisterPathsResponse struct {
-	Items []core.RegisterPathItem `json:"items"`
 }
 
 type storageListObjectsResponse struct {
@@ -107,7 +110,7 @@ func (h *StorageHandler) handleObjects(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *StorageHandler) handleResolvePath(w http.ResponseWriter, r *http.Request) {
+func (h *StorageHandler) handleUploadObject(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
 		return
@@ -116,45 +119,48 @@ func (h *StorageHandler) handleResolvePath(w http.ResponseWriter, r *http.Reques
 		writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
 		return
 	}
-	var req storageResolvePathRequest
-	if err := decodeJSONBody(r, &req); err != nil {
+	if err := r.ParseMultipartForm(maxUploadObjectBytes); err != nil {
 		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
 		return
 	}
-	m, err := h.svc.ResolvePath(r.Context(), req.StoragePath)
+	file, fileHeader, err := r.FormFile("file")
 	if err != nil {
-		status, code := classifyError(err)
-		writeTypedError(w, r, status, code, err)
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", errors.New("file is required"))
 		return
 	}
-	writeJSON(w, http.StatusOK, storageResolvePathResponse{ObjectID: m.ObjectID})
-}
+	defer file.Close()
 
-func (h *StorageHandler) handleRegisterPaths(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
-		return
-	}
-	if err := h.authorizeWrite(r); err != nil {
-		writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
-		return
-	}
-	var req storageRegisterPathsRequest
-	if err := decodeJSONBody(r, &req); err != nil {
+	body, err := io.ReadAll(io.LimitReader(file, maxUploadObjectBytes+1))
+	if err != nil {
 		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
 		return
 	}
-	if len(req.StoragePaths) == 0 {
-		writeTypedError(w, r, http.StatusBadRequest, "bad_request", errors.New("storage_paths are required"))
+	if len(body) == 0 {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", errors.New("file payload is required"))
 		return
 	}
-	items, err := h.svc.RegisterPaths(r.Context(), req.StoragePaths)
+	if len(body) > maxUploadObjectBytes {
+		writeTypedError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", errors.New("file is too large"))
+		return
+	}
+
+	bucket := strings.TrimSpace(r.FormValue("bucket"))
+	key := strings.TrimSpace(r.FormValue("key"))
+	contentType := strings.TrimSpace(r.FormValue("content_type"))
+	if contentType == "" {
+		contentType = strings.TrimSpace(fileHeader.Header.Get("Content-Type"))
+	}
+	if contentType == "" {
+		contentType = http.DetectContentType(body)
+	}
+
+	m, err := h.svc.UploadObject(r.Context(), bucket, key, fileHeader.Filename, contentType, body)
 	if err != nil {
 		status, code := classifyError(err)
 		writeTypedError(w, r, status, code, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, storageRegisterPathsResponse{Items: items})
+	writeJSON(w, http.StatusOK, m)
 }
 
 type storageGetBatchObjectsRequest struct {

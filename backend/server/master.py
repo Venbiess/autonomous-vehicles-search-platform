@@ -12,6 +12,7 @@ import psutil
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from backend.processors.runner import run_preprocessor_method
 from configs.common import (
     ANALYTICS_SERVER_ENDPOINT,
     ANALYTICS_SERVER_TIMEOUT_SEC,
@@ -97,6 +98,11 @@ class VLMSearchRequest(BaseModel):
 
 class CancelJobRequest(BaseModel):
     job_id: str = Field(..., min_length=1)
+
+
+class DatasetInstallRequest(BaseModel):
+    datasets: List[str] = Field(..., min_length=1)
+    configs: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -664,6 +670,106 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                 )
 
 
+def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[str, Any]):
+    with jobs_lock:
+        jobs_store[job_id] = {
+            "job_id": job_id,
+            "job_type": f"install_{dataset_key}",
+            "dataset": dataset_key,
+            "status": JobStatus.RUNNING.value,
+            "cancel_requested": False,
+            "progress": 0,
+            "total_seen": 0,
+            "total_inserted": 0,
+            "total_limit": 0,
+            "total_planned": 0,
+            "current_scene_tasks_completed": 0,
+            "current_scene_tasks_total": 0,
+            "current_scene_index": 0,
+            "errors": [],
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+
+    errors: List[Dict[str, str]] = []
+
+    def _on_progress(event: Dict[str, Any]) -> None:
+        ev = str(event.get("event", "")).strip()
+        with jobs_lock:
+            job = jobs_store.get(job_id)
+            if not job:
+                return
+
+            if ev == "start":
+                total = int(event.get("total_planned", 0) or 0)
+                job["total_limit"] = total
+                job["total_planned"] = total
+
+            if ev == "download":
+                job["current_scene_index"] = int(event.get("current_scene_index", 0) or 0)
+                job["current_scene_tasks_completed"] = int(
+                    event.get("current_scene_tasks_completed", 0) or 0
+                )
+                job["current_scene_tasks_total"] = int(
+                    event.get("current_scene_tasks_total", 0) or 0
+                )
+                total = int(event.get("total_planned", job.get("total_planned", 0)) or 0)
+                if total > 0:
+                    job["total_limit"] = total
+                    job["total_planned"] = total
+
+            if ev == "episode":
+                seen = int(event.get("episodes_done", job.get("total_seen", 0)) or 0)
+                inserted = int(event.get("uploaded_objects", job.get("total_inserted", 0)) or 0)
+                failed = int(event.get("failed_objects", 0) or 0)
+                total = int(job.get("total_planned", 0) or 0)
+                if total > 0:
+                    job["progress"] = min(100, int((seen / max(total, 1)) * 100))
+                job["total_seen"] = seen
+                job["total_inserted"] = inserted
+                if failed > 0:
+                    job["errors"] = [{"error": f"failed objects: {failed}"}]
+                job["current_scene_index"] = seen
+
+            job["updated_at"] = time.time()
+
+    try:
+        summary = run_preprocessor_method(
+            dataset_key,
+            dataset_cfg,
+            progress_callback=_on_progress,
+        )
+        failed_objects = int(summary.get("failed_objects", 0) or 0)
+        with jobs_lock:
+            if job_id in jobs_store:
+                jobs_store[job_id].update(
+                    {
+                        "status": JobStatus.SUCCESS.value if failed_objects == 0 else JobStatus.ERROR.value,
+                        "progress": 100,
+                        "total_seen": int(summary.get("episodes_done", 0) or 0),
+                        "total_inserted": int(summary.get("uploaded_objects", 0) or 0),
+                        "total_limit": int(summary.get("total_planned", jobs_store[job_id].get("total_limit", 0)) or 0),
+                        "total_planned": int(summary.get("total_planned", jobs_store[job_id].get("total_planned", 0)) or 0),
+                        "current_scene_tasks_completed": 0,
+                        "current_scene_tasks_total": 0,
+                        "errors": jobs_store[job_id].get("errors", []),
+                        "updated_at": time.time(),
+                    }
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Dataset installation job failed: job_id=%s dataset=%s", job_id, dataset_key)
+        errors.append({"error": str(exc)})
+        with jobs_lock:
+            if job_id in jobs_store:
+                jobs_store[job_id].update(
+                    {
+                        "status": JobStatus.ERROR.value,
+                        "errors": errors,
+                        "updated_at": time.time(),
+                    }
+                )
+
+
 @app.get("/health")
 def healthcheck():
     return {"status": "ok"}
@@ -738,6 +844,44 @@ def backfill_embeddings(payload: BackfillRequest):
     )
     thread.start()
     return {"job_id": job_id, "status": "started"}
+
+
+@app.post("/datasets/install")
+def install_datasets(payload: DatasetInstallRequest):
+    requested = [item.strip().lower() for item in payload.datasets if item.strip()]
+    if not requested:
+        raise HTTPException(status_code=400, detail="datasets are required")
+
+    available_items = storage_api.get_preprocessor_methods()
+    available = {
+        str(item.get("key", "")).strip().lower(): item
+        for item in available_items
+        if str(item.get("key", "")).strip()
+    }
+    missing = sorted([item for item in requested if item not in available])
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "unknown dataset methods", "missing": missing},
+        )
+
+    jobs = []
+    for dataset_key in requested:
+        job_id = str(uuid.uuid4())
+        thread = threading.Thread(
+            target=_run_dataset_install_job,
+            args=(job_id, dataset_key, payload.configs.get(dataset_key, {})),
+            daemon=True,
+        )
+        thread.start()
+        jobs.append(
+            {
+                "dataset": dataset_key,
+                "job_id": job_id,
+                "status": "started",
+            }
+        )
+    return {"jobs": jobs}
 
 
 @app.post("/search/text")
@@ -887,4 +1031,3 @@ def delete_object(object_id: str):
             },
         )
     return {"status": "ok", "result": result}
-

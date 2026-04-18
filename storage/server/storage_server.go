@@ -73,49 +73,47 @@ func (s *StorageServer) Health(ctx context.Context) error {
 	return nil
 }
 
-func (s *StorageServer) ResolvePath(ctx context.Context, storagePath string) (ObjectMetadata, error) {
-	storagePath = normalizeStoragePath(storagePath)
-	if storagePath == "" {
-		return ObjectMetadata{}, invalidArgument("storage_path is required")
+func (s *StorageServer) UploadObject(ctx context.Context, bucket, key, filename, contentType string, data []byte) (ObjectMetadata, error) {
+	if len(data) == 0 {
+		return ObjectMetadata{}, invalidArgument("file payload is required")
 	}
 
-	canonicalPath, bucket, key, err := canonicalStoragePath(storagePath, s.cfg.DefaultBucket)
+	bucket = strings.TrimSpace(bucket)
+	if bucket == "" {
+		bucket = strings.TrimSpace(s.cfg.DefaultBucket)
+	}
+	if bucket == "" {
+		return ObjectMetadata{}, invalidArgument("bucket is required")
+	}
+
+	var err error
+	key, err = chooseObjectKey(key, filename)
+	if err != nil {
+		return ObjectMetadata{}, err
+	}
+	key = strings.Trim(strings.TrimSpace(key), "/")
+	if key == "" {
+		return ObjectMetadata{}, invalidArgument("key is required")
+	}
+
+	canonicalPath := fmt.Sprintf("s3://%s/%s", bucket, key)
+	objectID := objectIDFromStoragePath(canonicalPath)
+
+	res, err := s.objectAdapter.PutBytes(ctx, bucket, key, data, strings.TrimSpace(contentType))
 	if err != nil {
 		return ObjectMetadata{}, err
 	}
 
-	if m, err := s.getMetadataByPath(ctx, canonicalPath); err == nil {
-		return m, nil
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return ObjectMetadata{}, err
-	}
-
-	info, err := s.objectAdapter.HeadObject(ctx, bucket, key)
-	if err != nil {
-		return ObjectMetadata{}, err
-	}
 	m := ObjectMetadata{
-		ObjectID:    objectIDFromStoragePath(canonicalPath),
+		ObjectID:    objectID,
 		StoragePath: canonicalPath,
 		Bucket:      bucket,
 		Key:         key,
-		SizeBytes:   info.SizeBytes,
-		ContentType: info.ContentType,
+		SizeBytes:   res.SizeBytes,
+		ContentType: res.ContentType,
 		CreatedAt:   time.Now().UTC(),
 	}
 	return s.upsertMetadata(ctx, m)
-}
-
-func (s *StorageServer) RegisterPaths(ctx context.Context, storagePaths []string) ([]RegisterPathItem, error) {
-	items := make([]RegisterPathItem, 0, len(storagePaths))
-	for _, rawPath := range storagePaths {
-		m, err := s.ResolvePath(ctx, rawPath)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, RegisterPathItem{ObjectID: m.ObjectID, StoragePath: m.StoragePath})
-	}
-	return items, nil
 }
 
 func (s *StorageServer) GetMetadataByID(ctx context.Context, objectID string) (ObjectMetadata, error) {
@@ -358,19 +356,6 @@ func (s *StorageServer) getMetadataByID(ctx context.Context, objectID string) (O
 	`, pqIdent(s.cfg.MetadataSchema), pqIdent(s.cfg.MetadataTable))
 	var m ObjectMetadata
 	err := s.metaDB.QueryRowContext(ctx, query, objectID).Scan(
-		&m.ObjectID, &m.StoragePath, &m.Bucket, &m.Key, &m.SizeBytes, &m.ContentType, &m.CreatedAt,
-	)
-	return m, err
-}
-
-func (s *StorageServer) getMetadataByPath(ctx context.Context, storagePath string) (ObjectMetadata, error) {
-	query := fmt.Sprintf(`
-		SELECT object_id, storage_path, bucket, object_key, size_bytes, content_type, created_at
-		FROM %s.%s
-		WHERE storage_path = $1
-	`, pqIdent(s.cfg.MetadataSchema), pqIdent(s.cfg.MetadataTable))
-	var m ObjectMetadata
-	err := s.metaDB.QueryRowContext(ctx, query, storagePath).Scan(
 		&m.ObjectID, &m.StoragePath, &m.Bucket, &m.Key, &m.SizeBytes, &m.ContentType, &m.CreatedAt,
 	)
 	return m, err

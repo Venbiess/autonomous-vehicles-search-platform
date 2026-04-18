@@ -16,14 +16,15 @@ type StorageConfig struct {
 }
 
 type StorageServerConfig struct {
-	ServerName    string                  `yaml:"server_name"`
-	Addr          string                  `yaml:"addr"`
-	WriteToken    string                  `yaml:"write_token"`
-	DefaultBucket string                  `yaml:"default_bucket"`
-	ObjectCache   ObjectCacheConfig       `yaml:"object_cache"`
-	MetadataDB    StorageMetadataDBConfig `yaml:"metadata_db"`
-	ObjectStore   infra.ObjectStoreConfig `yaml:"object_store"`
-	VectorIndex   infra.VectorIndexConfig `yaml:"vector_index"`
+	ServerName                string                  `yaml:"server_name"`
+	Addr                      string                  `yaml:"addr"`
+	WriteToken                string                  `yaml:"write_token"`
+	DefaultBucket             string                  `yaml:"default_bucket"`
+	PreprocessorsManifestPath string                  `yaml:"preprocessors_manifest_path"`
+	ObjectCache               ObjectCacheConfig       `yaml:"object_cache"`
+	MetadataDB                StorageMetadataDBConfig `yaml:"metadata_db"`
+	ObjectStore               infra.ObjectStoreConfig `yaml:"object_store"`
+	VectorIndex               infra.VectorIndexConfig `yaml:"vector_index"`
 }
 
 type StorageMetadataDBConfig struct {
@@ -38,6 +39,23 @@ type ObjectCacheConfig struct {
 	MaxTotalBytes      int64 `yaml:"max_total_bytes"`
 	MaxObjectSizeBytes int64 `yaml:"max_object_size_bytes"`
 	TTLSeconds         int   `yaml:"ttl_seconds"`
+}
+
+type PreprocessorCatalog struct {
+	Preprocessors []PreprocessorMethodConfig `yaml:"preprocessors"`
+}
+
+type PreprocessorMethodConfig struct {
+	Key           string         `yaml:"key" json:"key"`
+	Label         string         `yaml:"label" json:"label"`
+	Description   string         `yaml:"description" json:"description,omitempty"`
+	Runner        RunnerConfig   `yaml:"runner" json:"runner"`
+	DefaultConfig map[string]any `yaml:"default_config" json:"default_config,omitempty"`
+}
+
+type RunnerConfig struct {
+	Entrypoint string `yaml:"entrypoint" json:"entrypoint"`
+	Module     string `yaml:"module" json:"module,omitempty"`
 }
 
 func LoadStorageServerConfig() (StorageServerConfig, error) {
@@ -64,6 +82,19 @@ func loadStorageConfigFromPath(path string) (StorageConfig, error) {
 	var cfg StorageConfig
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return StorageConfig{}, fmt.Errorf("parse storage config yaml: %w", err)
+	}
+	return cfg, nil
+}
+
+func LoadPreprocessorCatalog(path string) (PreprocessorCatalog, error) {
+	raw, err := os.ReadFile(strings.TrimSpace(path))
+	if err != nil {
+		return PreprocessorCatalog{}, fmt.Errorf("read preprocessors catalog: %w", err)
+	}
+
+	var cfg PreprocessorCatalog
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return PreprocessorCatalog{}, fmt.Errorf("parse preprocessors yaml: %w", err)
 	}
 	return cfg, nil
 }

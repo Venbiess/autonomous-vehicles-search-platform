@@ -175,7 +175,19 @@ services:
     depends_on:
       - avsp-server
     working_dir: /app/frontend
-    command: /bin/sh -c "npm ci --no-audit --no-fund && npm run dev -- --hostname 0.0.0.0 --webpack"
+    command: >
+      /bin/sh -c '
+      set -e;
+      LOCK_HASH="$$(sha256sum package-lock.json | awk "{print \$$1}")";
+      if [ ! -f node_modules/.lockhash ] || [ "$$(cat node_modules/.lockhash)" != "$$LOCK_HASH" ]; then
+        echo "Installing frontend deps (lockfile changed or first run)...";
+        npm ci --no-audit --no-fund;
+        echo "$$LOCK_HASH" > node_modules/.lockhash;
+      else
+        echo "Reusing existing frontend deps from volume";
+      fi;
+      npm run dev -- --hostname 0.0.0.0 --webpack
+      '
     volumes:
       - "${PWD}/../../frontend:/app/frontend"
       - "frontend-node-modules:/app/frontend/node_modules"

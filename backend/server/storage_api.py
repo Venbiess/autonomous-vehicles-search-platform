@@ -21,15 +21,28 @@ class StorageAPI:
             {"X-Storage-Write-Token": write_token.strip()} if write_token.strip() else {}
         )
 
-    def resolve_object_id(self, storage_path: str) -> str:
+    def upload_object(
+        self,
+        filename: str,
+        data: bytes,
+        bucket: Optional[str] = None,
+        key: Optional[str] = None,
+        content_type: str = "application/octet-stream",
+    ) -> Dict[str, Any]:
+        form_data: Dict[str, str] = {}
+        if bucket and bucket.strip():
+            form_data["bucket"] = bucket.strip()
+        if key and key.strip():
+            form_data["key"] = key.strip()
+        files = {"file": (filename, data, content_type)}
         response = self._client.post(
-            f"{self.endpoint}/objects/resolve-path",
-            json={"storage_path": storage_path},
+            f"{self.endpoint}/objects/upload",
+            data=form_data,
+            files=files,
             headers=self.write_headers,
         )
         response.raise_for_status()
-        payload = response.json()
-        return payload["object_id"]
+        return response.json()
 
     def get_object_bytes(self, object_id: str) -> tuple[bytes, str]:
         response = self._client.get(f"{self.endpoint}/objects/{object_id}/content")
@@ -110,3 +123,10 @@ class StorageAPI:
             response = self._client.delete(f"{self.endpoint}/objects/{object_id}")
         response.raise_for_status()
         return response.json()
+
+    def get_preprocessor_methods(self) -> List[Dict[str, Any]]:
+        response = self._client.get(f"{self.endpoint}/preprocessors/methods")
+        response.raise_for_status()
+        payload = response.json()
+        items = payload.get("items", [])
+        return items if isinstance(items, list) else []

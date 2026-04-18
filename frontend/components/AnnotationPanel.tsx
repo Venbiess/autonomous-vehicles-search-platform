@@ -22,6 +22,13 @@ interface SavedField {
   response_type: ResponseType;
 }
 
+interface PreprocessorMethod {
+  key: string;
+  label: string;
+  description?: string;
+  default_config?: Record<string, unknown>;
+}
+
 const RESPONSE_TYPE_OPTIONS: Array<{
   value: ResponseType;
   label: string;
@@ -41,49 +48,6 @@ function createFieldDraft(): FieldDraft {
     response_type: "yes_no",
   };
 }
-
-const DATASET_OPTIONS = [
-  { key: "waymo", label: "Waymo" },
-  { key: "argoverse", label: "Argoverse" },
-  { key: "nuscenes", label: "NuScenes" },
-] as const;
-
-const DEFAULT_DATASET_CONFIG_TEXT: Record<string, string> = {
-  waymo: JSON.stringify(
-    {
-      bucket: "waymo",
-      cameras: ["FRONT"],
-      resample_seconds: 0.1,
-      exist_skip: false,
-    },
-    null,
-    2
-  ),
-  argoverse: JSON.stringify(
-    {
-      bucket: "argoverse",
-      cameras: ["FRONT"],
-      resample_seconds: 0.5,
-      download_parts: {
-        train: [0, 1],
-        val: [0],
-        test: [0],
-      },
-      remove_after_load: false,
-    },
-    null,
-    2
-  ),
-  nuscenes: JSON.stringify(
-    {
-      bucket: "nuscenes",
-      cameras: ["FRONT"],
-      resample_seconds: 0.5,
-    },
-    null,
-    2
-  ),
-};
 
 export default function AnnotationPanel({
   onOpenJobsMonitor,
@@ -111,16 +75,15 @@ export default function AnnotationPanel({
   const [vlmErrorMessage, setVlmErrorMessage] = useState<string | null>(null);
   const [showVlmJobsLink, setShowVlmJobsLink] = useState(false);
   const [sourceWarning, setSourceWarning] = useState<string | null>(null);
-  const [installDatasets, setInstallDatasets] = useState<
-    Record<"waymo" | "argoverse" | "nuscenes", boolean>
-  >({
-    waymo: true,
-    argoverse: false,
-    nuscenes: false,
-  });
-  const [datasetConfigText, setDatasetConfigText] = useState<
-    Record<string, string>
-  >(DEFAULT_DATASET_CONFIG_TEXT);
+  const [preprocessorMethods, setPreprocessorMethods] = useState<
+    PreprocessorMethod[]
+  >([]);
+  const [installDatasets, setInstallDatasets] = useState<Record<string, boolean>>(
+    {}
+  );
+  const [datasetConfigText, setDatasetConfigText] = useState<Record<string, string>>(
+    {}
+  );
   const [isStartingInstall, setIsStartingInstall] = useState(false);
   const [installStatusMessage, setInstallStatusMessage] = useState<string | null>(
     null
@@ -157,6 +120,57 @@ export default function AnnotationPanel({
       }
     };
     loadSchema();
+  }, []);
+
+  useEffect(() => {
+    const loadPreprocessorMethods = async () => {
+      try {
+        const response = await axios.get("/api/storage/preprocessors");
+        const items: unknown[] = Array.isArray(response.data?.items)
+          ? response.data.items
+          : [];
+        const methods: PreprocessorMethod[] = items
+          .map((rawItem) => {
+            const item =
+              rawItem && typeof rawItem === "object"
+                ? (rawItem as Record<string, unknown>)
+                : {};
+            return {
+              key: String(item.key ?? "").trim(),
+              label: String(item.label ?? "").trim(),
+              description:
+                typeof item.description === "string"
+                  ? item.description.trim()
+                  : undefined,
+              default_config:
+                item.default_config &&
+                typeof item.default_config === "object" &&
+                !Array.isArray(item.default_config)
+                  ? (item.default_config as Record<string, unknown>)
+                  : {},
+            };
+          })
+          .filter((item: PreprocessorMethod) => item.key && item.label);
+        setPreprocessorMethods(methods);
+        setInstallDatasets(
+          methods.reduce<Record<string, boolean>>((acc, item, idx) => {
+            acc[item.key] = idx === 0;
+            return acc;
+          }, {})
+        );
+        setDatasetConfigText(
+          methods.reduce<Record<string, string>>((acc, item) => {
+            acc[item.key] = JSON.stringify(item.default_config ?? {}, null, 2);
+            return acc;
+          }, {})
+        );
+      } catch {
+        setPreprocessorMethods([]);
+        setInstallDatasets({});
+        setDatasetConfigText({});
+      }
+    };
+    loadPreprocessorMethods();
   }, []);
 
   useEffect(() => {
@@ -372,7 +386,7 @@ export default function AnnotationPanel({
   };
 
   const startDatasetInstall = async () => {
-    const selectedDatasets = DATASET_OPTIONS
+    const selectedDatasets = preprocessorMethods
       .map((option) => option.key)
       .filter((datasetKey) => installDatasets[datasetKey]);
 
@@ -450,13 +464,14 @@ export default function AnnotationPanel({
               Dataset Installation
             </h2>
             <p className="mt-2 text-sm text-slate-600">
-              Select datasets, edit config JSON, and start installation jobs.
+              Select available preprocessors from storage API, edit config JSON,
+              and start installation jobs.
               Each dataset runs as a separate job in Job Monitor.
             </p>
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">
-            {DATASET_OPTIONS.map((option) => (
+            {preprocessorMethods.map((option) => (
               <label
                 key={option.key}
                 className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-700"
@@ -477,8 +492,14 @@ export default function AnnotationPanel({
             ))}
           </div>
 
+          {preprocessorMethods.length === 0 && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+              No preprocessor methods were returned by storage API.
+            </div>
+          )}
+
           <div className="mt-5 grid gap-4 lg:grid-cols-3">
-            {DATASET_OPTIONS.map((option) => (
+            {preprocessorMethods.map((option) => (
               <div
                 key={`${option.key}-config`}
                 className={`rounded-2xl border p-4 ${
@@ -490,6 +511,9 @@ export default function AnnotationPanel({
                 <div className="mb-2 text-sm font-semibold text-slate-800">
                   {option.label} config (JSON)
                 </div>
+                {option.description && (
+                  <div className="mb-2 text-xs text-slate-500">{option.description}</div>
+                )}
                 <textarea
                   value={datasetConfigText[option.key] ?? "{}"}
                   onChange={(event) =>

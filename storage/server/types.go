@@ -12,11 +12,6 @@ type ObjectMetadata struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-type RegisterPathItem struct {
-	ObjectID    string `json:"object_id"`
-	StoragePath string `json:"storage_path"`
-}
-
 type ObjectBatchItem struct {
 	ObjectID    string
 	Content     []byte
@@ -34,4 +29,17 @@ type QueryResult struct {
 	ObjectID   string  `json:"object_id"`
 	Distance   float64 `json:"distance"`
 	Similarity float64 `json:"similarity"`
+}
+
+type PreprocessorRunner struct {
+	Entrypoint string `json:"entrypoint"`
+	Module     string `json:"module,omitempty"`
+}
+
+type PreprocessorMethod struct {
+	Key           string             `json:"key"`
+	Label         string             `json:"label"`
+	Description   string             `json:"description,omitempty"`
+	Runner        PreprocessorRunner `json:"runner"`
+	DefaultConfig map[string]any     `json:"default_config,omitempty"`
 }

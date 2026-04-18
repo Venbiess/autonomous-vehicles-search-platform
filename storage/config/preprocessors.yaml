@@ -1,0 +1,46 @@
+preprocessors:
+  - key: synthetic
+    label: Synthetic Road Scenes
+    description: Generate synthetic road images and upload them to storage.
+    runner:
+      entrypoint: python -m backend.processors.synthetic_preprocessor
+      module: backend.processors.synthetic_preprocessor
+    default_config:
+      bucket: avsp
+      num_images: 64
+      batch_size: 16
+      keep_local_images: false
+
+  - key: waymo
+    label: Waymo Open Dataset
+    description: Download Waymo camera frames, preprocess, and upload to storage.
+    runner:
+      entrypoint: python -m backend.processors.waymo_preprocessor
+      module: backend.processors.waymo_preprocessor
+    default_config:
+      bucket: waymo
+      cameras:
+        - FRONT
+      resample_seconds: 0.5
+      exist_skip: false
+
+  - key: argoverse
+    label: Argoverse 2
+    description: Download Argoverse parts, preprocess camera frames, and upload to storage.
+    runner:
+      entrypoint: python -m backend.processors.argoverse_preprocessor
+      module: backend.processors.argoverse_preprocessor
+    default_config:
+      bucket: argoverse
+      cameras:
+        - FRONT
+      resample_seconds: 0.5
+      download_parts:
+        train:
+          - 0
+          - 1
+        val:
+          - 0
+        test:
+          - 0
+      remove_after_load: false

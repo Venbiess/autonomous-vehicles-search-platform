@@ -144,6 +144,24 @@ export default function SystemMonitor() {
     return new Date(timestamp * 1000).toLocaleString("ru-RU");
   };
 
+  const formatJobTypeLabel = (jobType: string): string => {
+    if (jobType === "backfill_embeddings") return "Backfill Embeddings";
+    if (jobType === "backfill_vlm") return "Backfill VLM";
+    if (jobType === "install_waymo") return "Install Waymo";
+    if (jobType === "install_argoverse") return "Install Argoverse";
+    if (jobType === "install_nuscenes") return "Install NuScenes";
+    if (jobType.startsWith("install_")) {
+      const suffix = jobType.slice("install_".length);
+      const pretty = suffix
+        .split(/[_-]+/)
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
+      return `Install ${pretty || "Dataset"}`;
+    }
+    return jobType;
+  };
+
   const formatDataSize = (bytes: number): string => {
     const safe = Math.max(0, Number(bytes) || 0);
     if (safe >= 1024 ** 3) {
@@ -433,17 +451,7 @@ export default function SystemMonitor() {
                         {job.job_id.substring(0, 8)}...
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {job.job_type === "backfill_embeddings"
-                          ? "Backfill Embeddings"
-                          : job.job_type === "backfill_vlm"
-                            ? "Backfill VLM"
-                            : job.job_type === "install_waymo"
-                              ? "Install Waymo"
-                              : job.job_type === "install_argoverse"
-                                ? "Install Argoverse"
-                                : job.job_type === "install_nuscenes"
-                                  ? "Install NuScenes"
-                                  : job.job_type}
+                        {formatJobTypeLabel(job.job_type)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="w-full">

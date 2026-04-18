@@ -3,6 +3,7 @@ storage_server:
   addr: ":9012"
   write_token: change-me-storage-write-token
   default_bucket: avsp
+  preprocessors_manifest_path: /app/storage/config/preprocessors.yaml
   metadata_db:
     dsn: host=postgres port=5432 dbname=avsp user=postgres password=postgres sslmode=disable
     schema: public
