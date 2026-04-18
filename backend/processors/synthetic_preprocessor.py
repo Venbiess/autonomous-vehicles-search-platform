@@ -153,7 +153,7 @@ def main() -> None:
         batch_size=args.batch_size,
         remove_local_images=not args.keep_local_images,
     )
-    processor.download_to_s3(bucket=args.bucket)
+    processor.download_to_storage(bucket=args.bucket)
 
 
 if __name__ == "__main__":

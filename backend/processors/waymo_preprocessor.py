@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, List, Optional
 from pathlib import Path
 import pandas as pd
 import os
+from tqdm import tqdm
 
 from configs.common import WAYMO_DIR, DATA_DIR
 
@@ -11,6 +12,13 @@ BUCKET_NAME = "waymo_open_dataset_v_2_0_1"
 PREFIX = "training/camera_image"
 PROJECT_NAME = "avsp-479717"
 DATA_FOLDER = Path(DATA_DIR) / WAYMO_DIR
+OUTPUT_COLUMNS = [
+    "timestamp",
+    "camera_name",
+    "dataset_type",
+    "source_link",
+    "image_path",
+]
 
 
 class WaymoPreprocessor(Preprocessor):
@@ -38,7 +46,7 @@ class WaymoPreprocessor(Preprocessor):
                 ):
         super().__init__()
         self.client = storage.Client(project=PROJECT_NAME)
-        self.bucket = self.client.bucket(BUCKET_NAME, user_project=PROJECT_NAME)
+        self.bucket = self.client.bucket(BUCKET_NAME)
         self.blobs = self.bucket.list_blobs(prefix=PREFIX)
         self.episodes = [
             blob.name for blob in self.blobs if blob.name.endswith(".parquet")
@@ -60,6 +68,10 @@ class WaymoPreprocessor(Preprocessor):
         self.download_progress_callback: Optional[
             Callable[[Dict[str, Any]], None]
         ] = None
+        self.cancel_requested_callback: Optional[Callable[[], bool]] = None
+
+    def _should_stop(self) -> bool:
+        return bool(self.cancel_requested_callback and self.cancel_requested_callback())
 
     def _report_progress(
         self,
@@ -84,12 +96,27 @@ class WaymoPreprocessor(Preprocessor):
         )
 
     def download_blob(self, name: str, dst_path: str, file_index: int):
+        if self._should_stop():
+            raise InterruptedError("Dataset installation cancelled by user")
         total_files = max(len(self.episodes), 1)
+        file_progress = None
+        downloaded_bytes = 0
         if not os.path.exists(dst_path) or not self.exist_skip:
             blob_name = f"{PREFIX}/{name}"
             blob = self.bucket.blob(blob_name)
             blob.reload()
             total_bytes = int(blob.size or 0)
+
+            if self.download_progress_callback is None:
+                total_mib = (total_bytes / (1024 * 1024)) if total_bytes > 0 else None
+                file_progress = tqdm(
+                    total=total_mib,
+                    desc=f"{file_index}/{total_files} {name}",
+                    unit="MiB",
+                    leave=False,
+                    dynamic_ncols=True,
+                )
+
             self._report_progress(
                 file_index=file_index,
                 total_files=total_files,
@@ -99,39 +126,68 @@ class WaymoPreprocessor(Preprocessor):
                 done=False,
             )
 
-            downloaded_bytes = 0
             chunk_size = 8 * 1024 * 1024
-            with open(dst_path, "wb") as f:
-                if total_bytes <= 0:
-                    blob.download_to_file(f)
-                    downloaded_bytes = int(os.path.getsize(dst_path))
-                    total_bytes = max(total_bytes, downloaded_bytes)
-                    self._report_progress(
-                        file_index=file_index,
-                        total_files=total_files,
-                        file_name=name,
-                        downloaded_bytes=downloaded_bytes,
-                        total_bytes=total_bytes,
-                        done=True,
-                    )
-                else:
-                    start = 0
-                    while start < total_bytes:
-                        end = min(start + chunk_size - 1, total_bytes - 1)
-                        payload = blob.download_as_bytes(start=start, end=end)
-                        f.write(payload)
-                        downloaded_bytes = end + 1
+            try:
+                with open(dst_path, "wb") as f:
+                    if total_bytes <= 0:
+                        if self._should_stop():
+                            raise InterruptedError("Dataset installation cancelled by user")
+                        blob.download_to_file(f)
+                        downloaded_bytes = int(os.path.getsize(dst_path))
+                        total_bytes = max(total_bytes, downloaded_bytes)
+                        if file_progress:
+                            if file_progress.total is None:
+                                file_progress.total = downloaded_bytes / (1024 * 1024)
+                            file_progress.update(downloaded_bytes / (1024 * 1024))
                         self._report_progress(
                             file_index=file_index,
                             total_files=total_files,
                             file_name=name,
                             downloaded_bytes=downloaded_bytes,
                             total_bytes=total_bytes,
-                            done=downloaded_bytes >= total_bytes,
+                            done=True,
                         )
-                        start = end + 1
+                    else:
+                        start = 0
+                        while start < total_bytes:
+                            if self._should_stop():
+                                raise InterruptedError("Dataset installation cancelled by user")
+                            end = min(start + chunk_size - 1, total_bytes - 1)
+                            payload = blob.download_as_bytes(start=start, end=end)
+                            f.write(payload)
+                            prev_downloaded = downloaded_bytes
+                            downloaded_bytes = end + 1
+                            if file_progress:
+                                delta_mib = (downloaded_bytes - prev_downloaded) / (1024 * 1024)
+                                file_progress.update(delta_mib)
+                            self._report_progress(
+                                file_index=file_index,
+                                total_files=total_files,
+                                file_name=name,
+                                downloaded_bytes=downloaded_bytes,
+                                total_bytes=total_bytes,
+                                done=downloaded_bytes >= total_bytes,
+                            )
+                            start = end + 1
+            except InterruptedError:
+                if os.path.exists(dst_path):
+                    os.remove(dst_path)
+                raise
+            finally:
+                if file_progress:
+                    file_progress.close()
         else:
             file_size = int(os.path.getsize(dst_path))
+            if self.download_progress_callback is None:
+                file_progress = tqdm(
+                    total=max(file_size / (1024 * 1024), 0.0),
+                    desc=f"{file_index}/{total_files} {name}",
+                    unit="MiB",
+                    leave=False,
+                    dynamic_ncols=True,
+                )
+                file_progress.update(file_size / (1024 * 1024))
+                file_progress.close()
             self._report_progress(
                 file_index=file_index,
                 total_files=total_files,
@@ -164,6 +220,9 @@ class WaymoPreprocessor(Preprocessor):
         episode_name = os.path.basename(path)
         df = df[self.COLUMNS_TO_SAVE.keys()].rename(columns=self.COLUMNS_TO_SAVE)
         df = self._save_images_and_replace_column(df, episode_name)
+        df["dataset_type"] = "waymo"
+        df["source_link"] = f"gs://{BUCKET_NAME}/{PREFIX}/{episode_name}"
+        df = df[OUTPUT_COLUMNS]
         return df
 
     def _save_images_and_replace_column(
@@ -182,12 +241,13 @@ class WaymoPreprocessor(Preprocessor):
 
             ts_str = str(int(ts))
 
-            file_path = DATA_FOLDER / f"{cam}_{ts_str}.jpg"
+            # Include episode key in file name to avoid collisions on camera+timestamp.
+            file_path = DATA_FOLDER / f"{cam}_{episode_id}_{ts_str}.jpg"
             if file_path.exists():
                 i = 1
-                while (DATA_FOLDER / f"{ts_str}_{i}.jpg").exists():
+                while (DATA_FOLDER / f"{cam}_{episode_id}_{ts_str}_{i}.jpg").exists():
                     i += 1
-                file_path = DATA_FOLDER / f"{ts_str}_{i}.jpg"
+                file_path = DATA_FOLDER / f"{cam}_{episode_id}_{ts_str}_{i}.jpg"
 
             if img is None or (hasattr(pd, "isna") and pd.isna(img)):
                 image_paths.append(None)
@@ -243,4 +303,4 @@ if __name__ == "__main__":
     #     if i >= 1000:
     #         break
 
-    processor.download_to_s3(bucket="waymo")
+    processor.download_to_storage(bucket="waymo")

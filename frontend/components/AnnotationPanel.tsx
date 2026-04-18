@@ -142,12 +142,14 @@ export default function AnnotationPanel({
                 typeof item.description === "string"
                   ? item.description.trim()
                   : undefined,
-              default_config:
-                item.default_config &&
+              default_config: {
+                embed_on_install: false,
+                ...(item.default_config &&
                 typeof item.default_config === "object" &&
                 !Array.isArray(item.default_config)
                   ? (item.default_config as Record<string, unknown>)
-                  : {},
+                  : {}),
+              },
             };
           })
           .filter((item: PreprocessorMethod) => item.key && item.label);
