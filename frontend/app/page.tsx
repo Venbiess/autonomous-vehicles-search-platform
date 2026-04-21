@@ -1,6 +1,6 @@
 "use client"; // делаем компонент клиентским, чтобы можно было использовать useState
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 
 // Импортируем компоненты
@@ -16,6 +16,9 @@ interface ImageResult {
   title: string;
   url: string;
   score?: number | null;
+  object_id?: string;
+  storage_path?: string;
+  storage_url?: string;
 }
 
 type SearchMode = "VLM" | "Browser" | "ANNOTATION" | "STORAGE" | "Job Monitor";
@@ -30,16 +33,47 @@ export default function HomePage() {
   const [lastQuery, setLastQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [imagesPerPage, setImagesPerPage] = useState(9);
+  const [minScoreInput, setMinScoreInput] = useState("0.1");
+  const [maxScoreInput, setMaxScoreInput] = useState("");
 
-  const totalPages = Math.max(1, Math.ceil(images.length / imagesPerPage));
+  const minScore = minScoreInput.trim() === "" ? null : Number(minScoreInput);
+  const maxScore = maxScoreInput.trim() === "" ? null : Number(maxScoreInput);
+  const hasValidMinScore = minScore !== null && Number.isFinite(minScore);
+  const hasValidMaxScore = maxScore !== null && Number.isFinite(maxScore);
+  const hasScoreFilter = hasValidMinScore || hasValidMaxScore;
+
+  const filteredImages = useMemo(() => {
+    if (!hasScoreFilter) {
+      return images;
+    }
+
+    return images.filter((item) => {
+      if (typeof item.score !== "number" || !Number.isFinite(item.score)) {
+        return false;
+      }
+      if (hasValidMinScore && item.score < (minScore as number)) {
+        return false;
+      }
+      if (hasValidMaxScore && item.score > (maxScore as number)) {
+        return false;
+      }
+      return true;
+    });
+  }, [hasScoreFilter, hasValidMaxScore, hasValidMinScore, images, maxScore, minScore]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredImages.length / imagesPerPage));
   const pageStart = (currentPage - 1) * imagesPerPage;
-  const paginatedImages = images.slice(pageStart, pageStart + imagesPerPage);
+  const paginatedImages = filteredImages.slice(pageStart, pageStart + imagesPerPage);
 
   useEffect(() => {
     if (currentPage > totalPages) {
       setCurrentPage(totalPages);
     }
   }, [currentPage, totalPages]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [minScoreInput, maxScoreInput]);
 
   useEffect(() => {
     const loadSourceStatus = async () => {
@@ -109,6 +143,52 @@ export default function HomePage() {
 
   const handleSearch = (payload: { query: string; imageFile: File | null }) =>
     runSearch(payload);
+
+  const handleExportCsv = () => {
+    if (filteredImages.length === 0) return;
+
+    const escapeCsv = (value: unknown): string => {
+      const raw = value === null || value === undefined ? "" : String(value);
+      if (raw.includes('"') || raw.includes(",") || raw.includes("\n")) {
+        return `"${raw.replace(/"/g, '""')}"`;
+      }
+      return raw;
+    };
+
+    const headers = [
+      "id",
+      "object_id",
+      "title",
+      "url",
+      "storage_path",
+      "storage_url",
+      "score",
+    ];
+    const rows = filteredImages.map((item) => [
+      item.id,
+      item.object_id ?? "",
+      item.title,
+      item.url,
+      item.storage_path ?? "",
+      item.storage_url ?? "",
+      item.score ?? "",
+    ]);
+
+    const csv = [headers, ...rows]
+      .map((row) => row.map((cell) => escapeCsv(cell)).join(","))
+      .join("\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const href = URL.createObjectURL(blob);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const link = document.createElement("a");
+    link.href = href;
+    link.download = `browser-search-${timestamp}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(href);
+  };
 
   return (
     <main className="min-h-screen bg-gray-100">
@@ -228,7 +308,10 @@ export default function HomePage() {
                 <>
                   <div className="mt-4 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="text-sm text-gray-600">
-                      Показаны {pageStart + 1}-{Math.min(pageStart + imagesPerPage, images.length)} из {images.length}
+                      {filteredImages.length > 0
+                        ? `Показаны ${pageStart + 1}-${Math.min(pageStart + imagesPerPage, filteredImages.length)} из ${filteredImages.length}`
+                        : "По текущему фильтру результаты отсутствуют"}
+                      {hasScoreFilter && ` (всего найдено: ${images.length})`}
                     </div>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                       <label className="flex items-center gap-2 text-sm text-gray-600">
@@ -252,7 +335,7 @@ export default function HomePage() {
                         <button
                           type="button"
                           onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-                          disabled={currentPage === 1}
+                          disabled={currentPage === 1 || filteredImages.length === 0}
                           className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           ← Назад
@@ -263,7 +346,7 @@ export default function HomePage() {
                         <button
                           type="button"
                           onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
-                          disabled={currentPage === totalPages}
+                          disabled={currentPage === totalPages || filteredImages.length === 0}
                           className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           Вперёд →
@@ -273,6 +356,54 @@ export default function HomePage() {
                   </div>
 
                   <ImageGallery images={paginatedImages} />
+
+                  <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                      <div className="text-sm font-semibold text-gray-700">
+                        Фильтр по score и экспорт
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label className="flex items-center gap-2 text-sm text-gray-600">
+                          score от
+                          <input
+                            type="number"
+                            value={minScoreInput}
+                            onChange={(event) => setMinScoreInput(event.target.value)}
+                            step="0.0001"
+                            className="w-28 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+                          />
+                        </label>
+                        <label className="flex items-center gap-2 text-sm text-gray-600">
+                          до
+                          <input
+                            type="number"
+                            value={maxScoreInput}
+                            onChange={(event) => setMaxScoreInput(event.target.value)}
+                            step="0.0001"
+                            className="w-28 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMinScoreInput("0.1");
+                            setMaxScoreInput("");
+                          }}
+                          className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+                        >
+                          Сбросить score
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleExportCsv}
+                          disabled={filteredImages.length === 0}
+                          className="rounded-lg border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Экспорт CSV
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </>
               )}
             </div>
