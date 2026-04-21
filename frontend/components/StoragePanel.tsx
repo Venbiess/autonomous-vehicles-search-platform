@@ -115,6 +115,13 @@ interface DonutArc extends PieSlice {
   endDeg: number;
 }
 
+interface ConfirmDialogState {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  onConfirm: () => Promise<void>;
+}
+
 function toErrorMessage(value: unknown): string {
   if (typeof value === "string" && value.trim()) {
     return value;
@@ -363,6 +370,10 @@ export default function StoragePanel() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [warningMessage, setWarningMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [randomEmbeddingsCount, setRandomEmbeddingsCount] = useState(100);
+  const [randomVlmCount, setRandomVlmCount] = useState(100);
+  const [randomHardDeleteCount, setRandomHardDeleteCount] = useState(10);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
 
   const extractAxiosErrorMessage = (
     error: unknown,
@@ -457,6 +468,17 @@ export default function StoragePanel() {
     }
   };
 
+  const openConfirmDialog = (dialog: ConfirmDialogState) => {
+    setConfirmDialog(dialog);
+  };
+
+  const executeConfirmDialog = async () => {
+    if (!confirmDialog) return;
+    const action = confirmDialog.onConfirm;
+    setConfirmDialog(null);
+    await action();
+  };
+
   const goToNextObjectsPage = async () => {
     if (!objectsNextCursor || objectsLoading) return;
     await loadObjectsPage(
@@ -474,29 +496,158 @@ export default function StoragePanel() {
   };
 
   const deleteObject = async (objectId: string) => {
-    const confirmed = window.confirm(
-      `Удалить объект ${objectId} из storage, векторов и связанных аннотаций?`
-    );
-    if (!confirmed) return;
+    openConfirmDialog({
+      title: "Delete object",
+      description: `Удалить объект ${objectId} из storage, векторов и связанных аннотаций?`,
+      confirmLabel: "Удалить объект",
+      onConfirm: async () => {
+        await runStorageAction(`delete-object-${objectId}`, async () => {
+          await axios.delete(`/api/storage/objects/${encodeURIComponent(objectId)}`);
+          setStatusMessage(`Объект ${objectId} удален.`);
+          const shouldGoPrev = objects.length === 1 && objectsPrevCursors.length > 0;
+          const cursor = shouldGoPrev
+            ? objectsPrevCursors[objectsPrevCursors.length - 1] ?? ""
+            : objectsCursor;
+          const prevCursors = shouldGoPrev
+            ? objectsPrevCursors.slice(0, -1)
+            : objectsPrevCursors;
+          const page = shouldGoPrev ? Math.max(1, objectsPage - 1) : objectsPage;
+          await Promise.all([
+            loadStats(false),
+            loadObjectsPage(cursor, prevCursors, page),
+          ]);
+          if (previewObjectId === objectId) {
+            setPreviewObjectId(null);
+          }
+        });
+      },
+    });
+  };
 
-    await runStorageAction(`delete-object-${objectId}`, async () => {
-      await axios.delete(`/api/storage/objects/${encodeURIComponent(objectId)}`);
-      setStatusMessage(`Объект ${objectId} удален.`);
-      const shouldGoPrev = objects.length === 1 && objectsPrevCursors.length > 0;
-      const cursor = shouldGoPrev
-        ? objectsPrevCursors[objectsPrevCursors.length - 1] ?? ""
-        : objectsCursor;
-      const prevCursors = shouldGoPrev
-        ? objectsPrevCursors.slice(0, -1)
-        : objectsPrevCursors;
-      const page = shouldGoPrev ? Math.max(1, objectsPage - 1) : objectsPage;
-      await Promise.all([
-        loadStats(false),
-        loadObjectsPage(cursor, prevCursors, page),
-      ]);
-      if (previewObjectId === objectId) {
-        setPreviewObjectId(null);
-      }
+  const deleteRandomEmbeddings = async () => {
+    const count = Math.max(1, Number(randomEmbeddingsCount || 1));
+    openConfirmDialog({
+      title: "Delete random embeddings",
+      description: `Удалить векторы для ${count} случайных сцен? Это потребует повторной разметки embeddings.`,
+      confirmLabel: "Удалить embeddings",
+      onConfirm: async () => {
+        await runStorageAction("delete-random-embeddings", async () => {
+          const response = await axios.post("/api/storage/delete-random-embeddings", {
+            count,
+            confirm: true,
+          });
+          const selected = Number(response.data?.selected_images || 0);
+          const reset = Number(response.data?.reset_embeddings || 0);
+          setStatusMessage(`Сброшены embeddings: ${reset} из ${selected} выбранных сцен.`);
+          await loadStats(false);
+        });
+      },
+    });
+  };
+
+  const deleteRandomVlm = async () => {
+    const count = Math.max(1, Number(randomVlmCount || 1));
+    openConfirmDialog({
+      title: "Delete random VLM",
+      description: `Удалить VLM-аннотации для ${count} случайных сцен?`,
+      confirmLabel: "Удалить VLM",
+      onConfirm: async () => {
+        await runStorageAction("delete-random-vlm", async () => {
+          const response = await axios.post("/api/storage/delete-random-vlm", {
+            count,
+            confirm: true,
+          });
+          const selected = Number(response.data?.selected_images || 0);
+          const reset = Number(response.data?.reset_vlm_annotations || 0);
+          setStatusMessage(`Сброшены VLM-аннотации: ${reset} из ${selected} выбранных сцен.`);
+          await loadStats(false);
+        });
+      },
+    });
+  };
+
+  const deleteDuplicates = async () => {
+    openConfirmDialog({
+      title: "Delete duplicates",
+      description:
+        "Удалить дублирующиеся сцены по одинаковому storage_path, оставив по одной записи?",
+      confirmLabel: "Удалить дубли",
+      onConfirm: async () => {
+        await runStorageAction("delete-duplicates", async () => {
+          const response = await axios.post("/api/storage/delete-duplicates", {
+            confirm: true,
+          });
+          const candidates = Number(response.data?.duplicate_candidates || 0);
+          const deleted = Number(response.data?.deleted_duplicates || 0);
+          const failed = Number(response.data?.failed_duplicates || 0);
+          setStatusMessage(
+            `Дубликаты обработаны: кандидатов ${candidates}, удалено ${deleted}, ошибок ${failed}.`
+          );
+          await Promise.all([
+            loadStats(false),
+            loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
+          ]);
+        });
+      },
+    });
+  };
+
+  const deleteRandomImagesHard = async () => {
+    const count = Math.max(1, Number(randomHardDeleteCount || 1));
+    openConfirmDialog({
+      title: "Hard delete random scenes",
+      description: `Полностью удалить ${count} случайных сцен (изображение, векторы, VLM-аннотации)?`,
+      confirmLabel: "Удалить сцены",
+      onConfirm: async () => {
+        await runStorageAction("delete-random-images", async () => {
+          const response = await axios.post("/api/storage/delete-random-images", {
+            count,
+            confirm: true,
+          });
+          const selected = Number(response.data?.selected_images || 0);
+          const deleted = Number(response.data?.deleted_images || 0);
+          const failed = Number(response.data?.failed_images || 0);
+          setStatusMessage(
+            `Полное удаление сцен: выбранo ${selected}, удалено ${deleted}, ошибок ${failed}.`
+          );
+          await Promise.all([
+            loadStats(false),
+            loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
+          ]);
+          if (failed > 0) {
+            setWarningMessage("Часть сцен не удалена. Проверьте детали в ответе API/логах.");
+          }
+        });
+      },
+    });
+  };
+
+  const deleteDataset = async (dataset: string) => {
+    openConfirmDialog({
+      title: "Delete dataset",
+      description: `Полностью удалить датасет '${dataset}' (все сцены, векторы и VLM-аннотации)?`,
+      confirmLabel: "Удалить датасет",
+      onConfirm: async () => {
+        await runStorageAction(`delete-dataset-${dataset}`, async () => {
+          const response = await axios.post("/api/storage/delete-dataset", {
+            dataset,
+            confirm: true,
+          });
+          const selected = Number(response.data?.selected_images || 0);
+          const deleted = Number(response.data?.deleted_images || 0);
+          const failed = Number(response.data?.failed_images || 0);
+          setStatusMessage(
+            `Датасет '${dataset}' обработан: выбрано ${selected}, удалено ${deleted}, ошибок ${failed}.`
+          );
+          await Promise.all([
+            loadStats(false),
+            loadObjectsPage("", [], 1),
+          ]);
+          if (failed > 0) {
+            setWarningMessage(`При удалении датасета '${dataset}' были ошибки.`);
+          }
+        });
+      },
     });
   };
 
@@ -820,6 +971,112 @@ export default function StoragePanel() {
         </div>
 
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <h3 className="text-lg font-semibold text-slate-900">Cleanup & Re-Annotation</h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Сброс части разметки, удаление дублей и полное удаление случайных сцен.
+          </p>
+
+          <div className="mt-4 grid gap-4 xl:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <label className="text-sm font-medium text-slate-700">
+                Random N for vector reset
+              </label>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  value={randomEmbeddingsCount}
+                  onChange={(event) =>
+                    setRandomEmbeddingsCount(Math.max(1, Number(event.target.value) || 1))
+                  }
+                  className="w-28 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                />
+                <button
+                  type="button"
+                  onClick={deleteRandomEmbeddings}
+                  disabled={actionInProgress !== null}
+                  className="rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {actionInProgress === "delete-random-embeddings"
+                    ? "Deleting..."
+                    : "Delete random embeddings"}
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <label className="text-sm font-medium text-slate-700">
+                Random N for VLM reset
+              </label>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  value={randomVlmCount}
+                  onChange={(event) =>
+                    setRandomVlmCount(Math.max(1, Number(event.target.value) || 1))
+                  }
+                  className="w-28 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                />
+                <button
+                  type="button"
+                  onClick={deleteRandomVlm}
+                  disabled={actionInProgress !== null}
+                  className="rounded-full bg-violet-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {actionInProgress === "delete-random-vlm"
+                    ? "Deleting..."
+                    : "Delete random VLM"}
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={deleteDuplicates}
+                  disabled={actionInProgress !== null}
+                  className="rounded-full bg-amber-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {actionInProgress === "delete-duplicates" ? "Deleting..." : "Delete duplicates"}
+                </button>
+                <span className="text-sm text-amber-800">
+                  Удаляет дубли (по одинаковому `storage_path`), оставляя по одной сцене.
+                </span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+              <label className="text-sm font-medium text-rose-700">
+                Random N images hard delete
+              </label>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  value={randomHardDeleteCount}
+                  onChange={(event) =>
+                    setRandomHardDeleteCount(Math.max(1, Number(event.target.value) || 1))
+                  }
+                  className="w-28 rounded-lg border border-rose-300 bg-white px-3 py-2 text-sm text-rose-900"
+                />
+                <button
+                  type="button"
+                  onClick={deleteRandomImagesHard}
+                  disabled={actionInProgress !== null}
+                  className="rounded-full bg-rose-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {actionInProgress === "delete-random-images"
+                    ? "Deleting..."
+                    : "Delete images + metadata"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h3 className="text-lg font-semibold text-slate-900">Image Storage</h3>
           <div className="mt-4 grid gap-4 md:grid-cols-4">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
@@ -852,6 +1109,9 @@ export default function StoragePanel() {
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
                     Status
                   </th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
@@ -869,6 +1129,18 @@ export default function StoragePanel() {
                         <span className="font-semibold text-emerald-700">OK</span>
                       )}
                     </td>
+                    <td className="px-4 py-3 text-sm">
+                      <button
+                        type="button"
+                        onClick={() => deleteDataset(bucket.bucket)}
+                        disabled={actionInProgress !== null}
+                        className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {actionInProgress === `delete-dataset-${bucket.bucket}`
+                          ? "Deleting..."
+                          : "Delete dataset"}
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -876,6 +1148,39 @@ export default function StoragePanel() {
           </div>
         </div>
       </div>
+
+      {confirmDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+          onClick={() => setConfirmDialog(null)}
+        >
+          <div
+            className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-slate-900">{confirmDialog.title}</h3>
+            <p className="mt-2 text-sm text-slate-600">{confirmDialog.description}</p>
+            <div className="mt-5 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmDialog(null)}
+                disabled={actionInProgress !== null}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={executeConfirmDialog}
+                disabled={actionInProgress !== null}
+                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {previewObjectId && (
         <div

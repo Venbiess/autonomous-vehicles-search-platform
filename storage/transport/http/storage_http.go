@@ -49,8 +49,10 @@ func (h *StorageHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/objects/get-batch", h.handleGetBatch)
 	mux.HandleFunc("/objects/", h.handleObjectByID)
 	mux.HandleFunc("/vectors/upsert", h.handleVectorUpsert)
+	mux.HandleFunc("/vectors/delete", h.handleVectorDelete)
 	mux.HandleFunc("/vectors/query", h.handleVectorQuery)
 	mux.HandleFunc("/vectors/count", h.handleVectorCount)
+	mux.HandleFunc("/vectors/completed-object-ids", h.handleVectorsCompletedObjectIDs)
 }
 
 func (h *StorageHandler) handlePreprocessorMethods(w http.ResponseWriter, r *http.Request) {
@@ -223,6 +225,10 @@ type storageUpsertVectorsRequest struct {
 	Vectors []core.UpsertVector `json:"vectors"`
 }
 
+type storageDeleteVectorsRequest struct {
+	ObjectIDs []string `json:"object_ids"`
+}
+
 type storageQueryVectorsRequest struct {
 	Embedding []float64 `json:"embedding"`
 	TopK      int       `json:"top_k"`
@@ -230,6 +236,14 @@ type storageQueryVectorsRequest struct {
 
 type storageQueryVectorsResponse struct {
 	Results []core.QueryResult `json:"results"`
+}
+
+type storageCompletedObjectIDsRequest struct {
+	ObjectIDs []string `json:"object_ids"`
+}
+
+type storageCompletedObjectIDsResponse struct {
+	ObjectIDs []string `json:"object_ids"`
 }
 
 func (h *StorageHandler) handleVectorQuery(w http.ResponseWriter, r *http.Request) {
@@ -271,6 +285,29 @@ func (h *StorageHandler) handleVectorCount(w http.ResponseWriter, r *http.Reques
 		h.writeVectorCountCache(total)
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"count": total})
+}
+
+func (h *StorageHandler) handleVectorsCompletedObjectIDs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	var req storageCompletedObjectIDsRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	if len(req.ObjectIDs) == 0 {
+		writeJSON(w, http.StatusOK, storageCompletedObjectIDsResponse{ObjectIDs: []string{}})
+		return
+	}
+	existing, err := h.svc.ExistingVectorObjectIDs(r.Context(), req.ObjectIDs)
+	if err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, storageCompletedObjectIDsResponse{ObjectIDs: existing})
 }
 
 func (h *StorageHandler) readVectorCountCache() (int64, bool) {
@@ -321,6 +358,30 @@ func (h *StorageHandler) handleVectorUpsert(w http.ResponseWriter, r *http.Reque
 	}
 	h.invalidateVectorCountCache()
 	writeJSON(w, http.StatusOK, map[string]int{"upserted": len(req.Vectors)})
+}
+
+func (h *StorageHandler) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	if err := h.authorizeWrite(r); err != nil {
+		writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
+		return
+	}
+	var req storageDeleteVectorsRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	deleted, err := h.svc.DeleteVectors(r.Context(), req.ObjectIDs)
+	if err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	h.invalidateVectorCountCache()
+	writeJSON(w, http.StatusOK, map[string]int{"requested": deleted})
 }
 
 func (h *StorageHandler) handleObjectByID(w http.ResponseWriter, r *http.Request) {

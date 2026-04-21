@@ -11,41 +11,45 @@ export default async function handler(req, res) {
     if (!req.body?.confirm) {
       return res.status(400).json({ error: "confirm=true is required" });
     }
-    const count = Math.max(1, Number(req.body?.count || 1));
+    const dataset = String(req.body?.dataset || "").trim();
+    if (!dataset) {
+      return res.status(400).json({ error: "dataset is required" });
+    }
     const objects = await listStorageObjects();
-    const shuffled = [...objects].sort(() => Math.random() - 0.5);
-    const selected = shuffled.slice(0, Math.min(count, shuffled.length));
-    const errors = [];
-    let deletedImages = 0;
+    const selected = objects.filter((item) => String(item.bucket || "") === dataset);
 
-    for (const object of selected) {
+    let deleted = 0;
+    const errors = [];
+    for (const item of selected) {
       try {
         const response = await fetch(
-          `${masterEndpoint}/objects/${encodeURIComponent(object.object_id)}`,
+          `${masterEndpoint}/objects/${encodeURIComponent(item.object_id)}`,
           { method: "DELETE" }
         );
         const payload = await response.json();
         if (!response.ok) {
           throw new Error(payload?.detail?.message || payload?.detail || payload?.error || response.statusText);
         }
-        if (payload?.result?.object?.deleted) deletedImages += 1;
+        if (payload?.result?.object?.deleted) {
+          deleted += 1;
+        }
       } catch (error) {
         errors.push({
-          object_id: object.object_id,
-          storage_path: object.storage_path,
-          error: error.message,
+          object_id: item.object_id,
+          storage_path: item.storage_path,
+          error: error.message || "Unknown error",
         });
       }
     }
 
     return res.status(errors.length ? 207 : 200).json({
+      dataset,
       selected_images: selected.length,
-      deleted_images: deletedImages,
-      deleted_source_rows: 0,
+      deleted_images: deleted,
       failed_images: errors.length,
       errors,
     });
   } catch (error) {
-    return res.status(error.status || 500).json(error.payload || { error: error.message });
+    return res.status(500).json({ error: error.message || "Unknown error" });
   }
 }
