@@ -192,7 +192,7 @@ services:
       - "${PWD}/../../frontend:/app/frontend"
       - "frontend-node-modules:/app/frontend/node_modules"
     ports:
-      - "3000:3000"
+      - "3001:3001"
     environment:
       MASTER_ENDPOINT: http://avsp-server:9002
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012

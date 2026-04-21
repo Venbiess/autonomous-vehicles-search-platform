@@ -39,6 +39,7 @@ jobs_store: Dict[str, Dict[str, Any]] = {}
 jobs_lock = threading.Lock()
 JOB_LOG_DIR = Path("/tmp/avsp-job-logs")
 JOB_LOG_DIR.mkdir(parents=True, exist_ok=True)
+JOBS_INSTALL_LOG_TAIL_LINES = 200
 
 VLM_RESPONSE_TYPES = {"short_text", "text", "yes_no", "number", "category"}
 VLM_RESPONSE_HINTS = {
@@ -1131,7 +1132,18 @@ def healthcheck():
 @app.get("/jobs")
 def get_jobs():
     with jobs_lock:
-        jobs = list(jobs_store.values())
+        jobs = []
+        for raw_job in jobs_store.values():
+            job = dict(raw_job)
+            install_log = raw_job.get("install_log")
+            if isinstance(install_log, list):
+                if len(install_log) > JOBS_INSTALL_LOG_TAIL_LINES:
+                    job["install_log"] = install_log[-JOBS_INSTALL_LOG_TAIL_LINES:]
+                    job["install_log_truncated"] = True
+                else:
+                    job["install_log"] = list(install_log)
+                    job["install_log_truncated"] = False
+            jobs.append(job)
     jobs.sort(key=lambda item: item.get("created_at", 0), reverse=True)
     return {"jobs": jobs}
 
@@ -1139,7 +1151,7 @@ def get_jobs():
 @app.get("/system-info")
 def get_system_info():
     try:
-        cpu_percent = psutil.cpu_percent(interval=1)
+        cpu_percent = psutil.cpu_percent(interval=None)
         cpu_count = psutil.cpu_count()
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage("/")

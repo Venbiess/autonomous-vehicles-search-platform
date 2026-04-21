@@ -115,6 +115,26 @@ interface DonutArc extends PieSlice {
   endDeg: number;
 }
 
+function toErrorMessage(value: unknown): string {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const nested =
+      toErrorMessage(obj.detail) ||
+      toErrorMessage(obj.error) ||
+      toErrorMessage(obj.message);
+    if (nested) {
+      return nested;
+    }
+    if (typeof obj.code === "string" && obj.code.trim()) {
+      return obj.code;
+    }
+  }
+  return "";
+}
+
 function formatNumber(value: number): string {
   return value.toLocaleString("ru-RU");
 }
@@ -344,6 +364,27 @@ export default function StoragePanel() {
   const [warningMessage, setWarningMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const extractAxiosErrorMessage = (
+    error: unknown,
+    fallback: string
+  ): string => {
+    if (axios.isAxiosError(error)) {
+      const payload = error.response?.data;
+      const payloadMessage = toErrorMessage(payload);
+      if (payloadMessage) {
+        return payloadMessage;
+      }
+      if (typeof error.message === "string" && error.message.trim()) {
+        return error.message;
+      }
+      return fallback;
+    }
+    if (error instanceof Error && error.message.trim()) {
+      return error.message;
+    }
+    return fallback;
+  };
+
   const loadStats = async (showLoader = false) => {
     if (showLoader) {
       setIsLoading(true);
@@ -355,12 +396,10 @@ export default function StoragePanel() {
       setStats(response.data);
       setErrorMessage(null);
     } catch (error) {
-      const message =
-        axios.isAxiosError(error) && error.response?.data?.detail
-          ? error.response.data.detail
-          : error instanceof Error
-            ? error.message
-            : "Failed to load storage stats";
+      const message = extractAxiosErrorMessage(
+        error,
+        "Failed to load storage stats"
+      );
       setErrorMessage(message);
     } finally {
       setIsLoading(false);
@@ -392,14 +431,7 @@ export default function StoragePanel() {
       setObjectsNextCursor(response.data.next_cursor ?? "");
       setObjectsPage(page);
     } catch (error) {
-      const message =
-        axios.isAxiosError(error) && error.response?.data?.detail
-          ? error.response.data.detail
-          : axios.isAxiosError(error) && error.response?.data?.error
-            ? error.response.data.error
-            : error instanceof Error
-              ? error.message
-              : "Failed to load objects";
+      const message = extractAxiosErrorMessage(error, "Failed to load objects");
       setErrorMessage(message);
     } finally {
       setObjectsLoading(false);
@@ -418,14 +450,7 @@ export default function StoragePanel() {
     try {
       await fn();
     } catch (error) {
-      const message =
-        axios.isAxiosError(error) && error.response?.data?.detail
-          ? error.response.data.detail
-          : axios.isAxiosError(error) && error.response?.data?.error
-            ? error.response.data.error
-            : error instanceof Error
-              ? error.message
-              : "Operation failed";
+      const message = extractAxiosErrorMessage(error, "Operation failed");
       setErrorMessage(message);
     } finally {
       setActionInProgress(null);

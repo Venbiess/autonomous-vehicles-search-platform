@@ -13,13 +13,6 @@ cd docker/server/
 docker compose -f ./docker-compose.yml up
 ```
 
-Old:
-```
-cd docker/server/
-source ./build_docker.sh
-source ./run_docker.sh
-```
-
 For Waymo:
 ```
 docker exec -it avsp-server-$USER bash
@@ -52,3 +45,4 @@ source ./run_docker.sh
  npm install
  npm run dev
  ```
+Frontend будет доступен на `http://localhost:3001`.
