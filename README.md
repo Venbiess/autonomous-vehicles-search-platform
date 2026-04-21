@@ -13,6 +13,15 @@ cd docker/server/
 docker compose -f ./docker-compose.yml up
 ```
 
+### Storage-only profiles
+```bash
+# pgvector (default)
+docker-compose -f docker/storage/docker-compose.yml up -d --build
+
+# qdrant
+docker-compose -f docker/storage/docker-compose.qdrant.yml up -d --build
+```
+
 For Waymo:
 ```
 docker exec -it avsp-server-$USER bash
@@ -45,4 +54,22 @@ source ./run_docker.sh
  npm install
  npm run dev
  ```
-Frontend будет доступен на `http://localhost:3003`.
+Frontend будет доступен на `http://localhost:3001`.
+
+## Helm / k3s
+
+```bash
+./deploy/k3s/deploy_avsp_k3s.sh
+```
+
+```bash
+helm upgrade --install avsp ./deploy/helm/avsp \
+  --namespace avsp --create-namespace \
+  -f ./deploy/helm/avsp/values-k3s.yaml
+```
+
+```bash
+helm -n avsp uninstall avsp
+kubectl -n avsp get pods
+kubectl -n avsp get svc
+```

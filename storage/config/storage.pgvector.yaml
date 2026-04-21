@@ -1,0 +1,36 @@
+storage_server:
+  server_name: storage-server
+  addr: ":9012"
+  write_token: change-me-storage-write-token
+  default_bucket: avsp
+  preprocessors_manifest_path: /app/storage/config/preprocessors.yaml
+  metadata_db:
+    dsn: host=postgres port=5432 dbname=avsp user=postgres password=postgres sslmode=disable
+    schema: public
+    table: objects
+  object_cache:
+    enabled: true
+    max_items: 5000
+    max_total_bytes: 536870912
+    max_object_size_bytes: 8388608
+    ttl_seconds: 120
+  object_store:
+    provider: s3
+    endpoint_url: http://minio:9000
+    access_key: minioadmin
+    secret_key: minioadmin
+    session_token: ""
+    region: us-east-1
+    use_ssl: false
+    force_path_style: true
+  vector_index:
+    provider: pgvector
+    conn_str: host=postgres port=5432 dbname=avsp user=postgres password=postgres sslmode=disable
+    schema: public
+    table: image_embeddings
+    endpoint_url: ""
+    api_key: ""
+    collection: ""
+    distance: cosine
+    vector_size: 0
+    timeout_sec: 10

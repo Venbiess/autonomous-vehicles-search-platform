@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: postgres:16
     container_name: "avsp-storage-postgres-${USER}"
     environment:
       POSTGRES_DB: avsp
@@ -43,10 +43,20 @@ services:
       until mc alias set local http://minio:9000 minioadmin minioadmin; do
         sleep 2;
       done &&
-      for bucket in waymo argoverse avsp synthetic; do
+      for bucket in waymo argoverse avsp; do
         mc mb --ignore-existing local/$$bucket;
       done
       '
+    networks:
+      - storage-net
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.6
+    container_name: "avsp-storage-qdrant-${USER}"
+    volumes:
+      - storage-qdrant-data:/qdrant/storage
+    ports:
+      - "6333:6333"
     networks:
       - storage-net
 
@@ -62,8 +72,10 @@ services:
         condition: service_started
       minio-init:
         condition: service_completed_successfully
+      qdrant:
+        condition: service_started
     environment:
-      STORAGE_CONFIG_PATH: /app/storage/config/storage.pgvector.yaml
+      STORAGE_CONFIG_PATH: /app/storage/config/storage.qdrant.yaml
     ports:
       - "9012:9012"
     networks:
@@ -101,6 +113,7 @@ services:
 volumes:
   storage-postgres-data:
   storage-minio-data:
+  storage-qdrant-data:
   storage-clickhouse-data:
 
 networks:
