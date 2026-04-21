@@ -13,6 +13,7 @@ import (
 )
 
 const pgvectorUpsertChunkSize = 128
+const pgvectorLookupChunkSize = 512
 const pgvectorStartupWait = 60 * time.Second
 const pgvectorStartupPingInterval = 2 * time.Second
 const pgvectorDefaultANNLists = 100
@@ -232,6 +233,50 @@ func (p *PgVectorAdapter) Count(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return total, nil
+}
+
+func (p *PgVectorAdapter) ExistingObjectIDs(ctx context.Context, objectIDs []string) ([]string, error) {
+	if len(objectIDs) == 0 {
+		return []string{}, nil
+	}
+
+	out := make([]string, 0, len(objectIDs))
+	for start := 0; start < len(objectIDs); start += pgvectorLookupChunkSize {
+		end := start + pgvectorLookupChunkSize
+		if end > len(objectIDs) {
+			end = len(objectIDs)
+		}
+		chunk := objectIDs[start:end]
+		args := make([]string, 0, len(chunk))
+		vals := make([]any, 0, len(chunk))
+		for i, id := range chunk {
+			args = append(args, fmt.Sprintf("$%d", i+1))
+			vals = append(vals, id)
+		}
+		query := fmt.Sprintf(
+			"SELECT object_id FROM %s WHERE object_id IN (%s)",
+			p.qualifiedTable(),
+			strings.Join(args, ","),
+		)
+		rows, err := p.db.QueryContext(ctx, query, vals...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var objectID string
+			if err := rows.Scan(&objectID); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, objectID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
 }
 
 func (p *PgVectorAdapter) Health(ctx context.Context) error { return p.db.PingContext(ctx) }

@@ -38,3 +38,8 @@ type VectorAdapter interface {
 	Count(ctx context.Context) (int64, error)
 	Health(ctx context.Context) error
 }
+
+// Optional capability for efficiently checking which object IDs already have vectors.
+type VectorExistingLookup interface {
+	ExistingObjectIDs(ctx context.Context, objectIDs []string) ([]string, error)
+}

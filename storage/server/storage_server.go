@@ -307,6 +307,28 @@ func (s *StorageServer) CountVectors(ctx context.Context) (int64, error) {
 	return s.vectorAdapter.Count(ctx)
 }
 
+func (s *StorageServer) ExistingVectorObjectIDs(ctx context.Context, objectIDs []string) ([]string, error) {
+	if len(objectIDs) == 0 {
+		return []string{}, nil
+	}
+	lookup, ok := s.vectorAdapter.(infra.VectorExistingLookup)
+	if !ok {
+		return nil, errors.New("vector backend does not support object id lookup")
+	}
+	return lookup.ExistingObjectIDs(ctx, objectIDs)
+}
+
+func (s *StorageServer) DeleteVectors(ctx context.Context, objectIDs []string) (int, error) {
+	normalized := dedupeNonEmpty(objectIDs)
+	if len(normalized) == 0 {
+		return 0, nil
+	}
+	if err := s.vectorAdapter.Delete(ctx, normalized); err != nil {
+		return 0, err
+	}
+	return len(normalized), nil
+}
+
 func (s *StorageServer) ensureMetadataTable(ctx context.Context) error {
 	if _, err := s.metaDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", pqIdent(s.cfg.MetadataSchema))); err != nil {
 		return err

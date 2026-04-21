@@ -124,6 +124,18 @@ class StorageAPI:
         response.raise_for_status()
         return response.json()
 
+    def completed_vector_object_ids(self, object_ids: List[str]) -> List[str]:
+        if not object_ids:
+            return []
+        response = self._client.post(
+            f"{self.endpoint}/vectors/completed-object-ids",
+            json={"object_ids": object_ids},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        ids = payload.get("object_ids", [])
+        return [str(item).strip() for item in ids if str(item).strip()]
+
     def get_preprocessor_methods(self) -> List[Dict[str, Any]]:
         response = self._client.get(f"{self.endpoint}/preprocessors/methods")
         response.raise_for_status()

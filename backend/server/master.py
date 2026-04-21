@@ -107,6 +107,10 @@ class CancelJobRequest(BaseModel):
     install_cleanup_mode: str = Field("keep", min_length=1)
 
 
+class ObjectIDsRequest(BaseModel):
+    object_ids: List[str] = Field(default_factory=list)
+
+
 class DatasetInstallRequest(BaseModel):
     datasets: List[str] = Field(..., min_length=1)
     configs: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -259,6 +263,49 @@ def _list_object_ids(limit: int, page_size: int = 500) -> List[str]:
             break
         cursor = next_cursor
     return object_ids
+
+
+def _filter_pending_embedding_object_ids(object_ids: List[str]) -> List[str]:
+    if not object_ids:
+        return []
+    completed: set[str] = set()
+    chunk_size = 500
+    for i in range(0, len(object_ids), chunk_size):
+        chunk = object_ids[i : i + chunk_size]
+        completed.update(storage_api.completed_vector_object_ids(chunk))
+    return [object_id for object_id in object_ids if object_id not in completed]
+
+
+def _list_pending_embedding_object_ids(limit: int, page_size: int = 500) -> List[str]:
+    remaining = max(limit, 0)
+    cursor: Optional[str] = None
+    pending: List[str] = []
+
+    while remaining > 0:
+        payload = storage_api.list_objects(limit=page_size, cursor=cursor)
+        items = payload.get("items", [])
+        if not items:
+            break
+
+        batch_ids: List[str] = []
+        for item in items:
+            object_id = str(item.get("object_id", "")).strip()
+            if object_id:
+                batch_ids.append(object_id)
+
+        if batch_ids:
+            batch_pending = _filter_pending_embedding_object_ids(batch_ids)
+            if batch_pending:
+                take = batch_pending[:remaining]
+                pending.extend(take)
+                remaining -= len(take)
+
+        next_cursor = payload.get("next_cursor")
+        if not next_cursor or remaining == 0:
+            break
+        cursor = next_cursor
+
+    return pending
 
 
 def _to_bool(value: Any, default: bool = False) -> bool:
@@ -532,7 +579,18 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
         )
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
 
-        object_ids = _list_object_ids(payload.limit)
+        object_ids = _list_pending_embedding_object_ids(payload.limit)
+        planned_total = len(object_ids)
+        with jobs_lock:
+            if job_id in jobs_store:
+                jobs_store[job_id]["total_limit"] = planned_total
+                jobs_store[job_id]["updated_at"] = time.time()
+        logger.info(
+            "Backfill embeddings job %s pending objects=%s (requested limit=%s)",
+            job_id,
+            planned_total,
+            payload.limit,
+        )
         with httpx.Client(timeout=timeout) as client:
             for i in range(0, len(object_ids), payload.batch_size):
                 if _job_cancel_requested(job_id):
@@ -602,7 +660,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                         if payload.stop_on_error:
                             break
 
-                progress = min(int((total_seen / max(payload.limit, 1)) * 100), 100)
+                progress = min(int((total_seen / max(planned_total, 1)) * 100), 100)
                 with jobs_lock:
                     if job_id in jobs_store:
                         jobs_store[job_id].update(
@@ -686,6 +744,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
             field_names,
             payload.overwrite_existing,
         )
+        planned_total = len(object_ids)
         total_tasks_planned = len(object_ids) * len(field_names)
         completed_tasks = 0
 
@@ -693,6 +752,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
             if job_id in jobs_store:
                 jobs_store[job_id].update(
                     {
+                        "total_limit": planned_total,
                         "total_tasks_planned": total_tasks_planned,
                         "updated_at": time.time(),
                     }
@@ -1323,6 +1383,12 @@ def backfill_vlm(payload: VLMBackfillRequest):
 @app.post("/vlm/annotations/clear")
 def clear_vlm_annotations():
     return analytics_api.clear_annotations()
+
+
+@app.post("/vlm/annotations/delete")
+def delete_vlm_annotations(payload: ObjectIDsRequest):
+    normalized = sorted({str(item).strip() for item in payload.object_ids if str(item).strip()})
+    return {"requested": analytics_api.delete_annotations(normalized)}
 
 
 @app.post("/jobs/cancel")
