@@ -635,16 +635,19 @@ export default function StoragePanel() {
           });
           const selected = Number(response.data?.selected_images || 0);
           const deleted = Number(response.data?.deleted_images || 0);
+          const remaining = Number(response.data?.remaining_images || 0);
           const failed = Number(response.data?.failed_images || 0);
           setStatusMessage(
-            `Датасет '${dataset}' обработан: выбрано ${selected}, удалено ${deleted}, ошибок ${failed}.`
+            `Датасет '${dataset}' обработан: выбрано ${selected}, удалено ${deleted}, осталось ${remaining}, ошибок ${failed}.`
           );
           await Promise.all([
             loadStats(false),
             loadObjectsPage("", [], 1),
           ]);
-          if (failed > 0) {
-            setWarningMessage(`При удалении датасета '${dataset}' были ошибки.`);
+          if (failed > 0 || remaining > 0) {
+            setWarningMessage(
+              `При удалении датасета '${dataset}' остались проблемы: осталось ${remaining}, ошибок ${failed}.`
+            );
           }
         });
       },

@@ -4,8 +4,21 @@ export default async function handler(req, res) {
   try {
     if (req.method === "GET") {
       const response = await fetch(`${masterEndpoint}/vlm/fields`);
-      const payload = await response.json();
-      return res.status(response.status).json(payload);
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch {
+        payload = {};
+      }
+      if (!response.ok) {
+        // Do not block initial UI load when analytics backend is temporarily unavailable.
+        return res.status(200).json({
+          fields: [],
+          warning:
+            payload?.detail || payload?.error || "VLM schema temporarily unavailable",
+        });
+      }
+      return res.status(200).json(payload);
     }
 
     if (req.method === "POST") {

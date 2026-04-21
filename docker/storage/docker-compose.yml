@@ -43,7 +43,7 @@ services:
       until mc alias set local http://minio:9000 minioadmin minioadmin; do
         sleep 2;
       done &&
-      for bucket in waymo argoverse avsp; do
+      for bucket in waymo argoverse avsp synthetic; do
         mc mb --ignore-existing local/$$bucket;
       done
       '

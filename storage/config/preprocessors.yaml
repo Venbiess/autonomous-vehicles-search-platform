@@ -6,7 +6,7 @@ preprocessors:
       entrypoint: python -m backend.processors.synthetic_preprocessor
       module: backend.processors.synthetic_preprocessor
     default_config:
-      bucket: avsp
+      bucket: synthetic
       num_images: 64
       batch_size: 16
       keep_local_images: false
@@ -23,7 +23,7 @@ preprocessors:
       cameras:
         - FRONT
       resample_seconds: 5.0
-      exist_skip: false
+      exist_skip: true
       embed_on_install: false
 
   - key: argoverse

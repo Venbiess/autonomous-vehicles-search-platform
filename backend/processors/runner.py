@@ -91,7 +91,7 @@ def _build_preprocessor(
             seed=_to_int(cfg.get("seed", 7), 7),
             remove_local_images=not keep_local_images,
         )
-        bucket = str(cfg.get("bucket", "avsp")).strip() or "avsp"
+        bucket = str(cfg.get("bucket", "synthetic")).strip() or "synthetic"
         planned_total = int(math.ceil(num_images / max(batch_size, 1)))
         return preprocessor, bucket, planned_total
 
