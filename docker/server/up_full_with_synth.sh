@@ -82,6 +82,6 @@ echo "Running synthetic preprocessor: ${preprocess_cmd[*]}"
 "${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" exec -T avsp-server "${preprocess_cmd[@]}"
 
 echo "Done"
-echo "Frontend: http://localhost:3003"
+echo "Frontend: http://localhost:3002"
 echo "Master:   http://localhost:9002/health"
 echo "Storage:  http://localhost:9013/health"
