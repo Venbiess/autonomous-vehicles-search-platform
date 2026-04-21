@@ -30,6 +30,36 @@ function buildImageUrl(storagePath, defaultBucket) {
   return `${baseUrl.replace(/\/$/, "")}/${bucket}/${safeKey}`;
 }
 
+function storageEndpoint() {
+  return (process.env.STORAGE_SERVER_ENDPOINT || "http://localhost:9013").replace(
+    /\/$/,
+    ""
+  );
+}
+
+function extractStoragePath(item) {
+  const candidate =
+    item.storage_path ||
+    item.storagePath ||
+    item?.storage?.path ||
+    item?.metadata?.storage_path ||
+    "";
+  return typeof candidate === "string" ? candidate.trim() : "";
+}
+
+async function loadObjectMetadata(objectId, endpoint) {
+  if (!objectId) return null;
+  try {
+    const response = await fetch(
+      `${endpoint}/objects/${encodeURIComponent(objectId)}`
+    );
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
 export const config = {
   api: {
     bodyParser: false,
@@ -44,23 +74,60 @@ async function readRawBody(req) {
   return Buffer.concat(chunks);
 }
 
-function normalizeResults(results, defaultBucket) {
-  return (results || [])
+async function normalizeResults(results, defaultBucket) {
+  const items = Array.isArray(results) ? results : [];
+  const endpoint = storageEndpoint();
+  const metadataByObjectId = new Map();
+
+  const missingPathObjectIds = Array.from(
+    new Set(
+      items
+        .map((item) => item.object_id || item.objectId || "")
+        .filter(
+          (objectId, index) =>
+            typeof objectId === "string" &&
+            objectId.trim().length > 0 &&
+            extractStoragePath(items[index]).length === 0
+        )
+    )
+  );
+
+  if (missingPathObjectIds.length > 0) {
+    const metadataEntries = await Promise.all(
+      missingPathObjectIds.map(async (objectId) => {
+        const payload = await loadObjectMetadata(objectId, endpoint);
+        return [objectId, payload];
+      })
+    );
+    for (const [objectId, payload] of metadataEntries) {
+      metadataByObjectId.set(objectId, payload);
+    }
+  }
+
+  return items
     .map((item, index) => {
       const objectId = item.object_id || item.objectId || "";
       const directUrl = item.url || item.image_url || item.imageUrl || null;
+      const metadata = objectId ? metadataByObjectId.get(objectId) : null;
+      const storagePath =
+        extractStoragePath(item) ||
+        extractStoragePath(metadata || {}) ||
+        "";
+      const storageUrl = buildImageUrl(storagePath, defaultBucket);
       const url =
         (objectId && `/api/objects/${encodeURIComponent(objectId)}`) ||
         (typeof directUrl === "string" && directUrl.length > 0 ? directUrl : null) ||
-        buildImageUrl(item.storage_path, defaultBucket);
+        storageUrl;
       if (!url) return null;
-      const identity = objectId || item.storage_path || url;
+      const identity = objectId || storagePath || url;
       return {
         id: `${identity}-${index}`,
-        title: item.title || objectId || item.storage_path || url,
+        title: item.title || objectId || storagePath || url,
         url,
         score: item.similarity ?? item.distance ?? null,
         object_id: objectId || undefined,
+        storage_path: storagePath || undefined,
+        storage_url: storageUrl || undefined,
       };
     })
     .filter(Boolean);
@@ -104,7 +171,9 @@ export default async function handler(req, res) {
         return res.status(502).json({ error: text });
       }
       const payload = await response.json();
-      return res.status(200).json(normalizeResults(payload.results, defaultBucket));
+      return res
+        .status(200)
+        .json(await normalizeResults(payload.results, defaultBucket));
     }
 
     if (!query || query.trim().length === 0) {
@@ -121,7 +190,9 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: text });
     }
     const payload = await response.json();
-    return res.status(200).json(normalizeResults(payload.results, defaultBucket));
+    return res
+      .status(200)
+      .json(await normalizeResults(payload.results, defaultBucket));
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
