@@ -1,5 +1,7 @@
 import io
 import logging
+import os
+import resource
 import threading
 from typing import Optional
 
@@ -63,6 +65,69 @@ if cfg_device != DEVICE:
     )
 
 
+def _process_rss_mb() -> float:
+    try:
+        with open("/proc/self/statm", "r", encoding="utf-8") as fp:
+            parts = fp.read().strip().split()
+        if len(parts) >= 2:
+            resident_pages = int(parts[1])
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            return round((resident_pages * page_size) / (1024 ** 2), 2)
+    except Exception:
+        pass
+
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        rss = float(usage.ru_maxrss)
+        if rss > 10 ** 8:
+            return round(rss / (1024 ** 2), 2)
+        return round(rss / 1024.0, 2)
+    except Exception:
+        return 0.0
+
+
+def _runtime_payload() -> dict:
+    runtime = {
+        "configured_device": cfg_device,
+        "selected_device": DEVICE,
+        "torch_cuda_available": bool(torch.cuda.is_available()),
+        "torch_mps_available": bool(torch.backends.mps.is_available()),
+        "cuda_device_count": int(torch.cuda.device_count() if torch.cuda.is_available() else 0),
+        "cuda_device_name": None,
+        "dtype": str(TORCH_DTYPE).replace("torch.", ""),
+    }
+    memory = {
+        "process_rss_mb": _process_rss_mb(),
+        "gpu_allocated_mb": 0.0,
+        "gpu_reserved_mb": 0.0,
+        "gpu_total_mb": 0.0,
+        "gpu_free_mb": 0.0,
+    }
+
+    if DEVICE == "cuda" and torch.cuda.is_available():
+        try:
+            current = torch.cuda.current_device()
+            runtime["cuda_device_name"] = torch.cuda.get_device_name(current)
+            memory["gpu_allocated_mb"] = round(
+                torch.cuda.memory_allocated(current) / (1024 ** 2), 2
+            )
+            memory["gpu_reserved_mb"] = round(
+                torch.cuda.memory_reserved(current) / (1024 ** 2), 2
+            )
+            free_bytes, total_bytes = torch.cuda.mem_get_info(current)
+            memory["gpu_total_mb"] = round(total_bytes / (1024 ** 2), 2)
+            memory["gpu_free_mb"] = round(free_bytes / (1024 ** 2), 2)
+        except Exception:
+            pass
+
+    counters = {
+        "received": requests_received,
+        "completed": requests_completed,
+        "in_progress": requests_in_progress,
+    }
+    return {"runtime": runtime, "memory": memory, "counters": counters}
+
+
 def _generate_text(image: Image.Image, prompt_text: str, max_new_tokens: int) -> str:
     messages = [
         {
@@ -91,10 +156,13 @@ def _generate_text(image: Image.Image, prompt_text: str, max_new_tokens: int) ->
 
 @app.get("/health")
 def healthcheck():
+    runtime = _runtime_payload()
     return {
         "status": "ok",
+        "service": "vlm",
         "model": VLM_CONFIG.MODEL_NAME,
         "device": DEVICE,
+        **runtime,
     }
 
 
