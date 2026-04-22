@@ -1,0 +1,96 @@
+{{- if .Values.storageServer.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "avsp.fullname" . }}-storage-config
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+data:
+  storage.yaml: |
+    storage_server:
+      server_name: {{ .Values.storageServer.config.serverName | quote }}
+      addr: {{ .Values.storageServer.config.addr | quote }}
+      write_token: {{ .Values.secrets.storage.writeToken | quote }}
+      default_bucket: {{ .Values.storageServer.config.defaultBucket | quote }}
+      preprocessors_manifest_path: {{ .Values.storageServer.config.preprocessorsManifestPath | quote }}
+      metadata_db:
+        dsn: {{ printf "host=postgres port=5432 dbname=%s user=%s password=%s sslmode=disable" .Values.secrets.postgres.db .Values.secrets.postgres.user .Values.secrets.postgres.password | quote }}
+        schema: {{ .Values.storageServer.config.metadata.schema | quote }}
+        table: {{ .Values.storageServer.config.metadata.table | quote }}
+      object_cache:
+        enabled: {{ .Values.storageServer.config.objectCache.enabled }}
+        max_items: {{ .Values.storageServer.config.objectCache.maxItems }}
+        max_total_bytes: {{ .Values.storageServer.config.objectCache.maxTotalBytes }}
+        max_object_size_bytes: {{ .Values.storageServer.config.objectCache.maxObjectSizeBytes }}
+        ttl_seconds: {{ .Values.storageServer.config.objectCache.ttlSeconds }}
+      object_store:
+        provider: {{ .Values.storageServer.config.objectStore.provider | quote }}
+        endpoint_url: {{ .Values.storageServer.config.objectStore.endpointURL | quote }}
+        access_key: {{ .Values.secrets.minio.rootUser | quote }}
+        secret_key: {{ .Values.secrets.minio.rootPassword | quote }}
+        session_token: ""
+        region: {{ .Values.storageServer.config.objectStore.region | quote }}
+        use_ssl: {{ .Values.storageServer.config.objectStore.useSSL }}
+        force_path_style: {{ .Values.storageServer.config.objectStore.forcePathStyle }}
+      vector_index:
+        provider: {{ .Values.storageServer.config.vectorIndex.provider | quote }}
+        conn_str: {{ .Values.storageServer.config.vectorIndex.connStr | quote }}
+        schema: {{ .Values.storageServer.config.vectorIndex.schema | quote }}
+        table: {{ .Values.storageServer.config.vectorIndex.table | quote }}
+        endpoint_url: {{ .Values.storageServer.config.vectorIndex.endpointURL | quote }}
+        api_key: {{ .Values.storageServer.config.vectorIndex.apiKey | quote }}
+        collection: {{ .Values.storageServer.config.vectorIndex.collection | quote }}
+        distance: {{ .Values.storageServer.config.vectorIndex.distance | quote }}
+        vector_size: {{ .Values.storageServer.config.vectorIndex.vectorSize }}
+        timeout_sec: {{ .Values.storageServer.config.vectorIndex.timeoutSec }}
+  preprocessors.yaml: |
+    preprocessors:
+      - key: synthetic
+        label: Synthetic
+        description: Synthetic dataset generator
+        runner:
+          module: backend.processors.synthetic_preprocessor
+          entrypoint: main
+        default_config:
+          images_per_frame: 3
+          num_frames: 20
+          bucket: avsp
+      - key: waymo
+        label: Waymo
+        description: Waymo preprocessor
+        runner:
+          module: backend.processors.waymo_preprocessor
+          entrypoint: main
+        default_config:
+          bucket: waymo
+      - key: argoverse
+        label: Argoverse
+        description: Argoverse preprocessor
+        runner:
+          module: backend.processors.argoverse_preprocessor
+          entrypoint: main
+        default_config:
+          bucket: argoverse
+---
+{{- end }}
+{{- if .Values.analyticsServer.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "avsp.fullname" . }}-analytics-config
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+data:
+  settings.yaml: |
+    analytics_server:
+      server_name: {{ .Values.analyticsServer.config.serverName | quote }}
+      addr: {{ .Values.analyticsServer.config.addr | quote }}
+      analytics_db:
+        provider: {{ .Values.analyticsServer.config.analyticsDB.provider | quote }}
+        dsn: {{ .Values.analyticsServer.config.analyticsDB.dsn | quote }}
+        field_catalog_table: {{ .Values.analyticsServer.config.analyticsDB.fieldCatalogTable | quote }}
+        annotation_store_table: {{ .Values.analyticsServer.config.analyticsDB.annotationStoreTable | quote }}
+      analytics_dbs: []
+{{- end }}

@@ -28,6 +28,7 @@ from configs.common import (
     VLM_TIMEOUT_SEC,
 )
 from backend.server.analytics_api import AnalyticsAPI
+from backend.server.model_bus import ModelGateway
 from backend.server.storage_api import StorageAPI
 
 logger = logging.getLogger("avsp.master")
@@ -131,6 +132,7 @@ analytics_api = AnalyticsAPI(
     endpoint=ANALYTICS_SERVER_ENDPOINT,
     timeout_sec=ANALYTICS_SERVER_TIMEOUT_SEC,
 )
+model_gateway = ModelGateway()
 
 
 def _normalize_field_name(field_name: str) -> str:
@@ -346,19 +348,11 @@ def _raise_upstream_http_error(exc: httpx.HTTPStatusError) -> None:
 
 
 def _embed_image(client: httpx.Client, image_bytes: bytes) -> Tuple[List[float], int]:
-    url = f"{EMBEDDER_ENDPOINT}/embedding/image_bytes"
-    response = client.post(url, content=image_bytes)
-    response.raise_for_status()
-    payload = response.json()
-    return payload["embedding"], payload["dim"]
+    return model_gateway.embed_image(client, EMBEDDER_ENDPOINT, image_bytes)
 
 
 def _embed_text(client: httpx.Client, text: str) -> Tuple[List[float], int]:
-    url = f"{EMBEDDER_ENDPOINT}/embedding/text"
-    response = client.post(url, params={"text": text})
-    response.raise_for_status()
-    payload = response.json()
-    return payload["embedding"], payload["dim"]
+    return model_gateway.embed_text(client, EMBEDDER_ENDPOINT, text)
 
 
 def _run_vlm(
@@ -372,22 +366,20 @@ def _run_vlm(
     field_name: Optional[str] = None,
     object_id: Optional[str] = None,
 ) -> str:
-    response = client.post(
-        f"{VLM_ENDPOINT}/generate",
-        data={
-            "prompt": prompt,
-            "max_new_tokens": str(max_new_tokens),
-            "job_id": job_id or "",
-            "task_index": str(task_index) if task_index is not None else "",
-            "task_total": str(task_total) if task_total is not None else "",
-            "field_name": field_name or "",
-            "object_id": object_id or "",
+    return model_gateway.run_vlm(
+        client,
+        VLM_ENDPOINT,
+        image_bytes=image_bytes,
+        prompt=prompt,
+        max_new_tokens=max_new_tokens,
+        metadata={
+            "job_id": job_id,
+            "task_index": task_index,
+            "task_total": task_total,
+            "field_name": field_name,
+            "object_id": object_id,
         },
-        files={"file": ("image.jpg", image_bytes, "image/jpeg")},
     )
-    response.raise_for_status()
-    payload = response.json()
-    return payload["response"].strip()
 
 
 def _job_cancel_requested(job_id: str) -> bool:
@@ -1186,7 +1178,16 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
 
 @app.get("/health")
 def healthcheck():
-    return {"status": "ok"}
+    model_health = model_gateway.health()
+    if model_health.get("status") != "ok":
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "degraded",
+                "models": model_health,
+            },
+        )
+    return {"status": "ok", "models": model_health}
 
 
 @app.get("/jobs")

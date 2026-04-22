@@ -13,3 +13,5 @@ fastapi
 uvicorn
 httpx
 psutil
+
+pika

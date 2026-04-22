@@ -1,0 +1,6 @@
+apiVersion: v2
+name: avsp
+description: AVSP stack for k3s (storage, analytics, master, frontend, model services)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

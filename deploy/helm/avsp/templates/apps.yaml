@@ -1,0 +1,500 @@
+{{- if .Values.storageServer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storage-server
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storage-server
+spec:
+  replicas: {{ .Values.storageServer.replicas }}
+  selector:
+    matchLabels:
+      {{- include "avsp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: storage-server
+  template:
+    metadata:
+      labels:
+        {{- include "avsp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: storage-server
+    spec:
+      containers:
+        - name: storage-server
+          image: {{ include "avsp.image" .Values.storageServer.image }}
+          imagePullPolicy: {{ .Values.storageServer.image.pullPolicy }}
+          env:
+            - name: STORAGE_CONFIG_PATH
+              value: /app/storage/config/storage.yaml
+          ports:
+            - containerPort: {{ .Values.storageServer.service.port }}
+          volumeMounts:
+            - name: storage-config
+              mountPath: /app/storage/config/storage.yaml
+              subPath: storage.yaml
+            - name: storage-config
+              mountPath: /app/storage/config/preprocessors.yaml
+              subPath: preprocessors.yaml
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: {{ .Values.storageServer.service.port }}
+            initialDelaySeconds: 8
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.storageServer.service.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.storageServer.resources | nindent 12 }}
+      volumes:
+        - name: storage-config
+          configMap:
+            name: {{ include "avsp.fullname" . }}-storage-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: storage-server
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "avsp.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: storage-server
+  ports:
+    - name: http
+      port: {{ .Values.storageServer.service.port }}
+      targetPort: {{ .Values.storageServer.service.port }}
+---
+{{- end }}
+{{- if .Values.analyticsServer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-server
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: analytics-server
+spec:
+  replicas: {{ .Values.analyticsServer.replicas }}
+  selector:
+    matchLabels:
+      {{- include "avsp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: analytics-server
+  template:
+    metadata:
+      labels:
+        {{- include "avsp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: analytics-server
+    spec:
+      containers:
+        - name: analytics-server
+          image: {{ include "avsp.image" .Values.analyticsServer.image }}
+          imagePullPolicy: {{ .Values.analyticsServer.image.pullPolicy }}
+          env:
+            - name: COLUMN_STORAGE_CONFIG_PATH
+              value: /app/backend/column-storage/settings.yaml
+          ports:
+            - containerPort: {{ .Values.analyticsServer.service.port }}
+          volumeMounts:
+            - name: analytics-config
+              mountPath: /app/backend/column-storage/settings.yaml
+              subPath: settings.yaml
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: {{ .Values.analyticsServer.service.port }}
+            initialDelaySeconds: 8
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.analyticsServer.service.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.analyticsServer.resources | nindent 12 }}
+      volumes:
+        - name: analytics-config
+          configMap:
+            name: {{ include "avsp.fullname" . }}-analytics-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics-server
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "avsp.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: analytics-server
+  ports:
+    - name: http
+      port: {{ .Values.analyticsServer.service.port }}
+      targetPort: {{ .Values.analyticsServer.service.port }}
+---
+{{- end }}
+{{- if .Values.embedder.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embedder
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: embedder
+spec:
+  replicas: {{ .Values.embedder.replicas }}
+  selector:
+    matchLabels:
+      {{- include "avsp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: embedder
+  template:
+    metadata:
+      labels:
+        {{- include "avsp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: embedder
+    spec:
+      containers:
+        - name: embedder
+          image: {{ include "avsp.image" .Values.embedder.image }}
+          imagePullPolicy: {{ .Values.embedder.image.pullPolicy }}
+          command: {{- toYaml .Values.embedder.command | nindent 12 }}
+          ports:
+            - containerPort: {{ .Values.embedder.service.port }}
+          resources:
+            {{- toYaml .Values.embedder.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: embedder
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "avsp.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: embedder
+  ports:
+    - name: http
+      port: {{ .Values.embedder.service.port }}
+      targetPort: {{ .Values.embedder.service.port }}
+---
+{{- end }}
+{{- if .Values.vlm.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vlm
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vlm
+spec:
+  replicas: {{ .Values.vlm.replicas }}
+  selector:
+    matchLabels:
+      {{- include "avsp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: vlm
+  template:
+    metadata:
+      labels:
+        {{- include "avsp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: vlm
+    spec:
+      containers:
+        - name: vlm
+          image: {{ include "avsp.image" .Values.vlm.image }}
+          imagePullPolicy: {{ .Values.vlm.image.pullPolicy }}
+          command: {{- toYaml .Values.vlm.command | nindent 12 }}
+          ports:
+            - containerPort: {{ .Values.vlm.service.port }}
+          resources:
+            {{- toYaml .Values.vlm.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vlm
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "avsp.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: vlm
+  ports:
+    - name: http
+      port: {{ .Values.vlm.service.port }}
+      targetPort: {{ .Values.vlm.service.port }}
+---
+{{- end }}
+{{- if .Values.embedderWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embedder-worker
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: embedder-worker
+spec:
+  replicas: {{ .Values.embedderWorker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "avsp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: embedder-worker
+  template:
+    metadata:
+      labels:
+        {{- include "avsp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: embedder-worker
+    spec:
+      containers:
+        - name: embedder-worker
+          image: {{ include "avsp.image" .Values.embedderWorker.image }}
+          imagePullPolicy: {{ .Values.embedderWorker.image.pullPolicy }}
+          command: ["python", "-m", "backend.models.queue_worker", "--worker", "embedder"]
+          env:
+            - name: RABBITMQ_URL
+              value: amqp://guest:guest@rabbitmq:5672/%2f
+            - name: RABBITMQ_EMBEDDER_QUEUE
+              value: avsp.embedder.tasks
+            - name: RABBITMQ_VLM_QUEUE
+              value: avsp.vlm.tasks
+            - name: RABBITMQ_PREFETCH
+              value: "1"
+          resources:
+            {{- toYaml .Values.embedderWorker.resources | nindent 12 }}
+---
+{{- end }}
+{{- if .Values.vlmWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vlm-worker
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vlm-worker
+spec:
+  replicas: {{ .Values.vlmWorker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "avsp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: vlm-worker
+  template:
+    metadata:
+      labels:
+        {{- include "avsp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: vlm-worker
+    spec:
+      containers:
+        - name: vlm-worker
+          image: {{ include "avsp.image" .Values.vlmWorker.image }}
+          imagePullPolicy: {{ .Values.vlmWorker.image.pullPolicy }}
+          command: ["python", "-m", "backend.models.queue_worker", "--worker", "vlm"]
+          env:
+            - name: RABBITMQ_URL
+              value: amqp://guest:guest@rabbitmq:5672/%2f
+            - name: RABBITMQ_EMBEDDER_QUEUE
+              value: avsp.embedder.tasks
+            - name: RABBITMQ_VLM_QUEUE
+              value: avsp.vlm.tasks
+            - name: RABBITMQ_PREFETCH
+              value: "1"
+          resources:
+            {{- toYaml .Values.vlmWorker.resources | nindent 12 }}
+---
+{{- end }}
+{{- if .Values.master.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: avsp-master
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: master
+spec:
+  replicas: {{ .Values.master.replicas }}
+  selector:
+    matchLabels:
+      {{- include "avsp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: master
+  template:
+    metadata:
+      labels:
+        {{- include "avsp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: master
+    spec:
+      containers:
+        - name: master
+          image: {{ include "avsp.image" .Values.master.image }}
+          imagePullPolicy: {{ .Values.master.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "avsp.fullname" . }}-secrets
+          env:
+            - name: S3_ENDPOINT_URL
+              value: http://minio:9000
+            - name: S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "avsp.fullname" . }}-secrets
+                  key: MINIO_ROOT_USER
+            - name: S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "avsp.fullname" . }}-secrets
+                  key: MINIO_ROOT_PASSWORD
+            - name: POSTGRES_HOST
+              value: postgres
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "avsp.fullname" . }}-secrets
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "avsp.fullname" . }}-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "avsp.fullname" . }}-secrets
+                  key: POSTGRES_PASSWORD
+            - name: EMBEDDER_ENDPOINT
+              value: http://embedder:8000
+            - name: VLM_ENDPOINT
+              value: http://vlm:8001
+            - name: MODEL_EXECUTION_MODE
+              value: {{ .Values.master.modelExecutionMode | quote }}
+            {{- if eq .Values.master.modelExecutionMode "rabbitmq" }}
+            - name: RABBITMQ_URL
+              value: amqp://guest:guest@rabbitmq:5672/%2f
+            - name: RABBITMQ_EMBEDDER_QUEUE
+              value: avsp.embedder.tasks
+            - name: RABBITMQ_VLM_QUEUE
+              value: avsp.vlm.tasks
+            - name: RABBITMQ_RPC_TIMEOUT_SEC
+              value: "120"
+            {{- end }}
+            - name: STORAGE_SERVER_ENDPOINT
+              value: http://storage-server:9012
+            - name: STORAGE_SERVER_TIMEOUT_SEC
+              value: "30"
+            - name: STORAGE_WRITE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "avsp.fullname" . }}-secrets
+                  key: STORAGE_WRITE_TOKEN
+            - name: ANALYTICS_SERVER_ENDPOINT
+              value: http://analytics-server:9012
+            - name: ANALYTICS_SERVER_TIMEOUT_SEC
+              value: "30"
+          ports:
+            - containerPort: {{ .Values.master.service.port }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.master.service.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.master.service.port }}
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.master.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: avsp-master
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "avsp.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: master
+  ports:
+    - name: http
+      port: {{ .Values.master.service.port }}
+      targetPort: {{ .Values.master.service.port }}
+---
+{{- end }}
+{{- if .Values.frontend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: avsp-frontend
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "avsp.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        {{- include "avsp.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: {{ include "avsp.image" .Values.frontend.image }}
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          env:
+            - name: MASTER_ENDPOINT
+              value: http://avsp-master:9002
+            - name: STORAGE_SERVER_ENDPOINT
+              value: http://storage-server:9012
+            - name: STORAGE_WRITE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "avsp.fullname" . }}-secrets
+                  key: STORAGE_WRITE_TOKEN
+            - name: MINIO_PUBLIC_ENDPOINT
+              value: http://minio:9000
+            - name: MINIO_BUCKET
+              value: avsp
+          ports:
+            - containerPort: {{ .Values.frontend.service.port }}
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: avsp-frontend
+  namespace: {{ include "avsp.namespace" . }}
+  labels:
+    {{- include "avsp.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "avsp.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+  ports:
+    - name: http
+      port: {{ .Values.frontend.service.port }}
+      targetPort: {{ .Values.frontend.service.port }}
+{{- end }}

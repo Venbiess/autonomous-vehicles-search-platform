@@ -1,0 +1,15 @@
+AVSP chart has been deployed.
+
+Check pods:
+  kubectl -n {{ include "avsp.namespace" . }} get pods
+
+Services:
+  kubectl -n {{ include "avsp.namespace" . }} get svc
+
+If ingress is disabled, port-forward frontend:
+  kubectl -n {{ include "avsp.namespace" . }} port-forward svc/avsp-frontend 3001:3001
+
+If ingress is enabled, configure DNS/hosts for:
+  {{ .Values.ingress.hosts.frontend }}
+  {{ .Values.ingress.hosts.master }}
+  {{ .Values.ingress.hosts.storage }}

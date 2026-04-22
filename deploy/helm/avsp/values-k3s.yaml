@@ -1,0 +1,62 @@
+global:
+  storageClass: local-path
+
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    frontend: avsp.local
+    master: api.avsp.local
+    storage: storage.avsp.local
+
+# If you use local images imported into k3s, keep IfNotPresent and local tags.
+storageServer:
+  image:
+    repository: avsp/storage-server
+    tag: local
+    pullPolicy: IfNotPresent
+
+analyticsServer:
+  image:
+    repository: avsp/analytics-server
+    tag: local
+    pullPolicy: IfNotPresent
+
+master:
+  modelExecutionMode: rabbitmq
+  image:
+    repository: avsp/master
+    tag: local
+    pullPolicy: IfNotPresent
+
+frontend:
+  image:
+    repository: avsp/frontend
+    tag: local
+    pullPolicy: IfNotPresent
+
+embedder:
+  enabled: false
+  image:
+    repository: avsp/models-cpu
+    tag: local
+    pullPolicy: IfNotPresent
+
+vlm:
+  enabled: false
+  image:
+    repository: avsp/models-cpu
+    tag: local
+    pullPolicy: IfNotPresent
+
+embedderWorker:
+  image:
+    repository: avsp/models-cpu
+    tag: local
+    pullPolicy: IfNotPresent
+
+vlmWorker:
+  image:
+    repository: avsp/models-cpu
+    tag: local
+    pullPolicy: IfNotPresent

@@ -19,7 +19,7 @@ data/
 venv/
 storage/tests/.venv/
 notebooks/.ipynb_checkpoints/
-avsp/
+/avsp/
 .DS_Store
 docker-compose.override.yml
 .env

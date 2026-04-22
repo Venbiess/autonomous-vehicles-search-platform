@@ -1,0 +1,243 @@
+global:
+  namespaceOverride: ""
+  storageClass: "local-path"
+
+imagePullSecrets: []
+
+secrets:
+  postgres:
+    user: postgres
+    password: postgres
+    db: avsp
+  minio:
+    rootUser: minioadmin
+    rootPassword: minioadmin
+  clickhouse:
+    user: default
+    password: clickhouse
+    db: default
+  storage:
+    writeToken: change-me-storage-write-token
+
+postgres:
+  enabled: true
+  image:
+    repository: pgvector/pgvector
+    tag: pg16
+    pullPolicy: IfNotPresent
+  service:
+    port: 5432
+  persistence:
+    enabled: true
+    size: 20Gi
+
+minio:
+  enabled: true
+  image:
+    repository: minio/minio
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    apiPort: 9000
+    consolePort: 9001
+  persistence:
+    enabled: true
+    size: 50Gi
+  buckets:
+    - avsp
+    - waymo
+    - argoverse
+
+minioInit:
+  enabled: true
+  image:
+    repository: minio/mc
+    tag: latest
+    pullPolicy: IfNotPresent
+
+qdrant:
+  enabled: true
+  image:
+    repository: qdrant/qdrant
+    tag: v1.13.6
+    pullPolicy: IfNotPresent
+  service:
+    port: 6333
+  persistence:
+    enabled: true
+    size: 20Gi
+
+rabbitmq:
+  enabled: true
+  image:
+    repository: rabbitmq
+    tag: 3.13-management
+    pullPolicy: IfNotPresent
+  service:
+    amqpPort: 5672
+    managementPort: 15672
+
+clickhouse:
+  enabled: true
+  image:
+    repository: clickhouse/clickhouse-server
+    tag: "24.8"
+    pullPolicy: IfNotPresent
+  service:
+    httpPort: 8123
+    nativePort: 9000
+  persistence:
+    enabled: true
+    size: 20Gi
+
+storageServer:
+  enabled: true
+  replicas: 1
+  image:
+    repository: avsp/storage-server
+    tag: local
+    pullPolicy: IfNotPresent
+  service:
+    port: 9012
+  resources: {}
+  config:
+    serverName: storage-server
+    addr: ":9012"
+    defaultBucket: avsp
+    metadata:
+      schema: public
+      table: objects
+    objectCache:
+      enabled: true
+      maxItems: 5000
+      maxTotalBytes: 536870912
+      maxObjectSizeBytes: 8388608
+      ttlSeconds: 120
+    objectStore:
+      provider: s3
+      endpointURL: http://minio:9000
+      region: us-east-1
+      useSSL: false
+      forcePathStyle: true
+    vectorIndex:
+      provider: pgvector
+      connStr: host=postgres port=5432 dbname=avsp user=postgres password=postgres sslmode=disable
+      schema: public
+      table: image_embeddings
+      endpointURL: ""
+      apiKey: ""
+      collection: ""
+      distance: cosine
+      vectorSize: 0
+      timeoutSec: 10
+    preprocessorsManifestPath: /app/storage/config/preprocessors.yaml
+
+analyticsServer:
+  enabled: true
+  replicas: 1
+  image:
+    repository: avsp/analytics-server
+    tag: local
+    pullPolicy: IfNotPresent
+  service:
+    port: 9012
+  resources: {}
+  config:
+    serverName: analytics-server
+    addr: ":9012"
+    analyticsDB:
+      provider: clickhouse
+      dsn: clickhouse://default:clickhouse@clickhouse:8123/default
+      fieldCatalogTable: vlm_field_specs
+      annotationStoreTable: vlm_annotations
+
+embedder:
+  enabled: false
+  replicas: 1
+  image:
+    repository: avsp/models-cpu
+    tag: local
+    pullPolicy: IfNotPresent
+  service:
+    port: 8000
+  command:
+    - uvicorn
+    - backend.models.embedder.embedder:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - "8000"
+    - --log-level
+    - info
+  resources: {}
+
+embedderWorker:
+  enabled: true
+  replicas: 1
+  image:
+    repository: avsp/models-cpu
+    tag: local
+    pullPolicy: IfNotPresent
+  resources: {}
+
+vlm:
+  enabled: false
+  replicas: 1
+  image:
+    repository: avsp/models-cpu
+    tag: local
+    pullPolicy: IfNotPresent
+  service:
+    port: 8001
+  command:
+    - uvicorn
+    - backend.models.vlm.vlm:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - "8001"
+    - --log-level
+    - info
+  resources: {}
+
+vlmWorker:
+  enabled: true
+  replicas: 1
+  image:
+    repository: avsp/models-cpu
+    tag: local
+    pullPolicy: IfNotPresent
+  resources: {}
+
+master:
+  enabled: true
+  replicas: 1
+  modelExecutionMode: rabbitmq
+  image:
+    repository: avsp/master
+    tag: local
+    pullPolicy: IfNotPresent
+  service:
+    port: 9002
+  resources: {}
+
+frontend:
+  enabled: true
+  replicas: 1
+  image:
+    repository: avsp/frontend
+    tag: local
+    pullPolicy: IfNotPresent
+  service:
+    port: 3001
+  resources: {}
+
+ingress:
+  enabled: false
+  className: traefik
+  annotations: {}
+  hosts:
+    frontend: avsp.local
+    master: api.avsp.local
+    storage: storage.avsp.local
+  tls: []

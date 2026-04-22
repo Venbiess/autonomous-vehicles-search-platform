@@ -13,6 +13,11 @@ cd docker/server/
 docker compose -f ./docker-compose.yml up
 ```
 
+```bash
+# scale queue workers
+docker compose -f docker/server/docker-compose.yml up -d --scale embedder-worker=2 --scale vlm-worker=2
+```
+
 ### Storage-only profiles
 ```bash
 # pgvector (default)

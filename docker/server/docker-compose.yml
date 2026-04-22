@@ -1,4 +1,13 @@
 services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: "rabbitmq-${USER}"
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - avsp-net
+
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
     container_name: "clickhouse-${USER}"
@@ -73,6 +82,7 @@ services:
       context: ../..
       dockerfile: docker/models/models-cpu.Dockerfile
     container_name: "embedder-${USER}"
+    profiles: ["http"]
     volumes:
       - "${PWD}/../..:/app"
     ports:
@@ -85,6 +95,7 @@ services:
       context: ../..
       dockerfile: docker/models/models-cpu.Dockerfile
     container_name: "vlm-${USER}"
+    profiles: ["http"]
     volumes:
       - "${PWD}/../..:/app"
     command: >
@@ -97,6 +108,48 @@ services:
       "
     ports:
       - "8001:8001"
+    networks:
+      - avsp-net
+
+  embedder-worker:
+    build:
+      context: ../..
+      dockerfile: docker/models/models-cpu.Dockerfile
+    container_name: "embedder-worker-${USER}"
+    depends_on:
+      - rabbitmq
+    command: >
+      /bin/sh -c "
+      python -m backend.models.queue_worker --worker embedder
+      "
+    volumes:
+      - "${PWD}/../..:/app"
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
+      RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
+      RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
+      RABBITMQ_PREFETCH: 1
+    networks:
+      - avsp-net
+
+  vlm-worker:
+    build:
+      context: ../..
+      dockerfile: docker/models/models-cpu.Dockerfile
+    container_name: "vlm-worker-${USER}"
+    depends_on:
+      - rabbitmq
+    command: >
+      /bin/sh -c "
+      python -m backend.models.queue_worker --worker vlm
+      "
+    volumes:
+      - "${PWD}/../..:/app"
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
+      RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
+      RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
+      RABBITMQ_PREFETCH: 1
     networks:
       - avsp-net
 
@@ -141,8 +194,9 @@ services:
       - postgres
       - minio
       - minio-init
-      - embedder
-      - vlm
+      - rabbitmq
+      - embedder-worker
+      - vlm-worker
       - storage-server
       - analytics-server
     volumes:
@@ -161,6 +215,11 @@ services:
       POSTGRES_PASSWORD: postgres
       EMBEDDER_ENDPOINT: http://embedder:8000
       VLM_ENDPOINT: http://vlm:8001
+      MODEL_EXECUTION_MODE: rabbitmq
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
+      RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
+      RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
+      RABBITMQ_RPC_TIMEOUT_SEC: 120
       ANALYTICS_SERVER_ENDPOINT: http://analytics-server:9012
       ANALYTICS_SERVER_TIMEOUT_SEC: 30
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012
