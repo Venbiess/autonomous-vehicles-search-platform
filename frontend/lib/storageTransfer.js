@@ -1,4 +1,9 @@
-import { gunzipSync } from "zlib";
+import { spawn } from "child_process";
+import { once } from "events";
+import { createWriteStream } from "fs";
+import { mkdtemp, rm } from "fs/promises";
+import { tmpdir } from "os";
+import path from "path";
 
 export const SNAPSHOT_FORMAT_FULL = "avsp.storage.snapshot.v1";
 export const SNAPSHOT_FORMAT_VLM = "avsp.vlm.annotations.v1";
@@ -7,10 +12,6 @@ export const SNAPSHOT_FORMAT_EMBEDDINGS = "avsp.embedder.annotations.v1";
 export const SNAPSHOT_KIND_FULL = "full";
 export const SNAPSHOT_KIND_VLM = "vlm";
 export const SNAPSHOT_KIND_EMBEDDINGS = "embeddings";
-
-// Guardrail for V8 JSON.parse input string size. Very large JSON blobs can crash
-// the process before we get a regular JS exception.
-const MAX_JSON_PARSE_BYTES = 1_500_000_000;
 
 export function masterEndpoint() {
   return (process.env.MASTER_ENDPOINT || "http://localhost:9002").replace(/\/$/, "");
@@ -37,8 +38,8 @@ export async function readJsonResponse(response) {
   }
 }
 
-export async function readMasterJson(path, init = {}) {
-  const response = await fetch(`${masterEndpoint()}${path}`, init);
+export async function readMasterJson(pathname, init = {}) {
+  const response = await fetch(`${masterEndpoint()}${pathname}`, init);
   const payload = await readJsonResponse(response);
   if (!response.ok) {
     const message = payload?.detail || payload?.error || response.statusText;
@@ -51,76 +52,90 @@ export async function readMasterJson(path, init = {}) {
 }
 
 export function buildSnapshotFilename(kind, timestampIso) {
-  const safeKind = String(kind || "snapshot").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+  const safeKind = String(kind || "snapshot")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-");
   const safeTime = String(timestampIso || new Date().toISOString()).replace(/[:.]/g, "-");
-  return `avsp-${safeKind}-${safeTime}.json`;
+  return `avsp-${safeKind}-${safeTime}.tar.gz`;
 }
 
-export async function readRequestBuffer(req, maxBytes) {
+export async function createTempDir(prefix = "avsp-transfer-") {
+  return await mkdtemp(path.join(tmpdir(), prefix));
+}
+
+export async function cleanupTempDir(dirPath) {
+  if (!dirPath) {
+    return;
+  }
+  await rm(dirPath, { recursive: true, force: true });
+}
+
+function runCommand(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+
+    child.on("error", (error) => {
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      const message = stderr.trim() || `${command} exited with code ${code}`;
+      reject(new Error(message));
+    });
+  });
+}
+
+export async function packDirectoryToTarGz(sourceDir, archivePath) {
+  await runCommand("tar", ["-czf", archivePath, "-C", sourceDir, "."]);
+}
+
+export async function extractTarGzToDirectory(archivePath, targetDir) {
+  await runCommand("tar", ["-xzf", archivePath, "-C", targetDir]);
+}
+
+export async function writeRequestToFile(req, filePath, maxBytes) {
   const limit = Math.max(1, Number(maxBytes || 1));
-  const chunks = [];
+  const output = createWriteStream(filePath, { flags: "w" });
   let total = 0;
 
-  for await (const chunk of req) {
-    const piece = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += piece.length;
-    if (total > limit) {
-      const error = new Error(`Snapshot payload exceeds limit (${limit} bytes)`);
-      error.status = 413;
-      throw error;
-    }
-    chunks.push(piece);
-  }
-
-  return Buffer.concat(chunks);
-}
-
-export function parseSnapshotBuffer(rawBuffer) {
-  if (!rawBuffer || rawBuffer.length === 0) {
-    const error = new Error("Empty snapshot payload");
-    error.status = 400;
-    throw error;
-  }
-
-  let jsonBuffer = rawBuffer;
-  if (rawBuffer.length > MAX_JSON_PARSE_BYTES) {
-    const error = new Error(
-      `Snapshot JSON is too large for parser (${rawBuffer.length} bytes). Use split snapshots (embeddings/vlm) or a smaller file.`
-    );
-    error.status = 413;
-    throw error;
-  }
-  const isGzip = rawBuffer.length >= 2 && rawBuffer[0] === 0x1f && rawBuffer[1] === 0x8b;
-  if (isGzip) {
-    try {
-      jsonBuffer = gunzipSync(rawBuffer);
-    } catch {
-      const error = new Error("Invalid gzip snapshot payload");
-      error.status = 400;
-      throw error;
-    }
-  }
-  if (jsonBuffer.length > MAX_JSON_PARSE_BYTES) {
-    const error = new Error(
-      `Uncompressed snapshot is too large for parser (${jsonBuffer.length} bytes). Export/import embeddings and VLM separately.`
-    );
-    error.status = 413;
-    throw error;
-  }
-
-  let parsed;
   try {
-    parsed = JSON.parse(jsonBuffer.toString("utf8"));
-  } catch {
-    const error = new Error("Snapshot file must be valid JSON");
-    error.status = 400;
+    for await (const chunk of req) {
+      const piece = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += piece.length;
+      if (total > limit) {
+        const error = new Error(`Snapshot payload exceeds limit (${limit} bytes)`);
+        error.status = 413;
+        req.destroy();
+        throw error;
+      }
+      if (!output.write(piece)) {
+        await once(output, "drain");
+      }
+    }
+    await new Promise((resolve, reject) => {
+      output.end((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  } catch (error) {
+    output.destroy();
     throw error;
   }
 
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    const error = new Error("Snapshot root must be a JSON object");
-    error.status = 400;
-    throw error;
-  }
-  return parsed;
+  return total;
 }

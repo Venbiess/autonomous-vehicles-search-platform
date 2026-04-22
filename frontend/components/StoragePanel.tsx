@@ -743,7 +743,7 @@ export default function StoragePanel() {
       const disposition = response.headers.get("content-disposition");
       const fallbackName = `avsp-${kind}-snapshot-${new Date()
         .toISOString()
-        .replace(/[:.]/g, "-")}.json`;
+        .replace(/[:.]/g, "-")}.tar.gz`;
       const filename = fileNameFromDisposition(disposition) || fallbackName;
       const href = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -992,7 +992,7 @@ export default function StoragePanel() {
                 <input
                   key={transferFileInputKey}
                   type="file"
-                  accept=".json,.gz,application/json,application/gzip"
+                  accept=".tar.gz,.tgz,.tar,.gz,application/gzip,application/x-gzip,application/x-tar"
                   onChange={(event) =>
                     setTransferFile(event.target.files?.[0] ?? null)
                   }
