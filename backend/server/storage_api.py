@@ -113,6 +113,18 @@ class StorageAPI:
         payload = response.json()
         return int(payload.get("upserted", 0))
 
+    def delete_vectors(self, object_ids: List[str]) -> int:
+        if not object_ids:
+            return 0
+        response = self._client.post(
+            f"{self.endpoint}/vectors/delete",
+            json={"object_ids": object_ids},
+            headers=self.write_headers,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return int(payload.get("requested", 0))
+
     def delete_object(self, object_id: str) -> Dict[str, Any]:
         if self.write_headers:
             response = self._client.delete(

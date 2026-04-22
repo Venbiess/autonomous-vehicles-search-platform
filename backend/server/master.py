@@ -80,6 +80,8 @@ class VLMFieldDefinition(BaseModel):
 
 class VLMFieldsRequest(BaseModel):
     fields: List[VLMFieldDefinition] = Field(..., min_length=1)
+    replace_missing: bool = False
+    purge_deleted_values: bool = False
 
 
 class VLMBackfillRequest(BaseModel):
@@ -395,25 +397,36 @@ def _job_install_cleanup_mode(job_id: str) -> str:
     return mode if mode in {"keep", "delete"} else "keep"
 
 
+def _chunk_object_ids(object_ids: List[str], chunk_size: int = 500) -> List[List[str]]:
+    if chunk_size <= 0:
+        chunk_size = 500
+    normalized = [str(item).strip() for item in object_ids if str(item).strip()]
+    if not normalized:
+        return []
+    return [normalized[i : i + chunk_size] for i in range(0, len(normalized), chunk_size)]
+
+
 def _mark_job_cancelled(
     job_id: str,
     total_seen: int,
     total_inserted: int,
     errors: List[Dict[str, str]],
+    extra_updates: Optional[Dict[str, Any]] = None,
 ) -> None:
     with jobs_lock:
         if job_id in jobs_store:
-            jobs_store[job_id].update(
-                {
-                    "status": JobStatus.CANCELLED.value,
-                    "total_seen": total_seen,
-                    "total_inserted": total_inserted,
-                    "current_scene_tasks_completed": 0,
-                    "current_scene_tasks_total": 0,
-                    "errors": errors,
-                    "updated_at": time.time(),
-                }
-            )
+            payload: Dict[str, Any] = {
+                "status": JobStatus.CANCELLED.value,
+                "total_seen": total_seen,
+                "total_inserted": total_inserted,
+                "current_scene_tasks_completed": 0,
+                "current_scene_tasks_total": 0,
+                "errors": errors,
+                "updated_at": time.time(),
+            }
+            if extra_updates:
+                payload.update(extra_updates)
+            jobs_store[job_id].update(payload)
 
 
 def _append_install_log(job: Dict[str, Any], message: str) -> None:
@@ -548,6 +561,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
             "job_type": "backfill_embeddings",
             "status": JobStatus.RUNNING.value,
             "cancel_requested": False,
+            "install_cleanup_mode": "keep",
             "progress": 0,
             "total_seen": 0,
             "total_inserted": 0,
@@ -560,6 +574,33 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
     total_seen = 0
     total_inserted = 0
     errors = []
+    inserted_object_ids: List[str] = []
+    inserted_object_ids_seen: set[str] = set()
+
+    def _cancel_backfill_job() -> None:
+        cleanup_mode = _job_install_cleanup_mode(job_id)
+        cleanup_removed = 0
+        cancel_errors = list(errors)
+        if cleanup_mode == "delete":
+            for chunk in _chunk_object_ids(inserted_object_ids):
+                try:
+                    cleanup_removed += storage_api.delete_vectors(chunk)
+                except Exception as exc:  # noqa: BLE001
+                    cancel_errors.append({"error": f"cleanup vectors delete failed: {exc}"})
+            cancel_errors.append(
+                {
+                    "error": (
+                        "Cancellation cleanup removed embeddings for "
+                        f"{cleanup_removed} / {len(inserted_object_ids)} objects"
+                    )
+                }
+            )
+        _mark_job_cancelled(
+            job_id,
+            total_seen,
+            max(0, total_inserted - cleanup_removed),
+            cancel_errors,
+        )
 
     try:
         logger.info(
@@ -586,7 +627,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
         with httpx.Client(timeout=timeout) as client:
             for i in range(0, len(object_ids), payload.batch_size):
                 if _job_cancel_requested(job_id):
-                    _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
+                    _cancel_backfill_job()
                     return
                 batch_ids = object_ids[i : i + payload.batch_size]
                 rows: List[EmbedResult] = []
@@ -598,7 +639,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
 
                 for object_id in batch_ids:
                     if _job_cancel_requested(job_id):
-                        _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
+                        _cancel_backfill_job()
                         return
                     try:
                         batch_item = by_object_id.get(object_id)
@@ -633,6 +674,10 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                     try:
                         upserted = _storage_vector_upsert_batch(rows)
                         total_inserted += upserted
+                        for row in rows[: max(0, upserted)]:
+                            if row.object_id not in inserted_object_ids_seen:
+                                inserted_object_ids_seen.add(row.object_id)
+                                inserted_object_ids.append(row.object_id)
                         if upserted != len(rows):
                             errors.append(
                                 {
@@ -700,6 +745,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
             "job_type": "backfill_vlm",
             "status": JobStatus.RUNNING.value,
             "cancel_requested": False,
+            "install_cleanup_mode": "keep",
             "progress": 0,
             "total_seen": 0,
             "total_inserted": 0,
@@ -718,6 +764,8 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
     total_seen = 0
     total_inserted = 0
     errors = []
+    annotated_object_ids: List[str] = []
+    annotated_object_ids_seen: set[str] = set()
 
     try:
         timeout = httpx.Timeout(VLM_TIMEOUT_SEC)
@@ -740,6 +788,35 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
         total_tasks_planned = len(object_ids) * len(field_names)
         completed_tasks = 0
 
+        def _cancel_vlm_job() -> None:
+            cleanup_mode = _job_install_cleanup_mode(job_id)
+            cleanup_removed = 0
+            cancel_errors = list(errors)
+            if cleanup_mode == "delete":
+                for chunk in _chunk_object_ids(annotated_object_ids):
+                    try:
+                        cleanup_removed += analytics_api.delete_annotations(chunk)
+                    except Exception as exc:  # noqa: BLE001
+                        cancel_errors.append({"error": f"cleanup annotations delete failed: {exc}"})
+                cancel_errors.append(
+                    {
+                        "error": (
+                            "Cancellation cleanup removed annotations for "
+                            f"{cleanup_removed} / {len(annotated_object_ids)} objects"
+                        )
+                    }
+                )
+            _mark_job_cancelled(
+                job_id,
+                total_seen,
+                max(0, total_inserted - cleanup_removed),
+                cancel_errors,
+                extra_updates={
+                    "total_tasks_completed": completed_tasks,
+                    "total_tasks_planned": total_tasks_planned,
+                },
+            )
+
         with jobs_lock:
             if job_id in jobs_store:
                 jobs_store[job_id].update(
@@ -753,7 +830,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
         with httpx.Client(timeout=timeout) as client:
             for i in range(0, len(object_ids), payload.batch_size):
                 if _job_cancel_requested(job_id):
-                    _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
+                    _cancel_vlm_job()
                     return
                 batch_ids = object_ids[i : i + payload.batch_size]
                 batch_payload = storage_api.get_object_bytes_batch(batch_ids)
@@ -763,8 +840,10 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
 
                 for object_id in batch_ids:
                     if _job_cancel_requested(job_id):
-                        _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
+                        _cancel_vlm_job()
                         return
+                    current_scene_tasks_total = len(fields)
+                    scene_tasks_completed = 0
                     try:
                         batch_item = by_object_id.get(object_id)
                         if not batch_item:
@@ -776,7 +855,6 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                             raise ValueError("empty content")
                         values: Dict[str, str] = {}
                         current_scene_index = total_seen + 1
-                        current_scene_tasks_total = len(fields)
                         with jobs_lock:
                             if job_id in jobs_store:
                                 jobs_store[job_id].update(
@@ -789,7 +867,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                 )
                         for field_index, field in enumerate(fields):
                             if _job_cancel_requested(job_id):
-                                _mark_job_cancelled(job_id, total_seen, total_inserted, errors)
+                                _cancel_vlm_job()
                                 return
                             prompt = _build_vlm_prompt(field["prompt"], field["response_type"])
                             task_index = completed_tasks + field_index + 1
@@ -809,10 +887,26 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                 field["response_type"],
                             )
                             completed_tasks += 1
+                            scene_tasks_completed = field_index + 1
+                            with jobs_lock:
+                                if job_id in jobs_store:
+                                    jobs_store[job_id].update(
+                                        {
+                                            "total_tasks_completed": completed_tasks,
+                                            "total_tasks_planned": total_tasks_planned,
+                                            "current_scene_tasks_completed": scene_tasks_completed,
+                                            "current_scene_tasks_total": current_scene_tasks_total,
+                                            "updated_at": time.time(),
+                                        }
+                                    )
                         if not payload.dry_run:
-                            total_inserted += _upsert_vlm_annotations(
+                            upserted = _upsert_vlm_annotations(
                                 [{"object_id": object_id, "values": values}]
                             )
+                            total_inserted += upserted
+                            if upserted > 0 and object_id not in annotated_object_ids_seen:
+                                annotated_object_ids_seen.add(object_id)
+                                annotated_object_ids.append(object_id)
                         total_seen += 1
                     except Exception as exc:  # noqa: BLE001
                         logger.exception("VLM failed for object_id=%s", object_id)
@@ -831,8 +925,8 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                     "total_inserted": total_inserted,
                                     "total_tasks_completed": completed_tasks,
                                     "total_tasks_planned": total_tasks_planned,
-                                    "current_scene_tasks_completed": 0,
-                                    "current_scene_tasks_total": len(fields),
+                                    "current_scene_tasks_completed": scene_tasks_completed,
+                                    "current_scene_tasks_total": current_scene_tasks_total,
                                     "errors": errors,
                                     "field_names": field_names,
                                     "updated_at": time.time(),
@@ -1365,7 +1459,11 @@ def upsert_vlm_fields(payload: VLMFieldsRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    fields = analytics_api.upsert_fields(normalized_fields)
+    fields = analytics_api.upsert_fields(
+        normalized_fields,
+        replace_missing=payload.replace_missing,
+        purge_deleted_values=payload.purge_deleted_values,
+    )
     return {"fields": fields}
 
 
@@ -1406,14 +1504,19 @@ def cancel_job(payload: CancelJobRequest):
                 status_code=400,
                 detail="install_cleanup_mode must be 'keep' or 'delete'",
             )
-        if str(job.get("job_type", "")).startswith("install_"):
+        job_type = str(job.get("job_type", "")).strip()
+        supports_cleanup_mode = job_type.startswith("install_") or job_type in {
+            "backfill_vlm",
+            "backfill_embeddings",
+        }
+        if supports_cleanup_mode:
             job["install_cleanup_mode"] = cleanup_mode
         job["cancel_requested"] = True
         job["updated_at"] = time.time()
     return {
         "job_id": payload.job_id,
         "status": "cancellation_requested",
-        "install_cleanup_mode": cleanup_mode if str(job.get("job_type", "")).startswith("install_") else None,
+        "install_cleanup_mode": cleanup_mode if supports_cleanup_mode else None,
     }
 
 

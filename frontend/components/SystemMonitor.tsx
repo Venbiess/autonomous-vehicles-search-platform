@@ -277,6 +277,44 @@ export default function SystemMonitor() {
     }
   };
 
+  const supportsCleanupChoice = (jobType: string): boolean =>
+    jobType.startsWith("install_") ||
+    jobType === "backfill_vlm" ||
+    jobType === "backfill_embeddings";
+
+  const getCancelDialogDescription = (jobType: string): string => {
+    if (jobType.startsWith("install_")) {
+      return "Выберите, что сделать с уже загруженными этой джобой данными.";
+    }
+    if (jobType === "backfill_vlm") {
+      return "Выберите, что сделать с уже размеченными этой джобой сценами.";
+    }
+    if (jobType === "backfill_embeddings") {
+      return "Выберите, что сделать с уже созданными этой джобой эмбеддингами.";
+    }
+    return "Подтвердите остановку джобы.";
+  };
+
+  const getCancelKeepLabel = (jobType: string): string => {
+    if (jobType === "backfill_vlm") {
+      return "Остановить и сохранить разметку";
+    }
+    if (jobType === "backfill_embeddings") {
+      return "Остановить и сохранить эмбеддинги";
+    }
+    return "Остановить и сохранить";
+  };
+
+  const getCancelDeleteLabel = (jobType: string): string => {
+    if (jobType === "backfill_vlm") {
+      return "Остановить и удалить разметку";
+    }
+    if (jobType === "backfill_embeddings") {
+      return "Остановить и удалить эмбеддинги";
+    }
+    return "Остановить и удалить";
+  };
+
   if (isLoading && !systemInfo) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -732,9 +770,7 @@ export default function SystemMonitor() {
               </div>
             </div>
             <div className="px-5 py-4 text-sm text-slate-700">
-              {cancelDialogJob.job_type.startsWith("install_")
-                ? "Выберите, что сделать с уже загруженными этой джобой данными."
-                : "Подтвердите остановку джобы."}
+              {getCancelDialogDescription(cancelDialogJob.job_type)}
             </div>
             <div className="flex flex-nowrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
               <button
@@ -744,7 +780,7 @@ export default function SystemMonitor() {
               >
                 Закрыть
               </button>
-              {cancelDialogJob.job_type.startsWith("install_") ? (
+              {supportsCleanupChoice(cancelDialogJob.job_type) ? (
                 <>
                   <button
                     type="button"
@@ -752,7 +788,7 @@ export default function SystemMonitor() {
                     disabled={cancellingJobId === cancelDialogJob.job_id}
                     className="rounded-lg border border-blue-300 px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-60"
                   >
-                    Остановить и сохранить
+                    {getCancelKeepLabel(cancelDialogJob.job_type)}
                   </button>
                   <button
                     type="button"
@@ -760,7 +796,7 @@ export default function SystemMonitor() {
                     disabled={cancellingJobId === cancelDialogJob.job_id}
                     className="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
                   >
-                    Остановить и удалить
+                    {getCancelDeleteLabel(cancelDialogJob.job_type)}
                   </button>
                 </>
               ) : (

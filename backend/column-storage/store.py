@@ -122,24 +122,96 @@ class ClickHouseShard:
             for row in rows
         ]
 
-    def upsert_fields(self, fields: Sequence[AnalyticsField]) -> None:
-        if not fields:
-            return
-        now = _now_utc()
-        data = [
-            [
-                item.field_name.strip(),
-                item.prompt.strip(),
-                item.response_type.strip().lower(),
-                now,
-            ]
-            for item in fields
-        ]
-        self.client.insert(
-            self.fields_table,
-            data,
-            column_names=["field_name", "prompt", "response_type", "updated_at"],
+    def _delete_fields(self, field_names: Sequence[str]) -> int:
+        normalized = sorted({item.strip() for item in field_names if item.strip()})
+        if not normalized:
+            return 0
+        values = ", ".join(_q(item) for item in normalized)
+        self.client.command(
+            f"ALTER TABLE {self.fields_table_sql} DELETE WHERE field_name IN ({values})"
         )
+        return len(normalized)
+
+    def _purge_deleted_fields_from_annotations(self, field_names: Sequence[str]) -> int:
+        removed = {item.strip() for item in field_names if item.strip()}
+        if not removed:
+            return 0
+        rows = self.client.query(
+            f"""
+            SELECT object_id, argMax(values_json, updated_at)
+            FROM {self.annotations_table_sql}
+            GROUP BY object_id
+            """
+        ).result_rows
+        if not rows:
+            return 0
+
+        now = _now_utc()
+        updates: List[List[object]] = []
+        for object_id, values_json in rows:
+            try:
+                attrs = json.loads(values_json) if values_json else {}
+            except json.JSONDecodeError:
+                attrs = {}
+            if not isinstance(attrs, dict):
+                continue
+            changed = False
+            for key in removed:
+                if key in attrs:
+                    del attrs[key]
+                    changed = True
+            if changed:
+                updates.append([object_id, json.dumps(attrs, ensure_ascii=True), now])
+
+        if not updates:
+            return 0
+        self.client.insert(
+            self.annotations_table,
+            updates,
+            column_names=["object_id", "values_json", "updated_at"],
+        )
+        return len(updates)
+
+    def upsert_fields(
+        self,
+        fields: Sequence[AnalyticsField],
+        replace_missing: bool = False,
+        purge_deleted_values: bool = False,
+    ) -> Dict[str, int]:
+        existing_names = {
+            item.field_name.strip()
+            for item in self.get_fields([])
+            if item.field_name.strip()
+        } if replace_missing else set()
+        incoming_names = {
+            item.field_name.strip() for item in fields if item.field_name.strip()
+        }
+        removed_names = sorted(existing_names - incoming_names) if replace_missing else []
+
+        if fields:
+            now = _now_utc()
+            data = [
+                [
+                    item.field_name.strip(),
+                    item.prompt.strip(),
+                    item.response_type.strip().lower(),
+                    now,
+                ]
+                for item in fields
+            ]
+            self.client.insert(
+                self.fields_table,
+                data,
+                column_names=["field_name", "prompt", "response_type", "updated_at"],
+            )
+
+        removed_fields = self._delete_fields(removed_names) if removed_names else 0
+        cleaned_rows = (
+            self._purge_deleted_fields_from_annotations(removed_names)
+            if purge_deleted_values and removed_names
+            else 0
+        )
+        return {"removed_fields": removed_fields, "cleaned_rows": cleaned_rows}
 
     def _get_annotation_values(self, object_id: str) -> Dict[str, str]:
         query = (
@@ -269,9 +341,23 @@ class AnalyticsStore:
     def get_fields(self, field_names: Sequence[str]) -> List[AnalyticsField]:
         return self.shards[0].get_fields(field_names)
 
-    def upsert_fields(self, fields: Sequence[AnalyticsField]) -> None:
+    def upsert_fields(
+        self,
+        fields: Sequence[AnalyticsField],
+        replace_missing: bool = False,
+        purge_deleted_values: bool = False,
+    ) -> Dict[str, int]:
+        removed_fields = 0
+        cleaned_rows = 0
         for shard in self.shards:
-            shard.upsert_fields(fields)
+            result = shard.upsert_fields(
+                fields,
+                replace_missing=replace_missing,
+                purge_deleted_values=purge_deleted_values,
+            )
+            removed_fields += int(result.get("removed_fields", 0))
+            cleaned_rows += int(result.get("cleaned_rows", 0))
+        return {"removed_fields": removed_fields, "cleaned_rows": cleaned_rows}
 
     def upsert_annotations(self, rows: Sequence[AnnotationRow]) -> None:
         grouped: List[List[AnnotationRow]] = [[] for _ in self.shards]
