@@ -8,6 +8,10 @@ export const SNAPSHOT_KIND_FULL = "full";
 export const SNAPSHOT_KIND_VLM = "vlm";
 export const SNAPSHOT_KIND_EMBEDDINGS = "embeddings";
 
+// Guardrail for V8 JSON.parse input string size. Very large JSON blobs can crash
+// the process before we get a regular JS exception.
+const MAX_JSON_PARSE_BYTES = 1_500_000_000;
+
 export function masterEndpoint() {
   return (process.env.MASTER_ENDPOINT || "http://localhost:9002").replace(/\/$/, "");
 }
@@ -79,6 +83,13 @@ export function parseSnapshotBuffer(rawBuffer) {
   }
 
   let jsonBuffer = rawBuffer;
+  if (rawBuffer.length > MAX_JSON_PARSE_BYTES) {
+    const error = new Error(
+      `Snapshot JSON is too large for parser (${rawBuffer.length} bytes). Use split snapshots (embeddings/vlm) or a smaller file.`
+    );
+    error.status = 413;
+    throw error;
+  }
   const isGzip = rawBuffer.length >= 2 && rawBuffer[0] === 0x1f && rawBuffer[1] === 0x8b;
   if (isGzip) {
     try {
@@ -88,6 +99,13 @@ export function parseSnapshotBuffer(rawBuffer) {
       error.status = 400;
       throw error;
     }
+  }
+  if (jsonBuffer.length > MAX_JSON_PARSE_BYTES) {
+    const error = new Error(
+      `Uncompressed snapshot is too large for parser (${jsonBuffer.length} bytes). Export/import embeddings and VLM separately.`
+    );
+    error.status = 413;
+    throw error;
   }
 
   let parsed;
