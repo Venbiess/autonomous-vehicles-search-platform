@@ -49,6 +49,17 @@ function createFieldDraft(): FieldDraft {
   };
 }
 
+function normalizeFieldName(name: string): string {
+  const normalized = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-zA-Z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!normalized) return "";
+  return /^[0-9]/.test(normalized) ? `field_${normalized}` : normalized;
+}
+
 export default function AnnotationPanel({
   onOpenJobsMonitor,
 }: AnnotationPanelProps) {
@@ -65,11 +76,18 @@ export default function AnnotationPanel({
     createFieldDraft(),
   ]);
   const [vlmSavedFields, setVlmSavedFields] = useState<SavedField[]>([]);
+  const [vlmSchemaStatusMessage, setVlmSchemaStatusMessage] = useState<string | null>(
+    null
+  );
   const [vlmBackfillLimit, setVlmBackfillLimit] = useState(200);
   const [vlmMaxNewTokens, setVlmMaxNewTokens] = useState(64);
   const [isSavingVlmSchema, setIsSavingVlmSchema] = useState(false);
   const [isStartingVlmJob, setIsStartingVlmJob] = useState(false);
   const [isClearingVlmAnnotations, setIsClearingVlmAnnotations] = useState(false);
+  const [schemaDeleteDialog, setSchemaDeleteDialog] = useState<{
+    fields: Array<{ name: string; prompt: string; response_type: ResponseType }>;
+    removedFieldNames: string[];
+  } | null>(null);
   const [vlmStatusMessage, setVlmStatusMessage] = useState<string | null>(null);
   const [vlmWarningMessage, setVlmWarningMessage] = useState<string | null>(null);
   const [vlmErrorMessage, setVlmErrorMessage] = useState<string | null>(null);
@@ -271,6 +289,7 @@ export default function AnnotationPanel({
       .filter((field) => field.name && field.prompt);
 
     if (fields.length === 0) {
+      setVlmSchemaStatusMessage(null);
       setVlmStatusMessage(null);
       setVlmWarningMessage(null);
       setShowVlmJobsLink(false);
@@ -278,14 +297,41 @@ export default function AnnotationPanel({
       return;
     }
 
+    const savedFieldNames = new Set(
+      vlmSavedFields.map((field) => field.field_name).filter(Boolean)
+    );
+    const nextFieldNames = new Set(
+      fields.map((field) => normalizeFieldName(field.name)).filter(Boolean)
+    );
+    const removedFieldNames = Array.from(savedFieldNames)
+      .filter((name) => !nextFieldNames.has(name))
+      .sort();
+    if (removedFieldNames.length > 0) {
+      setSchemaDeleteDialog({ fields, removedFieldNames });
+      return;
+    }
+
+    await persistVlmSchema(fields, false);
+  };
+
+  const persistVlmSchema = async (
+    fields: Array<{ name: string; prompt: string; response_type: ResponseType }>,
+    purgeDeletedValues: boolean
+  ) => {
+    setSchemaDeleteDialog(null);
     setIsSavingVlmSchema(true);
+    setVlmSchemaStatusMessage(null);
     setVlmStatusMessage(null);
     setVlmWarningMessage(null);
     setShowVlmJobsLink(false);
     setVlmErrorMessage(null);
 
     try {
-      const response = await axios.post("/api/vlm/schema", { fields });
+      const response = await axios.post("/api/vlm/schema", {
+        fields,
+        replace_missing: true,
+        purge_deleted_values: purgeDeletedValues,
+      });
       const nextFields = response.data?.fields ?? [];
       setVlmSavedFields(nextFields);
       setVlmDraftFields(
@@ -296,8 +342,7 @@ export default function AnnotationPanel({
           response_type: field.response_type,
         }))
       );
-      setVlmStatusMessage("VLM schema saved.");
-      setVlmWarningMessage(null);
+      setVlmSchemaStatusMessage("VLM schema saved.");
     } catch (error: unknown) {
       const message =
         axios.isAxiosError(error) && error.response?.data?.detail
@@ -761,6 +806,11 @@ export default function AnnotationPanel({
               {isSavingVlmSchema ? "Saving..." : "Save schema"}
             </button>
           </div>
+          {vlmSchemaStatusMessage && (
+            <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+              {vlmSchemaStatusMessage}
+            </div>
+          )}
         </div>
 
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -857,6 +907,43 @@ export default function AnnotationPanel({
             </div>
           )}
         </div>
+
+        {schemaDeleteDialog && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+            <div className="w-full max-w-xl rounded-xl bg-white shadow-2xl">
+              <div className="border-b border-slate-200 px-5 py-4">
+                <div className="text-base font-semibold text-slate-900">
+                  Удалить поле из VLM Schema?
+                </div>
+              </div>
+              <div className="px-5 py-4 text-sm text-slate-700">
+                <div>
+                  Будут удалены столбцы и сохраненные значения в аннотациях:
+                </div>
+                <div className="mt-2 rounded-lg bg-slate-100 px-3 py-2 font-mono text-xs text-slate-800">
+                  {schemaDeleteDialog.removedFieldNames.join(", ")}
+                </div>
+              </div>
+              <div className="flex flex-nowrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+                <button
+                  type="button"
+                  onClick={() => setSchemaDeleteDialog(null)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  onClick={() => persistVlmSchema(schemaDeleteDialog.fields, true)}
+                  disabled={isSavingVlmSchema}
+                  className="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+                >
+                  Подтвердить удаление
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );

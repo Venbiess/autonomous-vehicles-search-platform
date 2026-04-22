@@ -20,9 +20,21 @@ class AnalyticsAPI:
             payload = response.json()
         return payload.get("fields", [])
 
-    def upsert_fields(self, fields: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def upsert_fields(
+        self,
+        fields: List[Dict[str, str]],
+        replace_missing: bool = False,
+        purge_deleted_values: bool = False,
+    ) -> List[Dict[str, str]]:
         with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(f"{self.endpoint}/fields", json={"fields": fields})
+            response = client.post(
+                f"{self.endpoint}/fields",
+                json={
+                    "fields": fields,
+                    "replace_missing": bool(replace_missing),
+                    "purge_deleted_values": bool(purge_deleted_values),
+                },
+            )
             response.raise_for_status()
             payload = response.json()
         return payload.get("fields", [])

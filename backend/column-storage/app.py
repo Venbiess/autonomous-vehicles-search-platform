@@ -87,7 +87,11 @@ def get_fields(field_names: str = "") -> FieldsResponse:
 
 @app.post("/fields", response_model=FieldsResponse)
 def upsert_fields(payload: UpsertFieldsRequest) -> FieldsResponse:
-    store.upsert_fields(payload.fields)
+    store.upsert_fields(
+        payload.fields,
+        replace_missing=payload.replace_missing,
+        purge_deleted_values=payload.purge_deleted_values,
+    )
     return FieldsResponse(fields=store.get_fields([]))
 
 

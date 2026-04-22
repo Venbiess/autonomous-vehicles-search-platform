@@ -17,6 +17,8 @@ class FieldsResponse(BaseModel):
 
 class UpsertFieldsRequest(BaseModel):
     fields: List[AnalyticsField] = Field(default_factory=list)
+    replace_missing: bool = False
+    purge_deleted_values: bool = False
 
 
 class AnnotationRow(BaseModel):
