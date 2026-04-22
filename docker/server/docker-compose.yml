@@ -197,9 +197,10 @@ services:
       MASTER_ENDPOINT: http://avsp-server:9002
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012
       STORAGE_WRITE_TOKEN: change-me-storage-write-token
+      STORAGE_TRANSFER_IMPORT_MAX_BYTES: 3221225472
       MINIO_PUBLIC_ENDPOINT: http://localhost:9000
       MINIO_BUCKET: avsp
-      NODE_OPTIONS: --max-old-space-size=1024
+      NODE_OPTIONS: --max-old-space-size=8192
     networks:
       - avsp-net
 
