@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+const qdrantLookupChunkSize = 256
+
 type QdrantAdapter struct {
 	baseURL    string
 	apiKey     string
@@ -166,6 +168,64 @@ func (q *QdrantAdapter) Count(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return resp.Result.Count, nil
+}
+
+func (q *QdrantAdapter) GetByObjectIDs(ctx context.Context, objectIDs []string) (map[string][]float64, error) {
+	out := make(map[string][]float64)
+	if len(objectIDs) == 0 {
+		return out, nil
+	}
+
+	for start := 0; start < len(objectIDs); start += qdrantLookupChunkSize {
+		end := start + qdrantLookupChunkSize
+		if end > len(objectIDs) {
+			end = len(objectIDs)
+		}
+		chunk := objectIDs[start:end]
+
+		var resp struct {
+			Result struct {
+				Points []struct {
+					ID      any            `json:"id"`
+					Vector  any            `json:"vector"`
+					Payload map[string]any `json:"payload"`
+				} `json:"points"`
+			} `json:"result"`
+		}
+		reqBody := map[string]any{
+			"ids":          chunk,
+			"with_payload": true,
+			"with_vector":  true,
+		}
+		err := q.doJSONExpectOK(
+			ctx,
+			http.MethodPost,
+			fmt.Sprintf("/collections/%s/points", q.collection),
+			reqBody,
+			&resp,
+			true,
+		)
+		if isNotFoundErr(err) {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		for _, point := range resp.Result.Points {
+			objectID := q.extractObjectID(point.ID, point.Payload)
+			if objectID == "" {
+				continue
+			}
+			vector := parseQdrantVector(point.Vector)
+			if len(vector) == 0 {
+				continue
+			}
+			out[objectID] = vector
+		}
+	}
+
+	return out, nil
 }
 
 func (q *QdrantAdapter) Health(ctx context.Context) error {
@@ -327,6 +387,44 @@ func scoreToDistanceSimilarity(score float64, distance string) (float64, float64
 		return dist, 1 / (1 + dist)
 	default: // cosine
 		return 1 - score, score
+	}
+}
+
+func parseQdrantVector(raw any) []float64 {
+	switch value := raw.(type) {
+	case []any:
+		out := make([]float64, 0, len(value))
+		for _, item := range value {
+			switch n := item.(type) {
+			case float64:
+				out = append(out, n)
+			case float32:
+				out = append(out, float64(n))
+			case int:
+				out = append(out, float64(n))
+			case int64:
+				out = append(out, float64(n))
+			case json.Number:
+				parsed, err := n.Float64()
+				if err != nil {
+					return []float64{}
+				}
+				out = append(out, parsed)
+			default:
+				return []float64{}
+			}
+		}
+		return out
+	case map[string]any:
+		if vector, ok := value["default"]; ok {
+			return parseQdrantVector(vector)
+		}
+		for _, vector := range value {
+			return parseQdrantVector(vector)
+		}
+		return []float64{}
+	default:
+		return []float64{}
 	}
 }
 

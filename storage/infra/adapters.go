@@ -43,3 +43,8 @@ type VectorAdapter interface {
 type VectorExistingLookup interface {
 	ExistingObjectIDs(ctx context.Context, objectIDs []string) ([]string, error)
 }
+
+// Optional capability for reading stored vectors by object IDs.
+type VectorBatchGetter interface {
+	GetByObjectIDs(ctx context.Context, objectIDs []string) (map[string][]float64, error)
+}

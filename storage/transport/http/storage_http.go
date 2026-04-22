@@ -15,6 +15,7 @@ import (
 )
 
 const maxUnifiedBatchObjectIDs = 256
+const maxVectorGetObjectIDs = 512
 const defaultListObjectsLimit = 100
 const maxListObjectsLimit = 1000
 const maxUploadObjectBytes = 32 << 20
@@ -50,6 +51,7 @@ func (h *StorageHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/objects/", h.handleObjectByID)
 	mux.HandleFunc("/vectors/upsert", h.handleVectorUpsert)
 	mux.HandleFunc("/vectors/delete", h.handleVectorDelete)
+	mux.HandleFunc("/vectors/get", h.handleVectorGet)
 	mux.HandleFunc("/vectors/query", h.handleVectorQuery)
 	mux.HandleFunc("/vectors/count", h.handleVectorCount)
 	mux.HandleFunc("/vectors/completed-object-ids", h.handleVectorsCompletedObjectIDs)
@@ -238,6 +240,14 @@ type storageQueryVectorsResponse struct {
 	Results []core.QueryResult `json:"results"`
 }
 
+type storageGetVectorsRequest struct {
+	ObjectIDs []string `json:"object_ids"`
+}
+
+type storageGetVectorsResponse struct {
+	Items []core.StoredVector `json:"items"`
+}
+
 type storageCompletedObjectIDsRequest struct {
 	ObjectIDs []string `json:"object_ids"`
 }
@@ -285,6 +295,33 @@ func (h *StorageHandler) handleVectorCount(w http.ResponseWriter, r *http.Reques
 		h.writeVectorCountCache(total)
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"count": total})
+}
+
+func (h *StorageHandler) handleVectorGet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	var req storageGetVectorsRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	if len(req.ObjectIDs) == 0 {
+		writeJSON(w, http.StatusOK, storageGetVectorsResponse{Items: []core.StoredVector{}})
+		return
+	}
+	if len(req.ObjectIDs) > maxVectorGetObjectIDs {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", errors.New("too many object_ids in batch"))
+		return
+	}
+	items, err := h.svc.GetVectors(r.Context(), req.ObjectIDs)
+	if err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, storageGetVectorsResponse{Items: items})
 }
 
 func (h *StorageHandler) handleVectorsCompletedObjectIDs(w http.ResponseWriter, r *http.Request) {

@@ -45,4 +45,4 @@ source ./run_docker.sh
  npm install
  npm run dev
  ```
-Frontend будет доступен на `http://localhost:3003`.
+Frontend будет доступен на `http://localhost:3002`.

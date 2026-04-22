@@ -318,6 +318,33 @@ func (s *StorageServer) ExistingVectorObjectIDs(ctx context.Context, objectIDs [
 	return lookup.ExistingObjectIDs(ctx, objectIDs)
 }
 
+func (s *StorageServer) GetVectors(ctx context.Context, objectIDs []string) ([]StoredVector, error) {
+	normalized := dedupeNonEmpty(objectIDs)
+	if len(normalized) == 0 {
+		return []StoredVector{}, nil
+	}
+	getter, ok := s.vectorAdapter.(infra.VectorBatchGetter)
+	if !ok {
+		return nil, errors.New("vector backend does not support batch vector read")
+	}
+	byObjectID, err := getter.GetByObjectIDs(ctx, normalized)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]StoredVector, 0, len(byObjectID))
+	for _, objectID := range normalized {
+		embedding, exists := byObjectID[objectID]
+		if !exists {
+			continue
+		}
+		out = append(out, StoredVector{
+			ObjectID:  objectID,
+			Embedding: embedding,
+		})
+	}
+	return out, nil
+}
+
 func (s *StorageServer) DeleteVectors(ctx context.Context, objectIDs []string) (int, error) {
 	normalized := dedupeNonEmpty(objectIDs)
 	if len(normalized) == 0 {

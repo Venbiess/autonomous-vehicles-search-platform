@@ -136,6 +136,30 @@ class StorageAPI:
         ids = payload.get("object_ids", [])
         return [str(item).strip() for item in ids if str(item).strip()]
 
+    def get_vectors_batch(self, object_ids: List[str]) -> List[Dict[str, Any]]:
+        if not object_ids:
+            return []
+        response = self._client.post(
+            f"{self.endpoint}/vectors/get",
+            json={"object_ids": object_ids},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        items = payload.get("items", [])
+        out: List[Dict[str, Any]] = []
+        if not isinstance(items, list):
+            return out
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            object_id = str(item.get("object_id", "")).strip()
+            embedding_raw = item.get("embedding", [])
+            if not object_id or not isinstance(embedding_raw, list):
+                continue
+            embedding = [float(value) for value in embedding_raw]
+            out.append({"object_id": object_id, "embedding": embedding})
+        return out
+
     def get_preprocessor_methods(self) -> List[Dict[str, Any]]:
         response = self._client.get(f"{self.endpoint}/preprocessors/methods")
         response.raise_for_status()

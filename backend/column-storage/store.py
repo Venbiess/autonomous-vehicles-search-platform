@@ -178,6 +178,38 @@ class ClickHouseShard:
             f"ALTER TABLE {self.annotations_table_sql} DELETE WHERE object_id IN ({values})"
         )
 
+    def get_annotations(self, object_ids: Sequence[str]) -> List[AnnotationRow]:
+        if not object_ids:
+            return []
+        values = ", ".join(_q(item) for item in object_ids)
+        rows = self.client.query(
+            f"""
+            SELECT object_id, argMax(values_json, updated_at)
+            FROM {self.annotations_table_sql}
+            WHERE object_id IN ({values})
+            GROUP BY object_id
+            """
+        ).result_rows
+        out: List[AnnotationRow] = []
+        for object_id, values_json in rows:
+            try:
+                attrs = json.loads(values_json) if values_json else {}
+                if not isinstance(attrs, dict):
+                    attrs = {}
+            except json.JSONDecodeError:
+                attrs = {}
+            values_map: Dict[str, str] = {}
+            for key, value in attrs.items():
+                normalized_key = str(key).strip()
+                if not normalized_key:
+                    continue
+                normalized_value = str(value).strip()
+                if not normalized_value:
+                    continue
+                values_map[normalized_key] = normalized_value
+            out.append(AnnotationRow(object_id=object_id, values=values_map))
+        return out
+
     def clear_annotations(self) -> int:
         count_rows = self.client.query(
             f"SELECT COUNT() FROM (SELECT object_id FROM {self.annotations_table_sql} GROUP BY object_id)"
@@ -292,6 +324,30 @@ class AnalyticsStore:
             if bucket:
                 self.shards[idx].delete_annotations(bucket)
         return len(normalized)
+
+    def get_annotations(self, object_ids: Sequence[str]) -> List[AnnotationRow]:
+        normalized = [item.strip() for item in object_ids if item.strip()]
+        if not normalized:
+            return []
+        grouped: List[List[str]] = [[] for _ in self.shards]
+        for object_id in normalized:
+            idx = _fnv_shard(object_id, len(self.shards))
+            grouped[idx].append(object_id)
+
+        by_object_id: Dict[str, AnnotationRow] = {}
+        for idx, bucket in enumerate(grouped):
+            if not bucket:
+                continue
+            rows = self.shards[idx].get_annotations(bucket)
+            for row in rows:
+                by_object_id[row.object_id] = row
+
+        out: List[AnnotationRow] = []
+        for object_id in normalized:
+            row = by_object_id.get(object_id)
+            if row is not None:
+                out.append(row)
+        return out
 
     def clear_annotations(self) -> int:
         total = 0

@@ -111,6 +111,10 @@ class ObjectIDsRequest(BaseModel):
     object_ids: List[str] = Field(default_factory=list)
 
 
+class AnnotationRowsRequest(BaseModel):
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class DatasetInstallRequest(BaseModel):
     datasets: List[str] = Field(..., min_length=1)
     configs: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -1383,6 +1387,33 @@ def backfill_vlm(payload: VLMBackfillRequest):
 @app.post("/vlm/annotations/clear")
 def clear_vlm_annotations():
     return analytics_api.clear_annotations()
+
+
+@app.post("/vlm/annotations/upsert")
+def upsert_vlm_annotations(payload: AnnotationRowsRequest):
+    normalized_rows: List[Dict[str, Any]] = []
+    for raw in payload.rows:
+        if not isinstance(raw, dict):
+            continue
+        object_id = str(raw.get("object_id", "")).strip()
+        values = raw.get("values", {})
+        if not object_id or not isinstance(values, dict):
+            continue
+        normalized_values = {
+            str(key).strip(): str(value).strip()
+            for key, value in values.items()
+            if str(key).strip() and str(value).strip()
+        }
+        if not normalized_values:
+            continue
+        normalized_rows.append({"object_id": object_id, "values": normalized_values})
+    return {"upserted": analytics_api.upsert_annotations(normalized_rows)}
+
+
+@app.post("/vlm/annotations/get")
+def get_vlm_annotations(payload: ObjectIDsRequest):
+    normalized = sorted({str(item).strip() for item in payload.object_ids if str(item).strip()})
+    return {"rows": analytics_api.get_annotations(normalized)}
 
 
 @app.post("/vlm/annotations/delete")

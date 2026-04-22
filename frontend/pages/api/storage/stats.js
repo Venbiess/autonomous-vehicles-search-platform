@@ -54,10 +54,24 @@ export default async function handler(req, res) {
 
     // Embeddings coverage from vector index.
     try {
-      const vectorPayload = await readStorageJson("/vectors/count");
-      const vectorCount = Math.max(0, Number(vectorPayload?.count || 0));
-      if (vectorCount <= totalObjects) {
-        const annotated = vectorCount;
+      if (totalObjects > 0) {
+        const completed = new Set();
+        const objectIDs = objects.map((item) => item.object_id).filter(Boolean);
+        const chunks = chunkArray(objectIDs, 500);
+        for (const objectIDsChunk of chunks) {
+          const payload = await readStorageJson("/vectors/completed-object-ids", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ object_ids: objectIDsChunk }),
+          });
+          const ids = Array.isArray(payload?.object_ids) ? payload.object_ids : [];
+          for (const id of ids) {
+            if (id) {
+              completed.add(String(id));
+            }
+          }
+        }
+        const annotated = Math.max(0, Math.min(totalObjects, completed.size));
         const pending = Math.max(0, totalObjects - annotated);
         stats.embeddings.annotated_rows = annotated;
         stats.embeddings.pending_rows = pending;
@@ -65,10 +79,6 @@ export default async function handler(req, res) {
           totalObjects > 0 ? (annotated / totalObjects) * 100 : 0;
         stats.embeddings.pending_percent =
           totalObjects > 0 ? (pending / totalObjects) * 100 : 0;
-      } else {
-        warnings.push(
-          `vector stats are global (count=${vectorCount}) and exceed current objects (${totalObjects}); showing pending as not annotated`
-        );
       }
     } catch (error) {
       warnings.push(`vector stats unavailable: ${error.message}`);

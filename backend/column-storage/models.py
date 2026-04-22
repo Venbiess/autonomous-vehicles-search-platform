@@ -28,6 +28,14 @@ class UpsertAnnotationsRequest(BaseModel):
     rows: List[AnnotationRow] = Field(default_factory=list)
 
 
+class GetAnnotationsRequest(BaseModel):
+    object_ids: List[str] = Field(default_factory=list)
+
+
+class AnnotationsResponse(BaseModel):
+    rows: List[AnnotationRow] = Field(default_factory=list)
+
+
 class DeleteAnnotationsRequest(BaseModel):
     object_ids: List[str] = Field(default_factory=list)
 

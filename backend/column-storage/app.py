@@ -10,10 +10,12 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 
 from config import load_config
 from models import (
+    AnnotationsResponse,
     CompletedRequest,
     CompletedResponse,
     DeleteAnnotationsRequest,
     FieldsResponse,
+    GetAnnotationsRequest,
     SearchRequest,
     SearchResponse,
     UpsertAnnotationsRequest,
@@ -95,6 +97,11 @@ def upsert_annotations(payload: UpsertAnnotationsRequest) -> dict:
     return {"upserted": len(payload.rows)}
 
 
+@app.post("/annotations/get", response_model=AnnotationsResponse)
+def get_annotations(payload: GetAnnotationsRequest) -> AnnotationsResponse:
+    return AnnotationsResponse(rows=store.get_annotations(payload.object_ids))
+
+
 @app.post("/annotations/delete")
 def delete_annotations(payload: DeleteAnnotationsRequest) -> dict:
     requested = store.delete_annotations(payload.object_ids)
@@ -134,6 +141,11 @@ def vlm_upsert_fields(payload: UpsertFieldsRequest) -> FieldsResponse:
 @app.post("/vlm/annotations/upsert")
 def vlm_upsert_annotations(payload: UpsertAnnotationsRequest) -> dict:
     return upsert_annotations(payload)
+
+
+@app.post("/vlm/annotations/get", response_model=AnnotationsResponse)
+def vlm_get_annotations(payload: GetAnnotationsRequest) -> AnnotationsResponse:
+    return get_annotations(payload)
 
 
 @app.post("/vlm/annotations/delete")
