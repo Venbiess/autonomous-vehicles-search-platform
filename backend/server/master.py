@@ -133,6 +133,7 @@ storage_api = StorageAPI(
 analytics_api = AnalyticsAPI(
     endpoint=ANALYTICS_SERVER_ENDPOINT,
     timeout_sec=ANALYTICS_SERVER_TIMEOUT_SEC,
+    write_token=STORAGE_WRITE_TOKEN,
 )
 model_gateway = ModelGateway()
 

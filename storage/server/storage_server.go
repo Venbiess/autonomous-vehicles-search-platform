@@ -32,6 +32,7 @@ type StorageConfig struct {
 type StorageServer struct {
 	objectAdapter infra.ObjectAdapter
 	vectorAdapter infra.VectorAdapter
+	analytics     *AnalyticsStore
 	metaDB        *sql.DB
 	cfg           StorageConfig
 	cache         *ObjectCache
@@ -70,7 +71,20 @@ func (s *StorageServer) Health(ctx context.Context) error {
 	if err := s.vectorAdapter.Health(ctx); err != nil {
 		return err
 	}
+	if s.analytics != nil {
+		if err := s.analytics.Health(ctx); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func (s *StorageServer) AttachAnalytics(store *AnalyticsStore) {
+	s.analytics = store
+}
+
+func (s *StorageServer) Analytics() *AnalyticsStore {
+	return s.analytics
 }
 
 func (s *StorageServer) UploadObject(ctx context.Context, bucket, key, filename, contentType string, data []byte) (ObjectMetadata, error) {

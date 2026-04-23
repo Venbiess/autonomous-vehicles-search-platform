@@ -71,76 +71,6 @@ spec:
       targetPort: {{ .Values.storageServer.service.port }}
 ---
 {{- end }}
-{{- if .Values.analyticsServer.enabled }}
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: analytics-server
-  namespace: {{ include "avsp.namespace" . }}
-  labels:
-    {{- include "avsp.labels" . | nindent 4 }}
-    app.kubernetes.io/component: analytics-server
-spec:
-  replicas: {{ .Values.analyticsServer.replicas }}
-  selector:
-    matchLabels:
-      {{- include "avsp.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: analytics-server
-  template:
-    metadata:
-      labels:
-        {{- include "avsp.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: analytics-server
-    spec:
-      containers:
-        - name: analytics-server
-          image: {{ include "avsp.image" .Values.analyticsServer.image }}
-          imagePullPolicy: {{ .Values.analyticsServer.image.pullPolicy }}
-          env:
-            - name: COLUMN_STORAGE_CONFIG_PATH
-              value: /app/backend/column-storage/settings.yaml
-          ports:
-            - containerPort: {{ .Values.analyticsServer.service.port }}
-          volumeMounts:
-            - name: analytics-config
-              mountPath: /app/backend/column-storage/settings.yaml
-              subPath: settings.yaml
-          readinessProbe:
-            httpGet:
-              path: /ready
-              port: {{ .Values.analyticsServer.service.port }}
-            initialDelaySeconds: 8
-            periodSeconds: 5
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: {{ .Values.analyticsServer.service.port }}
-            initialDelaySeconds: 15
-            periodSeconds: 10
-          resources:
-            {{- toYaml .Values.analyticsServer.resources | nindent 12 }}
-      volumes:
-        - name: analytics-config
-          configMap:
-            name: {{ include "avsp.fullname" . }}-analytics-config
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: analytics-server
-  namespace: {{ include "avsp.namespace" . }}
-  labels:
-    {{- include "avsp.labels" . | nindent 4 }}
-spec:
-  selector:
-    {{- include "avsp.selectorLabels" . | nindent 4 }}
-    app.kubernetes.io/component: analytics-server
-  ports:
-    - name: http
-      port: {{ .Values.analyticsServer.service.port }}
-      targetPort: {{ .Values.analyticsServer.service.port }}
----
-{{- end }}
 {{- if .Values.embedder.enabled }}
 apiVersion: apps/v1
 kind: Deployment
@@ -401,7 +331,7 @@ spec:
                   name: {{ include "avsp.fullname" . }}-secrets
                   key: STORAGE_WRITE_TOKEN
             - name: ANALYTICS_SERVER_ENDPOINT
-              value: http://analytics-server:9012
+              value: http://storage-server:9012
             - name: ANALYTICS_SERVER_TIMEOUT_SEC
               value: "30"
           ports:

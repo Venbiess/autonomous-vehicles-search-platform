@@ -153,30 +153,20 @@ services:
     networks:
       - avsp-net
 
-  analytics-server:
-    build:
-      context: ../..
-      dockerfile: docker/storage/analytics-server.Dockerfile
-    container_name: "analytics-server-${USER}"
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    environment:
-      COLUMN_STORAGE_CONFIG_PATH: /app/backend/column-storage/settings.yaml
-    ports:
-      - "9012:9012"
-    networks:
-      - avsp-net
-
   storage-server:
     build:
       context: ../..
       dockerfile: docker/storage/storage-server.Dockerfile
     container_name: "storage-server-${USER}"
     depends_on:
-      - postgres
-      - minio
-      - minio-init
+      postgres:
+        condition: service_started
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_healthy
     environment:
       STORAGE_CONFIG_PATH: /app/storage/config/storage.yaml
     ports:
@@ -198,7 +188,6 @@ services:
       - embedder-worker
       - vlm-worker
       - storage-server
-      - analytics-server
     volumes:
       - "${PWD}/../..:/app"
       - "vscode-server:/root/.vscode-server"
@@ -220,7 +209,7 @@ services:
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
       RABBITMQ_RPC_TIMEOUT_SEC: 120
-      ANALYTICS_SERVER_ENDPOINT: http://analytics-server:9012
+      ANALYTICS_SERVER_ENDPOINT: http://storage-server:9012
       ANALYTICS_SERVER_TIMEOUT_SEC: 30
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012
       STORAGE_SERVER_TIMEOUT_SEC: 30
@@ -255,6 +244,7 @@ services:
     environment:
       MASTER_ENDPOINT: http://avsp-server:9002
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012
+      ANALYTICS_SERVER_ENDPOINT: http://storage-server:9012
       STORAGE_WRITE_TOKEN: change-me-storage-write-token
       MINIO_PUBLIC_ENDPOINT: http://localhost:9000
       MINIO_BUCKET: avsp

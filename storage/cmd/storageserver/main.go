@@ -51,6 +51,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize storage service: %v", err)
 	}
+	analyticsStore, err := core.NewAnalyticsStore(core.AnalyticsDBConfig{
+		Provider:             cfg.AnalyticsDB.Provider,
+		DSN:                  cfg.AnalyticsDB.DSN,
+		FieldCatalogTable:    cfg.AnalyticsDB.FieldCatalogTable,
+		AnnotationStoreTable: cfg.AnalyticsDB.AnnotationStoreTable,
+	})
+	if err != nil {
+		log.Fatalf("failed to initialize analytics storage: %v", err)
+	}
+	svc.AttachAnalytics(analyticsStore)
 
 	preprocessorMethods := make([]core.PreprocessorMethod, 0)
 	if manifestPath := strings.TrimSpace(cfg.PreprocessorsManifestPath); manifestPath != "" {
@@ -103,6 +113,7 @@ func main() {
 		"metadata_table":       cfg.MetadataDB.Table,
 		"object_provider":      cfg.ObjectStore.Provider,
 		"vector_provider":      cfg.VectorIndex.Provider,
+		"analytics_provider":   cfg.AnalyticsDB.Provider,
 		"preprocessor_methods": len(preprocessorMethods),
 		"write_guard_enabled":  cfg.WriteToken != "",
 	})

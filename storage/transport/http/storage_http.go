@@ -53,6 +53,18 @@ func (h *StorageHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/vectors/query", h.handleVectorQuery)
 	mux.HandleFunc("/vectors/count", h.handleVectorCount)
 	mux.HandleFunc("/vectors/completed-object-ids", h.handleVectorsCompletedObjectIDs)
+	mux.HandleFunc("/fields", h.handleAnalyticsFields)
+	mux.HandleFunc("/annotations/upsert", h.handleAnalyticsAnnotationsUpsert)
+	mux.HandleFunc("/annotations/delete", h.handleAnalyticsAnnotationsDelete)
+	mux.HandleFunc("/annotations/clear", h.handleAnalyticsAnnotationsClear)
+	mux.HandleFunc("/annotations/completed-object-ids", h.handleAnalyticsCompletedObjectIDs)
+	mux.HandleFunc("/search", h.handleAnalyticsSearch)
+	mux.HandleFunc("/vlm/fields", h.handleAnalyticsFields)
+	mux.HandleFunc("/vlm/annotations/upsert", h.handleAnalyticsAnnotationsUpsert)
+	mux.HandleFunc("/vlm/annotations/delete", h.handleAnalyticsAnnotationsDelete)
+	mux.HandleFunc("/vlm/annotations/clear", h.handleAnalyticsAnnotationsClear)
+	mux.HandleFunc("/vlm/annotations/completed-object-ids", h.handleAnalyticsCompletedObjectIDs)
+	mux.HandleFunc("/vlm/search", h.handleAnalyticsSearch)
 }
 
 func (h *StorageHandler) handlePreprocessorMethods(w http.ResponseWriter, r *http.Request) {
@@ -244,6 +256,38 @@ type storageCompletedObjectIDsRequest struct {
 
 type storageCompletedObjectIDsResponse struct {
 	ObjectIDs []string `json:"object_ids"`
+}
+
+type analyticsFieldsResponse struct {
+	Fields []core.AnalyticsField `json:"fields"`
+}
+
+type analyticsUpsertFieldsRequest struct {
+	Fields             []core.AnalyticsField `json:"fields"`
+	ReplaceMissing     bool                  `json:"replace_missing"`
+	PurgeDeletedValues bool                  `json:"purge_deleted_values"`
+}
+
+type analyticsUpsertAnnotationsRequest struct {
+	Rows []core.AnnotationRow `json:"rows"`
+}
+
+type analyticsDeleteAnnotationsRequest struct {
+	ObjectIDs []string `json:"object_ids"`
+}
+
+type analyticsCompletedObjectIDsRequest struct {
+	ObjectIDs  []string `json:"object_ids"`
+	FieldNames []string `json:"field_names"`
+}
+
+type analyticsSearchRequest struct {
+	Filters []core.SearchFilter `json:"filters"`
+	Limit   int                 `json:"limit"`
+}
+
+type analyticsSearchResponse struct {
+	Results []core.SearchResult `json:"results"`
 }
 
 func (h *StorageHandler) handleVectorQuery(w http.ResponseWriter, r *http.Request) {
@@ -447,4 +491,188 @@ func (h *StorageHandler) handleObjectByID(w http.ResponseWriter, r *http.Request
 	default:
 		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
 	}
+}
+
+func (h *StorageHandler) analyticsStore(w http.ResponseWriter, r *http.Request) *core.AnalyticsStore {
+	store := h.svc.Analytics()
+	if store == nil {
+		writeTypedError(w, r, http.StatusServiceUnavailable, "service_unavailable", errors.New("analytics storage is not configured"))
+		return nil
+	}
+	return store
+}
+
+func (h *StorageHandler) handleAnalyticsFields(w http.ResponseWriter, r *http.Request) {
+	store := h.analyticsStore(w, r)
+	if store == nil {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		rawNames := strings.TrimSpace(r.URL.Query().Get("field_names"))
+		var names []string
+		if rawNames != "" {
+			for _, item := range strings.Split(rawNames, ",") {
+				if name := strings.TrimSpace(item); name != "" {
+					names = append(names, name)
+				}
+			}
+		}
+		fields, err := store.GetFields(r.Context(), names)
+		if err != nil {
+			status, code := classifyError(err)
+			writeTypedError(w, r, status, code, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, analyticsFieldsResponse{Fields: fields})
+	case http.MethodPost:
+		if err := h.authorizeWrite(r); err != nil {
+			writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
+			return
+		}
+		var req analyticsUpsertFieldsRequest
+		if err := decodeJSONBody(r, &req); err != nil {
+			writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
+			return
+		}
+		if err := store.UpsertFields(r.Context(), req.Fields, req.ReplaceMissing, req.PurgeDeletedValues); err != nil {
+			status, code := classifyError(err)
+			writeTypedError(w, r, status, code, err)
+			return
+		}
+		fields, err := store.GetFields(r.Context(), nil)
+		if err != nil {
+			status, code := classifyError(err)
+			writeTypedError(w, r, status, code, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, analyticsFieldsResponse{Fields: fields})
+	default:
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+	}
+}
+
+func (h *StorageHandler) handleAnalyticsAnnotationsUpsert(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	if err := h.authorizeWrite(r); err != nil {
+		writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
+		return
+	}
+	store := h.analyticsStore(w, r)
+	if store == nil {
+		return
+	}
+	var req analyticsUpsertAnnotationsRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	if err := store.UpsertAnnotations(r.Context(), req.Rows); err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"upserted": len(req.Rows)})
+}
+
+func (h *StorageHandler) handleAnalyticsAnnotationsDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	if err := h.authorizeWrite(r); err != nil {
+		writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
+		return
+	}
+	store := h.analyticsStore(w, r)
+	if store == nil {
+		return
+	}
+	var req analyticsDeleteAnnotationsRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	requested, err := store.DeleteAnnotations(r.Context(), req.ObjectIDs)
+	if err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"requested": requested})
+}
+
+func (h *StorageHandler) handleAnalyticsAnnotationsClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	if err := h.authorizeWrite(r); err != nil {
+		writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
+		return
+	}
+	store := h.analyticsStore(w, r)
+	if store == nil {
+		return
+	}
+	deleted, err := store.ClearAnnotations(r.Context())
+	if err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "cleared", "deleted_rows": deleted})
+}
+
+func (h *StorageHandler) handleAnalyticsCompletedObjectIDs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	store := h.analyticsStore(w, r)
+	if store == nil {
+		return
+	}
+	var req analyticsCompletedObjectIDsRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	ids, err := store.CompletedObjectIDs(r.Context(), req.ObjectIDs, req.FieldNames)
+	if err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, storageCompletedObjectIDsResponse{ObjectIDs: ids})
+}
+
+func (h *StorageHandler) handleAnalyticsSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	store := h.analyticsStore(w, r)
+	if store == nil {
+		return
+	}
+	var req analyticsSearchRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	if req.Limit <= 0 {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", errors.New("limit must be positive"))
+		return
+	}
+	results, err := store.Search(r.Context(), req.Filters, req.Limit)
+	if err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, analyticsSearchResponse{Results: results})
 }

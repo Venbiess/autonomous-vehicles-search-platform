@@ -18,6 +18,11 @@ data:
         dsn: {{ printf "host=postgres port=5432 dbname=%s user=%s password=%s sslmode=disable" .Values.secrets.postgres.db .Values.secrets.postgres.user .Values.secrets.postgres.password | quote }}
         schema: {{ .Values.storageServer.config.metadata.schema | quote }}
         table: {{ .Values.storageServer.config.metadata.table | quote }}
+      analytics_db:
+        provider: {{ .Values.storageServer.config.analyticsDB.provider | quote }}
+        dsn: {{ printf "clickhouse://%s:%s@clickhouse:8123/%s" .Values.secrets.clickhouse.user .Values.secrets.clickhouse.password .Values.secrets.clickhouse.db | quote }}
+        field_catalog_table: {{ .Values.storageServer.config.analyticsDB.fieldCatalogTable | quote }}
+        annotation_store_table: {{ .Values.storageServer.config.analyticsDB.annotationStoreTable | quote }}
       object_cache:
         enabled: {{ .Values.storageServer.config.objectCache.enabled }}
         max_items: {{ .Values.storageServer.config.objectCache.maxItems }}
@@ -73,24 +78,4 @@ data:
         default_config:
           bucket: argoverse
 ---
-{{- end }}
-{{- if .Values.analyticsServer.enabled }}
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ include "avsp.fullname" . }}-analytics-config
-  namespace: {{ include "avsp.namespace" . }}
-  labels:
-    {{- include "avsp.labels" . | nindent 4 }}
-data:
-  settings.yaml: |
-    analytics_server:
-      server_name: {{ .Values.analyticsServer.config.serverName | quote }}
-      addr: {{ .Values.analyticsServer.config.addr | quote }}
-      analytics_db:
-        provider: {{ .Values.analyticsServer.config.analyticsDB.provider | quote }}
-        dsn: {{ .Values.analyticsServer.config.analyticsDB.dsn | quote }}
-        field_catalog_table: {{ .Values.analyticsServer.config.analyticsDB.fieldCatalogTable | quote }}
-        annotation_store_table: {{ .Values.analyticsServer.config.analyticsDB.annotationStoreTable | quote }}
-      analytics_dbs: []
 {{- end }}

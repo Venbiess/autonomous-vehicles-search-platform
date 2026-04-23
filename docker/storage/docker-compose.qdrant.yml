@@ -74,6 +74,8 @@ services:
         condition: service_completed_successfully
       qdrant:
         condition: service_started
+      clickhouse:
+        condition: service_healthy
     environment:
       STORAGE_CONFIG_PATH: /app/storage/config/storage.qdrant.yaml
     ports:
@@ -93,20 +95,12 @@ services:
     ports:
       - "8123:8123"
       - "9000:9000"
-    networks:
-      - storage-net
-
-  analytics-server:
-    build:
-      context: ../..
-      dockerfile: docker/storage/analytics-server.Dockerfile
-    container_name: "avsp-storage-analytics-server-${USER}"
-    depends_on:
-      - clickhouse
-    environment:
-      COLUMN_STORAGE_CONFIG_PATH: /app/backend/column-storage/settings.yaml
-    ports:
-      - "9014:9012"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "default", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
     networks:
       - storage-net
 

@@ -107,6 +107,11 @@ storageServer:
     metadata:
       schema: public
       table: objects
+    analyticsDB:
+      provider: clickhouse
+      dsn: clickhouse://default:clickhouse@clickhouse:8123/default
+      fieldCatalogTable: vlm_field_specs
+      annotationStoreTable: vlm_annotations
     objectCache:
       enabled: true
       maxItems: 5000
@@ -131,25 +136,6 @@ storageServer:
       vectorSize: 0
       timeoutSec: 10
     preprocessorsManifestPath: /app/storage/config/preprocessors.yaml
-
-analyticsServer:
-  enabled: true
-  replicas: 1
-  image:
-    repository: avsp/analytics-server
-    tag: local
-    pullPolicy: IfNotPresent
-  service:
-    port: 9012
-  resources: {}
-  config:
-    serverName: analytics-server
-    addr: ":9012"
-    analyticsDB:
-      provider: clickhouse
-      dsn: clickhouse://default:clickhouse@clickhouse:8123/default
-      fieldCatalogTable: vlm_field_specs
-      annotationStoreTable: vlm_annotations
 
 embedder:
   enabled: false

@@ -13,7 +13,6 @@ fi
 
 build_services=(
   storage-server
-  analytics-server
   avsp-server
 )
 
@@ -24,7 +23,6 @@ runtime_services=(
   minio-init
   embedder
   vlm
-  analytics-server
   storage-server
   avsp-server
   frontend

@@ -16,12 +16,6 @@ storageServer:
     tag: local
     pullPolicy: IfNotPresent
 
-analyticsServer:
-  image:
-    repository: avsp/analytics-server
-    tag: local
-    pullPolicy: IfNotPresent
-
 master:
   modelExecutionMode: rabbitmq
   image:

@@ -7,8 +7,8 @@ import {
 const DEFAULT_ANALYTICS_ENDPOINTS = [
   process.env.ANALYTICS_SERVER_ENDPOINT,
   process.env.ANALYTICS_ENDPOINT,
-  "http://analytics-server:9012",
-  "http://localhost:9014",
+  process.env.STORAGE_SERVER_ENDPOINT,
+  "http://storage-server:9012",
 ]
   .filter(Boolean)
   .map((value) => String(value).replace(/\/$/, ""));

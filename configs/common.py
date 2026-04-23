@@ -59,7 +59,7 @@ VLM_TIMEOUT_SEC = int(os.getenv("VLM_TIMEOUT_SEC", "120"))
 ANALYTICS_SERVER_ENDPOINT = _env_first(
     "ANALYTICS_SERVER_ENDPOINT",
     "ANALYTICS_SERVICE_ENDPOINT",
-    "http://analytics-server:9012",
+    "http://storage-server:9012",
 )
 ANALYTICS_SERVER_TIMEOUT_SEC = int(
     _env_first("ANALYTICS_SERVER_TIMEOUT_SEC", "ANALYTICS_SERVICE_TIMEOUT_SEC", "30")

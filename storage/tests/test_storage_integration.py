@@ -202,6 +202,73 @@ def test_vector_upsert_query_count_and_delete_cascade(settings, http_session):
     assert object_id not in {item["object_id"] for item in query_after.json()["results"]}
 
 
+def test_analytics_schema_annotations_completed_and_search(settings, http_session):
+    headers = _write_headers(settings)
+    object_id = _upload_object(
+        settings,
+        http_session,
+        headers,
+        _fake_jpeg(),
+        filename="vlm.jpg",
+        key=f"integration/{uuid.uuid4().hex}-vlm.jpg",
+    )["object_id"]
+    field_name = f"weather_{uuid.uuid4().hex[:8]}"
+
+    fields = http_session.post(
+        f"{settings.storage_base_url}/fields",
+        json={
+            "fields": [
+                {
+                    "field_name": field_name,
+                    "prompt": "Describe weather",
+                    "response_type": "text",
+                }
+            ]
+        },
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert fields.status_code == 200, fields.text
+    assert any(item["field_name"] == field_name for item in fields.json()["fields"])
+
+    annotations = http_session.post(
+        f"{settings.storage_base_url}/annotations/upsert",
+        json={"rows": [{"object_id": object_id, "values": {field_name: "sunny road"}}]},
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert annotations.status_code == 200, annotations.text
+    assert annotations.json()["upserted"] == 1
+
+    completed = http_session.post(
+        f"{settings.storage_base_url}/annotations/completed-object-ids",
+        json={"object_ids": [object_id], "field_names": [field_name]},
+        timeout=settings.request_timeout_sec,
+    )
+    assert completed.status_code == 200, completed.text
+    assert object_id in completed.json()["object_ids"]
+
+    search = http_session.post(
+        f"{settings.storage_base_url}/search",
+        json={
+            "filters": [{"field_name": field_name, "value": "sunny", "match_mode": "contains"}],
+            "limit": 10,
+        },
+        timeout=settings.request_timeout_sec,
+    )
+    assert search.status_code == 200, search.text
+    assert any(item["object_id"] == object_id for item in search.json()["results"])
+
+    deleted = http_session.post(
+        f"{settings.storage_base_url}/annotations/delete",
+        json={"object_ids": [object_id]},
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["requested"] == 1
+
+
 def test_write_endpoints_require_token(settings, http_session):
     payload = _fake_jpeg()
     upload = http_session.post(
@@ -218,3 +285,10 @@ def test_write_endpoints_require_token(settings, http_session):
         timeout=settings.request_timeout_sec,
     )
     assert upsert.status_code == 403
+
+    fields = http_session.post(
+        f"{settings.storage_base_url}/fields",
+        json={"fields": [{"field_name": "x", "prompt": "x", "response_type": "text"}]},
+        timeout=settings.request_timeout_sec,
+    )
+    assert fields.status_code == 403

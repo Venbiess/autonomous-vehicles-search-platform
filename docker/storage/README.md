@@ -10,7 +10,7 @@ docker-compose -f docker/storage/docker-compose.pgvector.yml up -d --build
 Uses:
 - postgres (pgvector) for metadata + vector index
 - minio for objects
-- clickhouse + analytics-server
+- clickhouse for annotations through storage-server
 
 ## Qdrant profile
 ```bash
@@ -21,7 +21,7 @@ Uses:
 - postgres for metadata only
 - qdrant for vector index
 - minio for objects
-- clickhouse + analytics-server
+- clickhouse for annotations through storage-server
 
 ## Stop
 ```bash

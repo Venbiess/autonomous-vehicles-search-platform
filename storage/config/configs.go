@@ -23,6 +23,7 @@ type StorageServerConfig struct {
 	PreprocessorsManifestPath string                  `yaml:"preprocessors_manifest_path"`
 	ObjectCache               ObjectCacheConfig       `yaml:"object_cache"`
 	MetadataDB                StorageMetadataDBConfig `yaml:"metadata_db"`
+	AnalyticsDB               AnalyticsDBConfig       `yaml:"analytics_db"`
 	ObjectStore               infra.ObjectStoreConfig `yaml:"object_store"`
 	VectorIndex               infra.VectorIndexConfig `yaml:"vector_index"`
 }
@@ -31,6 +32,13 @@ type StorageMetadataDBConfig struct {
 	DSN    string `yaml:"dsn"`
 	Schema string `yaml:"schema"`
 	Table  string `yaml:"table"`
+}
+
+type AnalyticsDBConfig struct {
+	Provider             string `yaml:"provider"`
+	DSN                  string `yaml:"dsn"`
+	FieldCatalogTable    string `yaml:"field_catalog_table"`
+	AnnotationStoreTable string `yaml:"annotation_store_table"`
 }
 
 type ObjectCacheConfig struct {

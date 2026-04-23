@@ -6,9 +6,15 @@ import httpx
 
 
 class AnalyticsAPI:
-    def __init__(self, endpoint: str, timeout_sec: int):
+    def __init__(self, endpoint: str, timeout_sec: int, write_token: str = ""):
         self.endpoint = endpoint.rstrip("/")
         self.timeout = httpx.Timeout(timeout_sec)
+        self.write_token = write_token.strip()
+
+    def _write_headers(self) -> Dict[str, str]:
+        if not self.write_token:
+            return {}
+        return {"X-Storage-Write-Token": self.write_token}
 
     def get_fields(self, field_names: List[str] | None = None) -> List[Dict[str, str]]:
         params: Dict[str, Any] = {}
@@ -34,6 +40,7 @@ class AnalyticsAPI:
                     "replace_missing": bool(replace_missing),
                     "purge_deleted_values": bool(purge_deleted_values),
                 },
+                headers=self._write_headers(),
             )
             response.raise_for_status()
             payload = response.json()
@@ -46,6 +53,7 @@ class AnalyticsAPI:
             response = client.post(
                 f"{self.endpoint}/annotations/upsert",
                 json={"rows": rows},
+                headers=self._write_headers(),
             )
             response.raise_for_status()
             payload = response.json()
@@ -58,6 +66,7 @@ class AnalyticsAPI:
             response = client.post(
                 f"{self.endpoint}/annotations/delete",
                 json={"object_ids": object_ids},
+                headers=self._write_headers(),
             )
             response.raise_for_status()
             payload = response.json()
@@ -65,7 +74,10 @@ class AnalyticsAPI:
 
     def clear_annotations(self) -> Dict[str, Any]:
         with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(f"{self.endpoint}/annotations/clear")
+            response = client.post(
+                f"{self.endpoint}/annotations/clear",
+                headers=self._write_headers(),
+            )
             response.raise_for_status()
             return response.json()
 
