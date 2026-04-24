@@ -21,8 +21,11 @@ runtime_services=(
   postgres
   minio
   minio-init
+  rabbitmq
   embedder
   vlm
+  embedder-worker
+  vlm-worker
   storage-server
   avsp-server
   frontend

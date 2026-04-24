@@ -30,14 +30,14 @@ frontend:
     pullPolicy: IfNotPresent
 
 embedder:
-  enabled: false
+  enabled: true
   image:
     repository: avsp/models-cpu
     tag: local
     pullPolicy: IfNotPresent
 
 vlm:
-  enabled: false
+  enabled: true
   image:
     repository: avsp/models-cpu
     tag: local

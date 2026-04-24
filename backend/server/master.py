@@ -358,6 +358,14 @@ def _embed_text(client: httpx.Client, text: str) -> Tuple[List[float], int]:
     return model_gateway.embed_text(client, EMBEDDER_ENDPOINT, text)
 
 
+def _embed_image_direct(client: httpx.Client, image_bytes: bytes) -> Tuple[List[float], int]:
+    return model_gateway.embed_image_http(client, EMBEDDER_ENDPOINT, image_bytes)
+
+
+def _embed_text_direct(client: httpx.Client, text: str) -> Tuple[List[float], int]:
+    return model_gateway.embed_text_http(client, EMBEDDER_ENDPOINT, text)
+
+
 def _run_vlm(
     client: httpx.Client,
     image_bytes: bytes,
@@ -1409,9 +1417,23 @@ def install_datasets(payload: DatasetInstallRequest):
 def search_text(payload: TextSearchRequest):
     try:
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
+        started_at = time.perf_counter()
         with httpx.Client(timeout=timeout) as client:
-            query_embedding, _ = _embed_text(client, payload.query)
+            embed_started_at = time.perf_counter()
+            query_embedding, _ = _embed_text_direct(client, payload.query)
+            embed_elapsed_ms = (time.perf_counter() - embed_started_at) * 1000
+        query_started_at = time.perf_counter()
         results = storage_api.query_vectors(query_embedding, payload.top_k)
+        query_elapsed_ms = (time.perf_counter() - query_started_at) * 1000
+        total_elapsed_ms = (time.perf_counter() - started_at) * 1000
+        logger.info(
+            "search_text completed query_len=%s top_k=%s embed_ms=%.1f vector_query_ms=%.1f total_ms=%.1f",
+            len(payload.query),
+            payload.top_k,
+            embed_elapsed_ms,
+            query_elapsed_ms,
+            total_elapsed_ms,
+        )
     except httpx.HTTPStatusError as exc:
         _raise_upstream_http_error(exc)
     except Exception as exc:  # noqa: BLE001
@@ -1435,9 +1457,23 @@ async def search_image_bytes(
 
     try:
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
+        started_at = time.perf_counter()
         with httpx.Client(timeout=timeout) as client:
-            query_embedding, _ = _embed_image(client, image_bytes)
+            embed_started_at = time.perf_counter()
+            query_embedding, _ = _embed_image_direct(client, image_bytes)
+            embed_elapsed_ms = (time.perf_counter() - embed_started_at) * 1000
+        query_started_at = time.perf_counter()
         results = storage_api.query_vectors(query_embedding, max(1, top_k))
+        query_elapsed_ms = (time.perf_counter() - query_started_at) * 1000
+        total_elapsed_ms = (time.perf_counter() - started_at) * 1000
+        logger.info(
+            "search_image_bytes completed bytes=%s top_k=%s embed_ms=%.1f vector_query_ms=%.1f total_ms=%.1f",
+            len(image_bytes),
+            max(1, top_k),
+            embed_elapsed_ms,
+            query_elapsed_ms,
+            total_elapsed_ms,
+        )
     except httpx.HTTPStatusError as exc:
         _raise_upstream_http_error(exc)
     except Exception as exc:  # noqa: BLE001

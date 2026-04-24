@@ -2,9 +2,23 @@ services:
   rabbitmq:
     image: rabbitmq:3.13-management
     container_name: "rabbitmq-${USER}"
+    user: "0:0"
+    tmpfs:
+      - /var/lib/rabbitmq
+    entrypoint: >
+      /bin/sh -c "
+      chown -R rabbitmq:rabbitmq /var/lib/rabbitmq &&
+      exec docker-entrypoint.sh rabbitmq-server
+      "
     ports:
       - "5672:5672"
       - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     networks:
       - avsp-net
 
@@ -82,7 +96,6 @@ services:
       context: ../..
       dockerfile: docker/models/models-cpu.Dockerfile
     container_name: "embedder-${USER}"
-    profiles: ["http"]
     volumes:
       - "${PWD}/../..:/app"
     ports:
@@ -95,7 +108,6 @@ services:
       context: ../..
       dockerfile: docker/models/models-cpu.Dockerfile
     container_name: "vlm-${USER}"
-    profiles: ["http"]
     volumes:
       - "${PWD}/../..:/app"
     command: >
@@ -115,16 +127,21 @@ services:
     build:
       context: ../..
       dockerfile: docker/models/models-cpu.Dockerfile
-    container_name: "embedder-worker-${USER}"
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
     command: >
       /bin/sh -c "
       python -m backend.models.queue_worker --worker embedder
       "
     volumes:
       - "${PWD}/../..:/app"
+    expose:
+      - "8000"
     environment:
+      EMBEDDER_PORT: 8000
+      WORKER_HTTP_ENABLED: 0
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
@@ -136,16 +153,21 @@ services:
     build:
       context: ../..
       dockerfile: docker/models/models-cpu.Dockerfile
-    container_name: "vlm-worker-${USER}"
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
     command: >
       /bin/sh -c "
       python -m backend.models.queue_worker --worker vlm
       "
     volumes:
       - "${PWD}/../..:/app"
+    expose:
+      - "8001"
     environment:
+      VLM_PORT: 8001
+      WORKER_HTTP_ENABLED: 0
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
@@ -185,6 +207,8 @@ services:
       - minio
       - minio-init
       - rabbitmq
+      - embedder
+      - vlm
       - embedder-worker
       - vlm-worker
       - storage-server

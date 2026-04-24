@@ -196,6 +196,8 @@ spec:
           env:
             - name: RABBITMQ_URL
               value: amqp://guest:guest@rabbitmq:5672/%2f
+            - name: WORKER_HTTP_ENABLED
+              value: "0"
             - name: RABBITMQ_EMBEDDER_QUEUE
               value: avsp.embedder.tasks
             - name: RABBITMQ_VLM_QUEUE
@@ -235,6 +237,8 @@ spec:
           env:
             - name: RABBITMQ_URL
               value: amqp://guest:guest@rabbitmq:5672/%2f
+            - name: WORKER_HTTP_ENABLED
+              value: "0"
             - name: RABBITMQ_EMBEDDER_QUEUE
               value: avsp.embedder.tasks
             - name: RABBITMQ_VLM_QUEUE

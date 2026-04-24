@@ -17,7 +17,7 @@ func ResolveObjectAdapter(cfg ObjectStoreConfig) (ObjectAdapter, error) {
 func ResolveVectorAdapter(cfg VectorIndexConfig) (VectorAdapter, error) {
 	switch strings.ToLower(strings.TrimSpace(cfg.Provider)) {
 	case "", "pgvector", "postgres":
-		return NewPgVectorAdapter(cfg.ConnStr, cfg.Schema, cfg.Table)
+		return NewPgVectorAdapter(cfg.ConnStr, cfg.Schema, cfg.Table, cfg.VectorSize)
 	case "qdrant":
 		return NewQdrantAdapter(cfg)
 	default:

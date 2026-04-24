@@ -18,6 +18,7 @@ logger = logging.getLogger("avsp.vlm")
 logging.basicConfig(level=logging.INFO)
 
 request_lock = threading.Lock()
+inference_lock = threading.Lock()
 requests_received = 0
 requests_completed = 0
 requests_in_progress = 0
@@ -77,7 +78,7 @@ def _generate_text(image: Image.Image, prompt_text: str, max_new_tokens: int) ->
     inputs = processor(text=prompt, images=[image], return_tensors="pt")
     inputs = {key: value.to(DEVICE) for key, value in inputs.items()}
 
-    with torch.no_grad():
+    with inference_lock, torch.no_grad():
         generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
 
     prompt_length = inputs["input_ids"].shape[1]

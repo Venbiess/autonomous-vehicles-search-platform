@@ -6,13 +6,80 @@ import io
 import json
 import logging
 import os
+import threading
+import time
 from typing import Any, Dict
 
 import pika
+import uvicorn
 from PIL import Image
 
 logger = logging.getLogger("avsp.model-worker")
 logging.basicConfig(level=logging.INFO)
+
+
+def _connect_with_retry(params: pika.URLParameters) -> pika.BlockingConnection:
+    retry_delay_sec = max(1, int(os.getenv("RABBITMQ_CONNECT_RETRY_DELAY_SEC", "3")))
+    max_attempts = int(os.getenv("RABBITMQ_CONNECT_MAX_ATTEMPTS", "0"))
+    attempt = 0
+
+    while True:
+        attempt += 1
+        try:
+            logger.info("connecting to RabbitMQ attempt=%s", attempt)
+            return pika.BlockingConnection(params)
+        except pika.exceptions.AMQPConnectionError:
+            if max_attempts > 0 and attempt >= max_attempts:
+                logger.exception("failed to connect to RabbitMQ after %s attempts", attempt)
+                raise
+            logger.warning(
+                "RabbitMQ is unavailable, retrying in %ss (attempt=%s)",
+                retry_delay_sec,
+                attempt,
+            )
+            time.sleep(retry_delay_sec)
+
+
+def _start_http_server(worker_type: str) -> threading.Thread | None:
+    if str(os.getenv("WORKER_HTTP_ENABLED", "1")).strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return None
+
+    if worker_type == "embedder":
+        from backend.models.embedder.embedder import app as model_app
+
+        port = int(os.getenv("EMBEDDER_PORT", "8000"))
+    else:
+        from backend.models.vlm.vlm import app as model_app
+
+        port = int(os.getenv("VLM_PORT", "8001"))
+
+    log_level = str(os.getenv("WORKER_HTTP_LOG_LEVEL", "info")).strip().lower() or "info"
+
+    def _run() -> None:
+        logger.info(
+            "starting worker HTTP server: worker=%s host=0.0.0.0 port=%s",
+            worker_type,
+            port,
+        )
+        uvicorn.run(
+            model_app,
+            host="0.0.0.0",
+            port=port,
+            log_level=log_level,
+        )
+
+    thread = threading.Thread(
+        target=_run,
+        name=f"{worker_type}-http-server",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def _reply(ch, props, response: Dict[str, Any]) -> None:
@@ -95,10 +162,12 @@ def main() -> None:
     embedder_queue = os.getenv("RABBITMQ_EMBEDDER_QUEUE", "avsp.embedder.tasks")
     vlm_queue = os.getenv("RABBITMQ_VLM_QUEUE", "avsp.vlm.tasks")
 
+    _start_http_server(args.worker)
+
     params = pika.URLParameters(rabbit_url)
     params.heartbeat = 120
     params.blocked_connection_timeout = 300
-    connection = pika.BlockingConnection(params)
+    connection = _connect_with_retry(params)
     channel = connection.channel()
 
     channel.queue_declare(queue=embedder_queue, durable=True)

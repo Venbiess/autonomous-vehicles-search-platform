@@ -1,4 +1,5 @@
 import io
+import threading
 from fastapi import FastAPI
 from fastapi import UploadFile, File, Request
 from PIL import Image
@@ -12,6 +13,7 @@ from transformers import logging
 logging.disable_progress_bar()
 
 app = FastAPI(title="Align Text Embedding API")
+inference_lock = threading.Lock()
 
 # --- Choose device ---
 cfg_device = EMBEDDER_CONFIG.DEVICE.lower()
@@ -42,7 +44,7 @@ def extract_patches(image, patch: bool):
 
 
 def get_embedding(inputs, type: Literal["text", "image"] = "image") -> torch.Tensor:
-    with torch.no_grad():
+    with inference_lock, torch.no_grad():
         if type == "text":
             text_inputs = processor.tokenizer(
                 inputs,
@@ -70,6 +72,15 @@ def get_embedding(inputs, type: Literal["text", "image"] = "image") -> torch.Ten
     embedding = embedding.cpu().tolist()[0]
 
     return embedding
+
+
+@app.get("/health")
+def healthcheck():
+    return {
+        "status": "ok",
+        "device": device,
+        "port": EMBEDDER_CONFIG.PORT,
+    }
 
 
 @app.post("/embedding/text")

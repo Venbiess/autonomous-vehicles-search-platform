@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,9 +36,10 @@ type PgVectorAdapter struct {
 	db        *sql.DB
 	schema    string
 	tableName string
+	vectorSize int
 }
 
-func NewPgVectorAdapter(connStr, schema, table string) (*PgVectorAdapter, error) {
+func NewPgVectorAdapter(connStr, schema, table string, vectorSize int) (*PgVectorAdapter, error) {
 	if strings.TrimSpace(connStr) == "" {
 		return nil, errors.New("postgres connection string is required")
 	}
@@ -58,7 +60,12 @@ func NewPgVectorAdapter(connStr, schema, table string) (*PgVectorAdapter, error)
 		return nil, err
 	}
 
-	adapter := &PgVectorAdapter{db: db, schema: schema, tableName: table}
+	if vectorSize < 0 {
+		vectorSize = 0
+	}
+	adapter := &PgVectorAdapter{
+		db: db, schema: schema, tableName: table, vectorSize: vectorSize,
+	}
 	if err := adapter.ensureTable(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -73,18 +80,48 @@ func (p *PgVectorAdapter) ensureTable(ctx context.Context) error {
 	if _, err := p.db.ExecContext(ctx, "CREATE EXTENSION IF NOT EXISTS vector"); err != nil {
 		return err
 	}
+	vectorType := "vector"
+	if p.vectorSize > 0 {
+		vectorType = fmt.Sprintf("vector(%d)", p.vectorSize)
+	}
 	query := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s.%s (
 			object_id TEXT PRIMARY KEY,
-			embedding vector NOT NULL,
+			embedding %s NOT NULL,
 			embedding_dim INT NOT NULL,
 			updated_at TIMESTAMPTZ DEFAULT now()
 		)
-	`, pqIdent(p.schema), pqIdent(p.tableName))
+	`, pqIdent(p.schema), pqIdent(p.tableName), vectorType)
 	if _, err := p.db.ExecContext(ctx, query); err != nil {
 		return err
 	}
+	if err := p.ensureVectorDimensions(ctx); err != nil {
+		return err
+	}
 	return p.ensureANNIndexes(ctx)
+}
+
+func (p *PgVectorAdapter) ensureVectorDimensions(ctx context.Context) error {
+	if p.vectorSize <= 0 {
+		return nil
+	}
+	currentSize, hasDimensions, err := p.currentVectorDimensions(ctx)
+	if err != nil {
+		return err
+	}
+	if hasDimensions && currentSize == p.vectorSize {
+		return nil
+	}
+	query := fmt.Sprintf(
+		"ALTER TABLE %s ALTER COLUMN embedding TYPE vector(%d) USING embedding::vector(%d)",
+		p.qualifiedTable(),
+		p.vectorSize,
+		p.vectorSize,
+	)
+	if _, err := p.db.ExecContext(ctx, query); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p *PgVectorAdapter) ensureANNIndexes(ctx context.Context) error {
@@ -125,6 +162,11 @@ func (p *PgVectorAdapter) ensureANNIndexes(ctx context.Context) error {
 }
 
 func (p *PgVectorAdapter) vectorColumnHasDimensions(ctx context.Context) (bool, error) {
+	_, hasDimensions, err := p.currentVectorDimensions(ctx)
+	return hasDimensions, err
+}
+
+func (p *PgVectorAdapter) currentVectorDimensions(ctx context.Context) (int, bool, error) {
 	const query = `SELECT format_type(a.atttypid, a.atttypmod)
 		 FROM pg_attribute a
 		 JOIN pg_class c ON c.oid = a.attrelid
@@ -137,11 +179,18 @@ func (p *PgVectorAdapter) vectorColumnHasDimensions(ctx context.Context) (bool, 
 		 LIMIT 1`
 	var colType string
 	if err := p.db.QueryRowContext(ctx, query, p.schema, p.tableName).Scan(&colType); err != nil {
-		return false, err
+		return 0, false, err
 	}
 	colType = strings.ToLower(strings.TrimSpace(colType))
-	// "vector" => no dimensions, "vector(768)" => has dimensions.
-	return strings.HasPrefix(colType, "vector("), nil
+	if !strings.HasPrefix(colType, "vector(") {
+		return 0, false, nil
+	}
+	sizeText := strings.TrimSuffix(strings.TrimPrefix(colType, "vector("), ")")
+	size, err := strconv.Atoi(sizeText)
+	if err != nil {
+		return 0, false, err
+	}
+	return size, true, nil
 }
 
 func (p *PgVectorAdapter) Upsert(ctx context.Context, objectID string, embedding []float64) error {

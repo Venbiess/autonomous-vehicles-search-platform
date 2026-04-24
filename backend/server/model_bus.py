@@ -42,75 +42,81 @@ class RabbitRPCClient:
         ch = conn.channel()
         ch.queue_declare(queue=self.cfg.embedder_queue, durable=True)
         ch.queue_declare(queue=self.cfg.vlm_queue, durable=True)
+        responses: Dict[str, Dict[str, Any]] = {}
+
+        def _on_response(_ch, _method, props, body):
+            corr_id = getattr(props, "correlation_id", None)
+            if not corr_id:
+                return
+            try:
+                responses[corr_id] = json.loads(body.decode("utf-8"))
+            except Exception as exc:  # noqa: BLE001
+                responses[corr_id] = {
+                    "ok": False,
+                    "error": f"invalid worker response: {exc}",
+                }
+
+        consumer_tag = ch.basic_consume(
+            queue="amq.rabbitmq.reply-to",
+            on_message_callback=_on_response,
+            auto_ack=True,
+        )
         self._local.connection = conn
         self._local.channel = ch
+        self._local.responses = responses
+        self._local.consumer_tag = consumer_tag
         return conn, ch
 
     def close(self) -> None:
         conn = getattr(self._local, "connection", None)
+        ch = getattr(self._local, "channel", None)
+        consumer_tag = getattr(self._local, "consumer_tag", None)
+        try:
+            if ch and ch.is_open and consumer_tag:
+                ch.basic_cancel(consumer_tag=consumer_tag)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             if conn and conn.is_open:
                 conn.close()
         finally:
             self._local.connection = None
             self._local.channel = None
+            self._local.responses = None
+            self._local.consumer_tag = None
 
     def call(self, queue_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         import pika
 
         conn, ch = self._get_channel()
         corr_id = str(uuid.uuid4())
-        response: Dict[str, Any] = {}
-        done = False
+        responses = getattr(self._local, "responses", None)
+        if responses is None:
+            raise RabbitRPCError("rpc response consumer is not initialized")
 
-        def _on_response(_ch, _method, props, body):
-            nonlocal response, done
-            if props.correlation_id != corr_id:
-                return
-            done = True
-            try:
-                response = json.loads(body.decode("utf-8"))
-            except Exception as exc:  # noqa: BLE001
-                response = {"ok": False, "error": f"invalid worker response: {exc}"}
-
-        result = ch.queue_declare(queue="", exclusive=True, auto_delete=True)
-        callback_queue = result.method.queue
-        consumer_tag = ch.basic_consume(
-            queue=callback_queue,
-            on_message_callback=_on_response,
-            auto_ack=True,
+        responses.pop(corr_id, None)
+        ch.basic_publish(
+            exchange="",
+            routing_key=queue_name,
+            properties=pika.BasicProperties(
+                correlation_id=corr_id,
+                reply_to="amq.rabbitmq.reply-to",
+                content_type="application/json",
+                delivery_mode=2,
+            ),
+            body=json.dumps(payload).encode("utf-8"),
         )
-        try:
-            ch.basic_publish(
-                exchange="",
-                routing_key=queue_name,
-                properties=pika.BasicProperties(
-                    correlation_id=corr_id,
-                    reply_to=callback_queue,
-                    content_type="application/json",
-                    delivery_mode=2,
-                ),
-                body=json.dumps(payload).encode("utf-8"),
-            )
 
-            deadline = time.time() + self.cfg.timeout_sec
-            while not done and time.time() < deadline:
-                conn.process_data_events(time_limit=0.2)
+        deadline = time.monotonic() + self.cfg.timeout_sec
+        while time.monotonic() < deadline:
+            response = responses.pop(corr_id, None)
+            if response is not None:
+                if not response.get("ok", False):
+                    raise RabbitRPCError(str(response.get("error", "worker error")))
+                return response
+            conn.process_data_events(time_limit=0.2)
 
-            if not done:
-                raise RabbitRPCError(f"rpc timeout waiting for queue={queue_name}")
-            if not response.get("ok", False):
-                raise RabbitRPCError(str(response.get("error", "worker error")))
-            return response
-        finally:
-            try:
-                ch.basic_cancel(consumer_tag=consumer_tag)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                ch.queue_delete(queue=callback_queue)
-            except Exception:  # noqa: BLE001
-                pass
+        raise RabbitRPCError(f"rpc timeout waiting for queue={queue_name}")
 
     def health_snapshot(self) -> Dict[str, Any]:
         _, ch = self._get_channel()
