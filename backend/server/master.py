@@ -162,8 +162,22 @@ def _normalize_response_type(response_type: str) -> str:
 
 def _normalize_match_mode(match_mode: str) -> str:
     normalized = match_mode.strip().lower()
-    if normalized not in {"exact", "contains"}:
-        raise ValueError("match_mode must be 'exact' or 'contains'")
+    allowed = {
+        "contains",
+        "exact",
+        "equal",
+        "not_equal",
+        "greater",
+        "greater_or_equal",
+        "less",
+        "less_or_equal",
+    }
+    if normalized not in allowed:
+        raise ValueError(
+            "match_mode must be one of: "
+            "'contains', 'exact', 'equal', 'not_equal', "
+            "'greater', 'greater_or_equal', 'less', 'less_or_equal'"
+        )
     return normalized
 
 

@@ -328,8 +328,27 @@ class ClickHouseShard:
         clauses: List[str] = []
         for flt in filters:
             extract = f"ifNull(JSONExtractString(values_json, {_q(flt.field_name)}), '')"
-            if flt.match_mode.lower() == "contains":
+            mode = flt.match_mode.lower()
+            if mode == "contains":
                 clauses.append(f"positionCaseInsensitiveUTF8({extract}, {_q(flt.value)}) > 0")
+            elif mode in {"exact", "equal"}:
+                clauses.append(f"lowerUTF8({extract}) = lowerUTF8({_q(flt.value)})")
+            elif mode == "not_equal":
+                clauses.append(f"lowerUTF8({extract}) != lowerUTF8({_q(flt.value)})")
+            elif mode in {"greater", "greater_or_equal", "less", "less_or_equal"}:
+                left_num = f"toFloat64OrNull({extract})"
+                right_num = f"toFloat64OrNull({_q(flt.value)})"
+                if mode == "greater":
+                    op = ">"
+                elif mode == "greater_or_equal":
+                    op = ">="
+                elif mode == "less":
+                    op = "<"
+                else:
+                    op = "<="
+                clauses.append(
+                    f"{left_num} IS NOT NULL AND {right_num} IS NOT NULL AND {left_num} {op} {right_num}"
+                )
             else:
                 clauses.append(f"lowerUTF8({extract}) = lowerUTF8({_q(flt.value)})")
 
