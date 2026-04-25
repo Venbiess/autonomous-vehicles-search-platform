@@ -96,6 +96,7 @@ services:
       context: ../..
       dockerfile: docker/models/models-cpu.Dockerfile
     container_name: "embedder-${USER}"
+    profiles: ["model-http"]
     volumes:
       - "${PWD}/../..:/app"
     ports:
@@ -108,6 +109,7 @@ services:
       context: ../..
       dockerfile: docker/models/models-cpu.Dockerfile
     container_name: "vlm-${USER}"
+    profiles: ["model-http"]
     volumes:
       - "${PWD}/../..:/app"
     command: >
@@ -116,7 +118,6 @@ services:
       --host 0.0.0.0
       --port 8001
       --log-level debug
-      --reload
       "
     ports:
       - "8001:8001"
@@ -207,8 +208,6 @@ services:
       - minio
       - minio-init
       - rabbitmq
-      - embedder
-      - vlm
       - embedder-worker
       - vlm-worker
       - storage-server

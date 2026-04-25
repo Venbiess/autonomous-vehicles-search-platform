@@ -14,6 +14,11 @@ docker compose -f ./docker-compose.yml up
 ```
 
 ```bash
+# optional: run standalone HTTP model services (embedder/vlm) in addition to RabbitMQ workers
+docker compose -f ./docker-compose.yml --profile model-http up
+```
+
+```bash
 # scale queue workers
 docker compose -f docker/server/docker-compose.yml up -d --scale embedder-worker=2 --scale vlm-worker=2
 ```

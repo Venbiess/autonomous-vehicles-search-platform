@@ -10,8 +10,7 @@ fi
 uvicorn backend.models.embedder.embedder:app \
   --host 0.0.0.0 \
   --port "${EMBEDDER_PORT:-8000}" \
-  --log-level debug \
-  --reload &
+  --log-level debug &
 
 if [ "${START_JUPYTER:-false}" = "true" ]; then
   exec jupyter lab \
