@@ -4,7 +4,7 @@ ARGOVERSE_CAMERAS = [
 ]
 
 # Time step
-ARGOVERSE_RESAMPLE_SECONDS = 0.5
+ARGOVERSE_RESAMPLE_SECONDS = 5.0
 
 # Available:
 # Train - [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 
 interface SystemInfo {
@@ -40,6 +40,12 @@ interface Job {
   current_scene_tasks_completed?: number;
   current_scene_tasks_total?: number;
   current_scene_index?: number;
+  extract_scene_tasks_completed?: number;
+  extract_scene_tasks_total?: number;
+  extract_scene_index?: number;
+  extract_file_name?: string;
+  extract_files_done?: number;
+  install_phase?: string;
   embed_on_install?: boolean;
   embedding_tasks_completed?: number;
   embedding_tasks_total?: number;
@@ -51,6 +57,21 @@ interface Job {
   updated_at: number;
 }
 
+interface LogViewerState {
+  title: string;
+  content: string;
+  jobId?: string;
+  source?: "install" | "error";
+}
+
+interface WaymoAuthStartResponse {
+  session_id?: string;
+  auth_url?: string;
+  awaiting_code?: boolean;
+  status?: string;
+  error?: string;
+}
+
 export default function SystemMonitor() {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -58,8 +79,16 @@ export default function SystemMonitor() {
   const [error, setError] = useState<string | null>(null);
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
-  const [logViewer, setLogViewer] = useState<{ title: string; content: string } | null>(null);
+  const [logViewer, setLogViewer] = useState<LogViewerState | null>(null);
   const [cancelDialogJob, setCancelDialogJob] = useState<Job | null>(null);
+  const [waymoAuthModalOpen, setWaymoAuthModalOpen] = useState(false);
+  const [waymoAuthSessionId, setWaymoAuthSessionId] = useState<string | null>(null);
+  const [waymoAuthUrl, setWaymoAuthUrl] = useState<string | null>(null);
+  const [waymoAuthCode, setWaymoAuthCode] = useState("");
+  const [waymoAuthBusy, setWaymoAuthBusy] = useState(false);
+  const [waymoAuthError, setWaymoAuthError] = useState<string | null>(null);
+  const [waymoAuthSuccess, setWaymoAuthSuccess] = useState<string | null>(null);
+  const [waymoAuthPromptedJobIds, setWaymoAuthPromptedJobIds] = useState<string[]>([]);
 
   const fetchSystemInfo = async () => {
     try {
@@ -149,7 +178,7 @@ export default function SystemMonitor() {
     }
   };
 
-  const getJobErrorLog = (job: Job): string => {
+  const getJobErrorLog = useCallback((job: Job): string => {
     if (!Array.isArray(job.errors) || job.errors.length === 0) {
       return "No error details available.";
     }
@@ -166,21 +195,21 @@ export default function SystemMonitor() {
         return log ? `${prefix}\n${log}` : prefix;
       })
       .join("\n\n");
-  };
+  }, []);
 
-  const getJobInstallLog = (job: Job): string => {
+  const getJobInstallLog = useCallback((job: Job): string => {
     const lines = Array.isArray(job.install_log) ? job.install_log : [];
     if (lines.length === 0) {
       return "No install log available.";
     }
     return lines.join("\n");
-  };
+  }, []);
 
   const formatDate = (timestamp: number): string => {
     return new Date(timestamp * 1000).toLocaleString("ru-RU");
   };
 
-  const formatJobTypeLabel = (jobType: string): string => {
+  const formatJobTypeLabel = useCallback((jobType: string): string => {
     if (jobType === "backfill_embeddings") return "Backfill Embeddings";
     if (jobType === "backfill_vlm") return "Backfill VLM";
     if (jobType === "install_waymo") return "Install Waymo";
@@ -197,7 +226,7 @@ export default function SystemMonitor() {
       return `Install ${pretty || "Dataset"}`;
     }
     return jobType;
-  };
+  }, []);
 
   const formatDataSize = (bytes: number): string => {
     const safe = Math.max(0, Number(bytes) || 0);
@@ -315,6 +344,176 @@ export default function SystemMonitor() {
     return "Остановить и удалить";
   };
 
+  const isWaymoAuthPermissionError = (job: Job): boolean => {
+    if (job.job_type !== "install_waymo" || job.status !== "error") {
+      return false;
+    }
+    const chunks: string[] = [];
+    if (Array.isArray(job.errors)) {
+      for (const entry of job.errors) {
+        if (entry?.error) chunks.push(String(entry.error));
+        if (entry?.log) chunks.push(String(entry.log));
+      }
+    }
+    if (Array.isArray(job.install_log)) {
+      chunks.push(job.install_log.join("\n"));
+    }
+    const haystack = chunks.join("\n").toLowerCase();
+    return (
+      haystack.includes("storage.objects.list") ||
+      haystack.includes("google.api_core.exceptions.forbidden") ||
+      haystack.includes("permission 'storage.objects.list' denied") ||
+      haystack.includes("does not have storage.objects.list access")
+    );
+  };
+
+  const fetchWaymoAuthLink = async () => {
+    try {
+      setWaymoAuthBusy(true);
+      setWaymoAuthError(null);
+      const response = await axios.post<WaymoAuthStartResponse>("/api/waymo/auth/start", {});
+      const payload = response.data || {};
+      const sessionId = String(payload.session_id || "").trim();
+      const authUrl = String(payload.auth_url || "").trim();
+      if (!sessionId) {
+        throw new Error("Не удалось создать сессию авторизации Waymo.");
+      }
+      setWaymoAuthSessionId(sessionId);
+      setWaymoAuthUrl(authUrl || null);
+      if (!authUrl) {
+        setWaymoAuthError(
+          "Ссылка авторизации пока не получена. Нажмите «Обновить ссылку» через несколько секунд."
+        );
+      }
+    } catch (err) {
+      const detail = axios.isAxiosError(err) ? err.response?.data : null;
+      const serverMessage =
+        typeof detail?.detail === "string"
+          ? detail.detail
+          : typeof detail?.error === "string"
+            ? detail.error
+            : typeof err === "object" && err && "message" in err
+              ? String((err as { message?: string }).message || "")
+              : "Не удалось запустить авторизацию Waymo.";
+      setWaymoAuthError(serverMessage);
+    } finally {
+      setWaymoAuthBusy(false);
+    }
+  };
+
+  const submitWaymoAuthCode = async () => {
+    if (!waymoAuthSessionId) {
+      setWaymoAuthError("Сначала получите ссылку авторизации.");
+      return;
+    }
+    const code = waymoAuthCode.trim();
+    if (!code) {
+      setWaymoAuthError("Введите код авторизации.");
+      return;
+    }
+    try {
+      setWaymoAuthBusy(true);
+      setWaymoAuthError(null);
+      const response = await axios.post("/api/waymo/auth/complete", {
+        session_id: waymoAuthSessionId,
+        code,
+      });
+      const message = String(response.data?.message || "").trim();
+      setWaymoAuthSuccess(
+        message || "Авторизация Google ADC выполнена. Повторите установку Waymo."
+      );
+      setWaymoAuthModalOpen(false);
+      setWaymoAuthCode("");
+      await fetchJobs();
+    } catch (err) {
+      const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
+      if (detail && typeof detail === "object" && Array.isArray(detail.logs_tail)) {
+        setWaymoAuthError(
+          `${String(detail.message || "Ошибка авторизации")}\n\n${detail.logs_tail.join("\n")}`
+        );
+      } else if (typeof detail === "string") {
+        setWaymoAuthError(detail);
+      } else {
+        const message =
+          err instanceof Error ? err.message : "Не удалось завершить авторизацию.";
+        setWaymoAuthError(message);
+      }
+    } finally {
+      setWaymoAuthBusy(false);
+    }
+  };
+
+  const openWaymoAuthModal = async () => {
+    setWaymoAuthModalOpen(true);
+    setWaymoAuthError(null);
+    setWaymoAuthSuccess(null);
+    if (!waymoAuthSessionId) {
+      await fetchWaymoAuthLink();
+    }
+  };
+
+  useEffect(() => {
+    const failedWaymo = jobs.find((job) => {
+      if (!isWaymoAuthPermissionError(job)) {
+        return false;
+      }
+      return !waymoAuthPromptedJobIds.includes(job.job_id);
+    });
+    if (!failedWaymo) {
+      return;
+    }
+    setWaymoAuthPromptedJobIds((current) => [...current, failedWaymo.job_id]);
+    setWaymoAuthModalOpen(true);
+    setWaymoAuthError(null);
+    setWaymoAuthSuccess(null);
+  }, [jobs, waymoAuthPromptedJobIds]);
+
+  useEffect(() => {
+    if (!waymoAuthModalOpen) {
+      return;
+    }
+    if (waymoAuthSessionId || waymoAuthBusy) {
+      return;
+    }
+    fetchWaymoAuthLink();
+  }, [waymoAuthModalOpen, waymoAuthSessionId, waymoAuthBusy]);
+
+  useEffect(() => {
+    if (!logViewer?.jobId || !logViewer.source) {
+      return;
+    }
+    const job = jobs.find((item) => item.job_id === logViewer.jobId);
+    if (!job) {
+      return;
+    }
+    const nextTitle =
+      logViewer.source === "install"
+        ? `Install log for ${formatJobTypeLabel(job.job_type)}`
+        : `Error log for ${formatJobTypeLabel(job.job_type)}`;
+    const nextContent =
+      logViewer.source === "install" ? getJobInstallLog(job) : getJobErrorLog(job);
+    setLogViewer((current) => {
+      if (!current || current.jobId !== logViewer.jobId || current.source !== logViewer.source) {
+        return current;
+      }
+      if (current.title === nextTitle && current.content === nextContent) {
+        return current;
+      }
+      return {
+        ...current,
+        title: nextTitle,
+        content: nextContent,
+      };
+    });
+  }, [
+    jobs,
+    logViewer?.jobId,
+    logViewer?.source,
+    formatJobTypeLabel,
+    getJobInstallLog,
+    getJobErrorLog,
+  ]);
+
   if (isLoading && !systemInfo) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -337,6 +536,12 @@ export default function SystemMonitor() {
 
   return (
     <div className="py-8">
+      {waymoAuthSuccess && (
+        <div className="mx-auto mb-4 max-w-4xl rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
+          {waymoAuthSuccess}
+        </div>
+      )}
+
       <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-lg p-6">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-bold text-gray-900">Мониторинг системы</h2>
@@ -522,6 +727,7 @@ export default function SystemMonitor() {
                       : "Embedding: ожидание скачанных сцен";
                   const currentSceneTasksCompleted = job.current_scene_tasks_completed ?? 0;
                   const currentSceneTasksTotal = job.current_scene_tasks_total ?? 0;
+                  const installPhase = String(job.install_phase ?? "").toLowerCase();
                   const currentSceneProgress =
                     currentSceneTasksTotal > 0
                       ? Math.min(
@@ -537,16 +743,49 @@ export default function SystemMonitor() {
                   const installFileLabel = `Download: ${formatDataSize(
                     currentSceneTasksCompleted
                   )} / ${formatDataSize(currentSceneTasksTotal)}`;
+                  const isNuimagesInstallJob =
+                    job.job_type === "install_nuimages" || job.job_type === "install_nuscenes";
+                  const installArchiveLabel = `Archive: ${formatDataSize(
+                    currentSceneTasksCompleted
+                  )} / ${formatDataSize(currentSceneTasksTotal)}`;
+                  const installUploadLabel = `Upload: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal} images`;
+                  const installSecondaryLabel =
+                    installPhase === "upload"
+                      ? installUploadLabel
+                      : isNuimagesInstallJob
+                        ? installArchiveLabel
+                        : installFileLabel;
+                  const extractTasksCompleted = job.extract_scene_tasks_completed ?? 0;
+                  const extractTasksTotal = job.extract_scene_tasks_total ?? 0;
+                  const extractSceneIndex = job.extract_scene_index ?? 0;
+                  const extractSceneProgress =
+                    extractTasksTotal > 0
+                      ? Math.min((extractTasksCompleted / extractTasksTotal) * 100, 100)
+                      : 0;
+                  const extractFileName = String(job.extract_file_name ?? "").trim();
+                  const extractFilesDone = job.extract_files_done ?? 0;
+                  const extractLabelBase = `Extract: ${formatDataSize(
+                    extractTasksCompleted
+                  )} / ${formatDataSize(extractTasksTotal)}`;
+                  const extractLabel = extractFileName
+                    ? `${extractLabelBase} · ${extractFileName}`
+                    : extractLabelBase;
                   const secondaryProgressLabel = isInstallDatasetJob
-                    ? installFileLabel
+                    ? installSecondaryLabel
                     : currentSceneLabel;
                   const secondaryProgressGradient = isInstallDatasetJob
-                    ? "linear-gradient(90deg, hsl(200 78% 48%), hsl(160 78% 45%))"
+                    ? installPhase === "upload"
+                      ? "linear-gradient(90deg, hsl(146 70% 42%), hsl(172 70% 38%))"
+                      : "linear-gradient(90deg, hsl(200 78% 48%), hsl(160 78% 45%))"
                     : getSceneTaskGradient(currentSceneIndex);
                   const showSecondaryProgress =
                     job.status === "running" &&
                     currentSceneTasksTotal > 0 &&
                     (isVlmJob || isInstallJob);
+                  const showExtractProgress =
+                    job.status === "running" &&
+                    isInstallDatasetJob &&
+                    extractTasksTotal > 0;
                   const hasErrorDetails = job.status === "error" && (job.errors?.length ?? 0) > 0;
                   const hasInstallLogData =
                     isInstallJob &&
@@ -597,10 +836,20 @@ export default function SystemMonitor() {
                                 <span className="text-gray-600">{secondaryProgressLabel}</span>
                                 <span className="font-medium pl-2 whitespace-nowrap">
                                   {isInstallDatasetJob
-                                    ? `File ${Math.min(
-                                        currentSceneIndex,
-                                        plannedTotal || currentSceneIndex
-                                      )}`
+                                    ? installPhase === "upload"
+                                      ? `Scene ${Math.min(
+                                          currentSceneIndex,
+                                          plannedTotal || currentSceneIndex
+                                        )}`
+                                      : isNuimagesInstallJob
+                                        ? `Archive ${Math.min(
+                                            currentSceneIndex,
+                                            plannedTotal || currentSceneIndex
+                                          )}`
+                                        : `File ${Math.min(
+                                            currentSceneIndex,
+                                            plannedTotal || currentSceneIndex
+                                          )}`
                                     : `Scene ${Math.min(
                                         currentSceneIndex,
                                         plannedTotal || currentSceneIndex
@@ -640,6 +889,29 @@ export default function SystemMonitor() {
                               </div>
                             </div>
                           )}
+                          {showExtractProgress && (
+                            <div className="mt-3">
+                              <div className="flex justify-between gap-2 text-xs mb-1">
+                                <span className="text-gray-600">{extractLabel}</span>
+                                <span className="font-medium pl-2 whitespace-nowrap">
+                                  {`Part ${Math.min(
+                                    extractSceneIndex,
+                                    plannedTotal || extractSceneIndex
+                                  )} · files ${extractFilesDone}`}
+                                </span>
+                              </div>
+                              <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                                <div
+                                  className="h-2 rounded-full transition-all duration-300"
+                                  style={{
+                                    width: `${extractSceneProgress}%`,
+                                    backgroundImage:
+                                      "linear-gradient(90deg, hsl(28 88% 52%), hsl(14 84% 56%))",
+                                  }}
+                                ></div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -650,6 +922,8 @@ export default function SystemMonitor() {
                               setLogViewer({
                                 title: `Error log for ${formatJobTypeLabel(job.job_type)}`,
                                 content: getJobErrorLog(job),
+                                jobId: job.job_id,
+                                source: "error",
                               })
                             }
                             className="font-bold text-red-600 underline decoration-red-600 underline-offset-2 hover:text-red-700"
@@ -663,6 +937,8 @@ export default function SystemMonitor() {
                               setLogViewer({
                                 title: `Install log for ${formatJobTypeLabel(job.job_type)}`,
                                 content: getJobInstallLog(job),
+                                jobId: job.job_id,
+                                source: "install",
                               })
                             }
                             className="font-bold text-green-700 underline decoration-green-700 underline-offset-2 hover:text-green-800"
@@ -676,6 +952,8 @@ export default function SystemMonitor() {
                               setLogViewer({
                                 title: `Install log for ${formatJobTypeLabel(job.job_type)}`,
                                 content: getJobInstallLog(job),
+                                jobId: job.job_id,
+                                source: "install",
                               })
                             }
                             className="font-bold text-blue-700 underline decoration-blue-700 underline-offset-2 hover:text-blue-800"
@@ -701,27 +979,39 @@ export default function SystemMonitor() {
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {canCancelJob ? (
-                          <button
-                            onClick={() => setCancelDialogJob(job)}
-                            disabled={cancellingJobId === job.job_id}
-                            className={`px-4 py-2 rounded-lg font-semibold transition-all duration-200 ${
-                              cancellingJobId === job.job_id
-                                ? "bg-red-300 text-white cursor-not-allowed"
-                                : "bg-red-600 text-white hover:bg-red-700"
-                            }`}
-                          >
-                            {cancellingJobId === job.job_id ? "Отмена..." : "Отменить"}
-                          </button>
-                        ) : isCancellableJobType && job.status === "cancelled" ? (
-                          <span className="text-gray-500 font-medium">Отменено</span>
-                        ) : isCancellableJobType &&
-                          job.status === "running" &&
-                          job.cancel_requested ? (
-                          <span className="text-red-600 font-medium">Остановка...</span>
-                        ) : (
-                          <span className="text-gray-400">-</span>
-                        )}
+                        <div className="flex flex-col gap-2">
+                          {canCancelJob ? (
+                            <button
+                              onClick={() => setCancelDialogJob(job)}
+                              disabled={cancellingJobId === job.job_id}
+                              className={`px-4 py-2 rounded-lg font-semibold transition-all duration-200 ${
+                                cancellingJobId === job.job_id
+                                  ? "bg-red-300 text-white cursor-not-allowed"
+                                  : "bg-red-600 text-white hover:bg-red-700"
+                              }`}
+                            >
+                              {cancellingJobId === job.job_id ? "Отмена..." : "Отменить"}
+                            </button>
+                          ) : isCancellableJobType && job.status === "cancelled" ? (
+                            <span className="text-gray-500 font-medium">Отменено</span>
+                          ) : isCancellableJobType &&
+                            job.status === "running" &&
+                            job.cancel_requested ? (
+                            <span className="text-red-600 font-medium">Остановка...</span>
+                          ) : (
+                            <span className="text-gray-400">-</span>
+                          )}
+
+                          {isWaymoAuthPermissionError(job) && (
+                            <button
+                              type="button"
+                              onClick={openWaymoAuthModal}
+                              className="rounded-lg border border-indigo-300 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
+                            >
+                              Авторизовать Waymo
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -753,6 +1043,97 @@ export default function SystemMonitor() {
               <pre className="whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100">
                 {logViewer.content}
               </pre>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {waymoAuthModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <div className="text-base font-semibold text-slate-900">
+                Авторизация доступа к Waymo
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                Требуется `gcloud auth application-default login` для чтения датасета.
+              </div>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                1. Откройте ссылку ниже и войдите в Google-аккаунт с доступом к Waymo.
+                <br />
+                2. Скопируйте код подтверждения и вставьте его в поле.
+                <br />
+                3. Нажмите `Подтвердить код`.
+              </div>
+
+              <div>
+                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Ссылка авторизации
+                </div>
+                {waymoAuthUrl ? (
+                  <a
+                    href={waymoAuthUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block break-all rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700 hover:bg-blue-100"
+                  >
+                    {waymoAuthUrl}
+                  </a>
+                ) : (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    Ссылка пока не получена. Нажмите «Обновить ссылку».
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Код подтверждения
+                </label>
+                <input
+                  type="text"
+                  value={waymoAuthCode}
+                  onChange={(event) => setWaymoAuthCode(event.target.value)}
+                  placeholder="Вставьте код из Google"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm text-slate-900 outline-none ring-0 transition focus:border-indigo-500"
+                />
+              </div>
+
+              {waymoAuthError && (
+                <pre className="whitespace-pre-wrap rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">
+                  {waymoAuthError}
+                </pre>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setWaymoAuthModalOpen(false);
+                  setWaymoAuthError(null);
+                }}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              >
+                Закрыть
+              </button>
+              <button
+                type="button"
+                onClick={fetchWaymoAuthLink}
+                disabled={waymoAuthBusy}
+                className="rounded-lg border border-indigo-300 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60"
+              >
+                {waymoAuthBusy ? "Загрузка..." : "Обновить ссылку"}
+              </button>
+              <button
+                type="button"
+                onClick={submitWaymoAuthCode}
+                disabled={waymoAuthBusy}
+                className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
+              >
+                {waymoAuthBusy ? "Проверка..." : "Подтвердить код"}
+              </button>
             </div>
           </div>
         </div>

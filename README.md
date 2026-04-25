@@ -9,7 +9,7 @@
 colima start --memory 8 --cpu 4 --disk 100
 
 ```
-cd docker/server/
+cd docker/
 docker compose -f ./docker-compose.yml up
 ```
 
@@ -20,7 +20,7 @@ docker compose -f ./docker-compose.yml --profile model-http up
 
 ```bash
 # scale queue workers
-docker compose -f docker/server/docker-compose.yml up -d --scale embedder-worker=2 --scale vlm-worker=2
+docker compose -f docker/docker-compose.yml up -d --scale embedder-worker=2 --scale vlm-worker=2
 ```
 
 ### Storage-only profiles
@@ -36,7 +36,6 @@ For Waymo:
 ```
 docker exec -it avsp-server-$USER bash
 gcloud auth application-default login
-gcloud auth login
 ```
 
 Run package inside docker container:

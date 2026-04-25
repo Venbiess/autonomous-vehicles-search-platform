@@ -24,6 +24,8 @@ type StorageHandler struct {
 	svc        *core.StorageServer
 	writeToken string
 	methods    []core.PreprocessorMethod
+	methodsMu  sync.RWMutex
+	methodsProvider func() ([]core.PreprocessorMethod, error)
 
 	vectorCountMu        sync.Mutex
 	vectorCountCachedAt  time.Time
@@ -31,13 +33,19 @@ type StorageHandler struct {
 	vectorCountHasCache  bool
 }
 
-func NewStorageHandler(svc *core.StorageServer, writeToken string, methods []core.PreprocessorMethod) *StorageHandler {
+func NewStorageHandler(
+	svc *core.StorageServer,
+	writeToken string,
+	methods []core.PreprocessorMethod,
+	methodsProvider func() ([]core.PreprocessorMethod, error),
+) *StorageHandler {
 	methodsCopy := make([]core.PreprocessorMethod, len(methods))
 	copy(methodsCopy, methods)
 	return &StorageHandler{
 		svc:        svc,
 		writeToken: strings.TrimSpace(writeToken),
 		methods:    methodsCopy,
+		methodsProvider: methodsProvider,
 	}
 }
 
@@ -72,9 +80,30 @@ func (h *StorageHandler) handlePreprocessorMethods(w http.ResponseWriter, r *htt
 		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
 		return
 	}
+	if h.methodsProvider != nil {
+		if loaded, err := h.methodsProvider(); err == nil {
+			h.setMethods(loaded)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": h.methods,
+		"items": h.getMethods(),
 	})
+}
+
+func (h *StorageHandler) getMethods() []core.PreprocessorMethod {
+	h.methodsMu.RLock()
+	defer h.methodsMu.RUnlock()
+	out := make([]core.PreprocessorMethod, len(h.methods))
+	copy(out, h.methods)
+	return out
+}
+
+func (h *StorageHandler) setMethods(methods []core.PreprocessorMethod) {
+	methodsCopy := make([]core.PreprocessorMethod, len(methods))
+	copy(methodsCopy, methods)
+	h.methodsMu.Lock()
+	h.methods = methodsCopy
+	h.methodsMu.Unlock()
 }
 
 func (h *StorageHandler) authorizeWrite(r *http.Request) error {

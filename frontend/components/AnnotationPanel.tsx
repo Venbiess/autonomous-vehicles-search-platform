@@ -29,6 +29,25 @@ interface PreprocessorMethod {
   default_config?: Record<string, unknown>;
 }
 
+interface WaymoAuthStartResponse {
+  session_id?: string;
+  auth_url?: string;
+  awaiting_code?: boolean;
+  status?: string;
+  error?: string;
+}
+
+interface WaymoAuthStatusResponse {
+  authenticated?: boolean;
+  reason?: string;
+  error?: string;
+}
+
+interface PendingInstallPayload {
+  datasets: string[];
+  configs: Record<string, Record<string, unknown>>;
+}
+
 const RESPONSE_TYPE_OPTIONS: Array<{
   value: ResponseType;
   label: string;
@@ -110,6 +129,14 @@ export default function AnnotationPanel({
     null
   );
   const [showInstallJobsLink, setShowInstallJobsLink] = useState(false);
+  const [waymoAuthModalOpen, setWaymoAuthModalOpen] = useState(false);
+  const [waymoAuthSessionId, setWaymoAuthSessionId] = useState<string | null>(null);
+  const [waymoAuthUrl, setWaymoAuthUrl] = useState<string | null>(null);
+  const [waymoAuthCode, setWaymoAuthCode] = useState("");
+  const [waymoAuthBusy, setWaymoAuthBusy] = useState(false);
+  const [waymoAuthError, setWaymoAuthError] = useState<string | null>(null);
+  const [waymoAuthSuccess, setWaymoAuthSuccess] = useState<string | null>(null);
+  const [pendingWaymoInstall, setPendingWaymoInstall] = useState<PendingInstallPayload | null>(null);
 
   useEffect(() => {
     const loadSchema = async () => {
@@ -432,6 +459,131 @@ export default function AnnotationPanel({
     }
   };
 
+  const fetchWaymoAuthLink = async () => {
+    try {
+      setWaymoAuthBusy(true);
+      setWaymoAuthError(null);
+      const response = await axios.post<WaymoAuthStartResponse>("/api/waymo/auth/start", {});
+      const payload = response.data || {};
+      const sessionId = String(payload.session_id || "").trim();
+      const authUrl = String(payload.auth_url || "").trim();
+      if (!sessionId) {
+        throw new Error("Не удалось создать сессию авторизации Waymo.");
+      }
+      setWaymoAuthSessionId(sessionId);
+      setWaymoAuthUrl(authUrl || null);
+      if (!authUrl) {
+        setWaymoAuthError(
+          "Ссылка авторизации пока не получена. Нажмите «Обновить ссылку» через несколько секунд."
+        );
+      }
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && error.response?.data?.detail
+          ? String(error.response.data.detail)
+          : axios.isAxiosError(error) && error.response?.data?.error
+            ? String(error.response.data.error)
+            : error instanceof Error
+              ? error.message
+              : "Не удалось запустить авторизацию Waymo.";
+      setWaymoAuthError(message);
+    } finally {
+      setWaymoAuthBusy(false);
+    }
+  };
+
+  const submitWaymoAuthCode = async () => {
+    if (!waymoAuthSessionId) {
+      setWaymoAuthError("Сначала получите ссылку авторизации.");
+      return;
+    }
+    const code = waymoAuthCode.trim();
+    if (!code) {
+      setWaymoAuthError("Введите код авторизации.");
+      return;
+    }
+    try {
+      setWaymoAuthBusy(true);
+      setWaymoAuthError(null);
+      const response = await axios.post("/api/waymo/auth/complete", {
+        session_id: waymoAuthSessionId,
+        code,
+      });
+      const message = String(response.data?.message || "").trim();
+      setWaymoAuthSuccess(message || "Авторизация Google ADC выполнена.");
+      setWaymoAuthModalOpen(false);
+      setWaymoAuthCode("");
+      if (pendingWaymoInstall) {
+        await executeDatasetInstall(
+          pendingWaymoInstall.datasets,
+          pendingWaymoInstall.configs,
+          { clearPending: true }
+        );
+      }
+    } catch (error: unknown) {
+      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : null;
+      if (detail && typeof detail === "object" && Array.isArray((detail as { logs_tail?: string[] }).logs_tail)) {
+        const payload = detail as { message?: string; logs_tail?: string[] };
+        setWaymoAuthError(
+          `${String(payload.message || "Ошибка авторизации")}\n\n${(payload.logs_tail || []).join("\n")}`
+        );
+      } else if (typeof detail === "string") {
+        setWaymoAuthError(detail);
+      } else {
+        const message =
+          error instanceof Error ? error.message : "Не удалось завершить авторизацию.";
+        setWaymoAuthError(message);
+      }
+    } finally {
+      setWaymoAuthBusy(false);
+    }
+  };
+
+  const executeDatasetInstall = async (
+    selectedDatasets: string[],
+    configs: Record<string, Record<string, unknown>>,
+    options?: { clearPending?: boolean }
+  ) => {
+    setIsStartingInstall(true);
+    setInstallStatusMessage(null);
+    setInstallErrorMessage(null);
+    setShowInstallJobsLink(false);
+
+    try {
+      const response = await axios.post("/api/datasets/install", {
+        datasets: selectedDatasets,
+        configs,
+      });
+      const jobs = response.data?.jobs ?? [];
+      const jobsInfo = jobs
+        .map((job: { dataset?: string; job_id?: string }) =>
+          `${job.dataset ?? "dataset"} (${String(job.job_id ?? "").slice(0, 8)}...)`
+        )
+        .join(", ");
+      setInstallStatusMessage(
+        jobs.length > 0
+          ? `Installation jobs started: ${jobsInfo}.`
+          : "Installation request sent."
+      );
+      setShowInstallJobsLink(true);
+      if (options?.clearPending) {
+        setPendingWaymoInstall(null);
+      }
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && error.response?.data?.detail
+          ? error.response.data.detail
+          : axios.isAxiosError(error) && error.response?.data?.error
+            ? error.response.data.error
+            : error instanceof Error
+              ? error.message
+              : "Failed to start dataset installation";
+      setInstallErrorMessage(message);
+    } finally {
+      setIsStartingInstall(false);
+    }
+  };
+
   const startDatasetInstall = async () => {
     const selectedDatasets = preprocessorMethods
       .map((option) => option.key)
@@ -465,41 +617,44 @@ export default function AnnotationPanel({
       }
     }
 
-    setIsStartingInstall(true);
-    setInstallStatusMessage(null);
-    setInstallErrorMessage(null);
-    setShowInstallJobsLink(false);
-
-    try {
-      const response = await axios.post("/api/datasets/install", {
-        datasets: selectedDatasets,
-        configs,
-      });
-      const jobs = response.data?.jobs ?? [];
-      const jobsInfo = jobs
-        .map((job: { dataset?: string; job_id?: string }) =>
-          `${job.dataset ?? "dataset"} (${String(job.job_id ?? "").slice(0, 8)}...)`
-        )
-        .join(", ");
-      setInstallStatusMessage(
-        jobs.length > 0
-          ? `Installation jobs started: ${jobsInfo}.`
-          : "Installation request sent."
-      );
-      setShowInstallJobsLink(true);
-    } catch (error: unknown) {
-      const message =
-        axios.isAxiosError(error) && error.response?.data?.detail
-          ? error.response.data.detail
-          : axios.isAxiosError(error) && error.response?.data?.error
-            ? error.response.data.error
-            : error instanceof Error
-              ? error.message
-              : "Failed to start dataset installation";
-      setInstallErrorMessage(message);
-    } finally {
-      setIsStartingInstall(false);
+    if (selectedDatasets.includes("waymo")) {
+      try {
+        const response = await axios.get<WaymoAuthStatusResponse>("/api/waymo/auth/status");
+        const authenticated = Boolean(response.data?.authenticated);
+        if (!authenticated) {
+          setInstallStatusMessage(null);
+          setShowInstallJobsLink(false);
+          setInstallErrorMessage(null);
+          setInstallStatusMessage(
+            "Для установки Waymo нужна авторизация Google ADC. Завершите авторизацию в окне ниже, установка запустится автоматически."
+          );
+          setPendingWaymoInstall({
+            datasets: selectedDatasets,
+            configs,
+          });
+          setWaymoAuthModalOpen(true);
+          setWaymoAuthSuccess(null);
+          if (!waymoAuthSessionId) {
+            await fetchWaymoAuthLink();
+          }
+          return;
+        }
+      } catch (error: unknown) {
+        const message =
+          axios.isAxiosError(error) && error.response?.data?.detail
+            ? String(error.response.data.detail)
+            : axios.isAxiosError(error) && error.response?.data?.error
+              ? String(error.response.data.error)
+              : error instanceof Error
+                ? error.message
+                : "Не удалось проверить авторизацию Waymo.";
+        setInstallStatusMessage(null);
+        setShowInstallJobsLink(false);
+        setInstallErrorMessage(message);
+        return;
+      }
     }
+    await executeDatasetInstall(selectedDatasets, configs, { clearPending: true });
   };
 
   return (
@@ -615,6 +770,31 @@ export default function AnnotationPanel({
           {installErrorMessage && (
             <div className="mt-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
               {installErrorMessage}
+              {installErrorMessage.toLowerCase().includes("waymo") && (
+                <>
+                  {" "}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setWaymoAuthModalOpen(true);
+                      setWaymoAuthError(null);
+                      setWaymoAuthSuccess(null);
+                      if (!waymoAuthSessionId) {
+                        await fetchWaymoAuthLink();
+                      }
+                    }}
+                    className="font-bold text-indigo-700 underline decoration-indigo-600 underline-offset-2 transition hover:text-indigo-800"
+                  >
+                    Открыть авторизацию Waymo
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {waymoAuthSuccess && (
+            <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+              {waymoAuthSuccess}. Теперь снова нажмите Start dataset installation.
             </div>
           )}
         </div>
@@ -907,6 +1087,97 @@ export default function AnnotationPanel({
             </div>
           )}
         </div>
+
+        {waymoAuthModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl">
+              <div className="border-b border-slate-200 px-5 py-4">
+                <div className="text-base font-semibold text-slate-900">
+                  Авторизация доступа к Waymo
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  Требуется `gcloud auth application-default login` для чтения датасета.
+                </div>
+              </div>
+              <div className="space-y-4 px-5 py-4">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                  1. Откройте ссылку ниже и войдите в Google-аккаунт.
+                  <br />
+                  2. Скопируйте код подтверждения.
+                  <br />
+                  3. Вставьте код и нажмите `Подтвердить код`.
+                </div>
+
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Ссылка авторизации
+                  </div>
+                  {waymoAuthUrl ? (
+                    <a
+                      href={waymoAuthUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block break-all rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700 hover:bg-blue-100"
+                    >
+                      {waymoAuthUrl}
+                    </a>
+                  ) : (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                      Ссылка пока не получена. Нажмите «Обновить ссылку».
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Код подтверждения
+                  </label>
+                  <input
+                    type="text"
+                    value={waymoAuthCode}
+                    onChange={(event) => setWaymoAuthCode(event.target.value)}
+                    placeholder="Вставьте код из Google"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm text-slate-900 outline-none ring-0 transition focus:border-indigo-500"
+                  />
+                </div>
+
+                {waymoAuthError && (
+                  <pre className="whitespace-pre-wrap rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800">
+                    {waymoAuthError}
+                  </pre>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWaymoAuthModalOpen(false);
+                    setWaymoAuthError(null);
+                  }}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  Закрыть
+                </button>
+                <button
+                  type="button"
+                  onClick={fetchWaymoAuthLink}
+                  disabled={waymoAuthBusy}
+                  className="rounded-lg border border-indigo-300 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60"
+                >
+                  {waymoAuthBusy ? "Загрузка..." : "Обновить ссылку"}
+                </button>
+                <button
+                  type="button"
+                  onClick={submitWaymoAuthCode}
+                  disabled={waymoAuthBusy}
+                  className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
+                >
+                  {waymoAuthBusy ? "Проверка..." : "Подтвердить код"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {schemaDeleteDialog && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">

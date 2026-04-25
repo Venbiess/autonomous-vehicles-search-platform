@@ -1,7 +1,9 @@
 import logging
+import os
 from pathlib import Path
 import queue
 import re
+import subprocess
 import threading
 import time
 import traceback
@@ -119,6 +121,11 @@ class DatasetInstallRequest(BaseModel):
     configs: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
+class WaymoAuthCompleteRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    code: str = Field(..., min_length=1)
+
+
 @dataclass(frozen=True)
 class EmbedResult:
     object_id: str
@@ -136,6 +143,120 @@ analytics_api = AnalyticsAPI(
     write_token=STORAGE_WRITE_TOKEN,
 )
 model_gateway = ModelGateway()
+
+WAYMO_AUTH_MAX_LOG_LINES = 300
+waymo_auth_lock = threading.Lock()
+waymo_auth_session: Dict[str, Any] = {
+    "session_id": None,
+    "process": None,
+    "thread": None,
+    "auth_url": None,
+    "awaiting_code": False,
+    "logs": [],
+    "started_at": 0.0,
+    "finished": False,
+    "returncode": None,
+}
+
+
+def _extract_first_url(line: str) -> Optional[str]:
+    match = re.search(r"https://[^\s]+", line)
+    if not match:
+        return None
+    return match.group(0).rstrip(").,")
+
+
+def _is_waymo_auth_process_alive_locked() -> bool:
+    proc = waymo_auth_session.get("process")
+    return bool(proc is not None and proc.poll() is None)
+
+
+def _append_waymo_auth_log_locked(line: str) -> None:
+    logs = waymo_auth_session.get("logs")
+    if not isinstance(logs, list):
+        logs = []
+        waymo_auth_session["logs"] = logs
+    logs.append(line)
+    if len(logs) > WAYMO_AUTH_MAX_LOG_LINES:
+        del logs[: len(logs) - WAYMO_AUTH_MAX_LOG_LINES]
+
+
+def _waymo_auth_reader(session_id: str, proc: subprocess.Popen) -> None:
+    stream = proc.stdout
+    if stream is None:
+        return
+
+    for raw_line in stream:
+        line = str(raw_line).rstrip("\n")
+        with waymo_auth_lock:
+            if waymo_auth_session.get("session_id") != session_id:
+                continue
+            _append_waymo_auth_log_locked(line)
+            auth_url = waymo_auth_session.get("auth_url")
+            if not auth_url and "https://" in line:
+                maybe_url = _extract_first_url(line)
+                if maybe_url and "google" in maybe_url:
+                    waymo_auth_session["auth_url"] = maybe_url
+            lowered = line.lower()
+            if "enter authorization code" in lowered:
+                waymo_auth_session["awaiting_code"] = True
+
+    return_code = proc.poll()
+    with waymo_auth_lock:
+        if waymo_auth_session.get("session_id") == session_id:
+            waymo_auth_session["finished"] = True
+            waymo_auth_session["returncode"] = int(return_code) if return_code is not None else None
+
+
+def _start_waymo_auth_session() -> Dict[str, Any]:
+    command = [
+        "gcloud",
+        "auth",
+        "application-default",
+        "login",
+        "--no-launch-browser",
+    ]
+    env = dict(os.environ)
+    env["CLOUDSDK_CORE_DISABLE_PROMPTS"] = "0"
+    try:
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="gcloud is not available in avsp-server container",
+        ) from exc
+
+    session_id = str(uuid.uuid4())
+    reader = threading.Thread(
+        target=_waymo_auth_reader,
+        args=(session_id, proc),
+        name=f"waymo-auth-{session_id[:8]}",
+        daemon=True,
+    )
+    with waymo_auth_lock:
+        waymo_auth_session.update(
+            {
+                "session_id": session_id,
+                "process": proc,
+                "thread": reader,
+                "auth_url": None,
+                "awaiting_code": False,
+                "logs": [],
+                "started_at": time.time(),
+                "finished": False,
+                "returncode": None,
+            }
+        )
+    reader.start()
+    return {"session_id": session_id}
 
 
 def _normalize_field_name(field_name: str) -> str:
@@ -348,6 +469,28 @@ def _raise_upstream_http_error(exc: httpx.HTTPStatusError) -> None:
     except Exception:  # noqa: BLE001
         detail = exc.response.text or str(exc)
     raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+
+
+def _is_storage_query_unavailable_error(exc: Exception) -> bool:
+    if isinstance(exc, httpx.RequestError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = int(exc.response.status_code)
+        return status in {502, 503, 504}
+    return False
+
+
+def _search_dependencies_ready() -> tuple[bool, str]:
+    model_health = model_gateway.health()
+    if str(model_health.get("status", "")).lower() != "ok":
+        return False, f"model backend not ready: {model_health}"
+    try:
+        storage_health = storage_api.health()
+    except Exception as exc:  # noqa: BLE001
+        return False, f"storage health check failed: {exc}"
+    if str(storage_health.get("status", "")).lower() != "ok":
+        return False, f"storage backend not ready: {storage_health}"
+    return True, ""
 
 
 def _embed_image(client: httpx.Client, image_bytes: bytes) -> Tuple[List[float], int]:
@@ -1003,6 +1146,12 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
             "current_scene_tasks_completed": 0,
             "current_scene_tasks_total": 0,
             "current_scene_index": 0,
+            "extract_scene_tasks_completed": 0,
+            "extract_scene_tasks_total": 0,
+            "extract_scene_index": 0,
+            "extract_file_name": "",
+            "extract_files_done": 0,
+            "install_phase": "",
             "errors": [],
             "install_log": [],
             "install_log_path": str(JOB_LOG_DIR / f"{job_id}.log"),
@@ -1098,6 +1247,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 _append_install_log(job, f"Start installation for dataset={dataset_key}, planned={total}")
 
             if ev == "download":
+                job["install_phase"] = "download"
                 job["current_scene_index"] = int(event.get("current_scene_index", 0) or 0)
                 job["current_scene_tasks_completed"] = int(
                     event.get("current_scene_tasks_completed", 0) or 0
@@ -1105,12 +1255,18 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 job["current_scene_tasks_total"] = int(
                     event.get("current_scene_tasks_total", 0) or 0
                 )
+                # Hide extraction progress while current stage is archive download.
+                job["extract_scene_tasks_completed"] = 0
+                job["extract_scene_tasks_total"] = 0
+                job["extract_file_name"] = ""
+                job["extract_files_done"] = 0
                 total = int(event.get("total_planned", job.get("total_planned", 0)) or 0)
                 if total > 0:
                     job["total_limit"] = total
                     job["total_planned"] = total
 
             if ev == "upload_progress":
+                job["install_phase"] = "upload"
                 scene_index = int(event.get("episodes_done", job.get("current_scene_index", 0)) or 0)
                 job["current_scene_index"] = scene_index
                 job["current_scene_tasks_completed"] = int(
@@ -1128,6 +1284,22 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                         job["embedding_tasks_total"] = int(
                             job.get("embedding_tasks_total", 0) or 0
                         ) + 1
+
+            if ev == "extract":
+                job["install_phase"] = "extract"
+                job["extract_scene_index"] = int(event.get("current_scene_index", 0) or 0)
+                job["extract_scene_tasks_completed"] = int(
+                    event.get("current_scene_tasks_completed", 0) or 0
+                )
+                job["extract_scene_tasks_total"] = int(
+                    event.get("current_scene_tasks_total", 0) or 0
+                )
+                job["extract_file_name"] = str(event.get("file_name", "") or "")
+                job["extract_files_done"] = int(event.get("extracted_files", 0) or 0)
+                total = int(event.get("total_planned", job.get("total_planned", 0)) or 0)
+                if total > 0:
+                    job["total_limit"] = total
+                    job["total_planned"] = total
 
             if ev == "log":
                 _append_install_log(job, str(event.get("message", "") or ""))
@@ -1203,6 +1375,9 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                         "embedding_worker_running": False,
                         "current_scene_tasks_completed": 0,
                         "current_scene_tasks_total": 0,
+                        "extract_scene_tasks_completed": 0,
+                        "extract_scene_tasks_total": 0,
+                        "install_phase": "done",
                         "errors": final_errors,
                         "updated_at": time.time(),
                     }
@@ -1254,6 +1429,9 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                         "embedding_worker_running": False,
                         "current_scene_tasks_completed": 0,
                         "current_scene_tasks_total": 0,
+                        "extract_scene_tasks_completed": 0,
+                        "extract_scene_tasks_total": 0,
+                        "install_phase": "cancelled",
                         "errors": existing_errors + cleanup_errors,
                         "updated_at": time.time(),
                     }
@@ -1272,6 +1450,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                     {
                         "status": JobStatus.ERROR.value,
                         "embedding_worker_running": False,
+                        "install_phase": "error",
                         "errors": errors,
                         "updated_at": time.time(),
                     }
@@ -1413,17 +1592,171 @@ def install_datasets(payload: DatasetInstallRequest):
     return {"jobs": jobs}
 
 
+@app.post("/waymo/auth/start")
+def start_waymo_auth():
+    with waymo_auth_lock:
+        alive = _is_waymo_auth_process_alive_locked()
+        if alive:
+            return {
+                "session_id": waymo_auth_session.get("session_id"),
+                "auth_url": waymo_auth_session.get("auth_url"),
+                "awaiting_code": bool(waymo_auth_session.get("awaiting_code", False)),
+                "status": "running",
+            }
+
+    created = _start_waymo_auth_session()
+    deadline = time.time() + 20.0
+    while time.time() < deadline:
+        with waymo_auth_lock:
+            current_id = waymo_auth_session.get("session_id")
+            if current_id != created["session_id"]:
+                break
+            if waymo_auth_session.get("auth_url"):
+                return {
+                    "session_id": current_id,
+                    "auth_url": waymo_auth_session.get("auth_url"),
+                    "awaiting_code": bool(waymo_auth_session.get("awaiting_code", False)),
+                    "status": "awaiting_code",
+                }
+            if bool(waymo_auth_session.get("finished", False)):
+                logs_tail = list(waymo_auth_session.get("logs", []))[-20:]
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "message": "gcloud auth session exited before authorization URL was captured",
+                        "logs_tail": logs_tail,
+                    },
+                )
+        time.sleep(0.1)
+
+    with waymo_auth_lock:
+        current_id = waymo_auth_session.get("session_id")
+        return {
+            "session_id": current_id,
+            "auth_url": waymo_auth_session.get("auth_url"),
+            "awaiting_code": bool(waymo_auth_session.get("awaiting_code", False)),
+            "status": "running",
+        }
+
+
+@app.get("/waymo/auth/status")
+def waymo_auth_status():
+    try:
+        import google.auth
+
+        credentials, project_id = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        credential_type = type(credentials).__name__ if credentials is not None else None
+        quota_project_id = getattr(credentials, "quota_project_id", None)
+        return {
+            "authenticated": True,
+            "project_id": project_id,
+            "quota_project_id": quota_project_id,
+            "credential_type": credential_type,
+        }
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc)
+        lowered = message.lower()
+        reason = "unknown"
+        if "default credentials were not found" in lowered:
+            reason = "missing_adc"
+        elif "could not automatically determine credentials" in lowered:
+            reason = "missing_adc"
+        return {
+            "authenticated": False,
+            "reason": reason,
+            "error": message,
+        }
+
+
+@app.post("/waymo/auth/complete")
+def complete_waymo_auth(payload: WaymoAuthCompleteRequest):
+    code = payload.code.strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="authorization code is required")
+
+    with waymo_auth_lock:
+        session_id = str(waymo_auth_session.get("session_id") or "")
+        if session_id != payload.session_id:
+            raise HTTPException(status_code=404, detail="Waymo auth session not found")
+        proc = waymo_auth_session.get("process")
+        if proc is None:
+            raise HTTPException(status_code=409, detail="Waymo auth session is not active")
+        if proc.poll() is not None:
+            logs_tail = list(waymo_auth_session.get("logs", []))[-30:]
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "Waymo auth session already finished", "logs_tail": logs_tail},
+            )
+        stdin = proc.stdin
+        if stdin is None:
+            raise HTTPException(status_code=500, detail="Waymo auth stdin is unavailable")
+        stdin.write(code + "\n")
+        stdin.flush()
+        waymo_auth_session["awaiting_code"] = False
+
+    deadline = time.time() + 180.0
+    while time.time() < deadline:
+        with waymo_auth_lock:
+            current_id = str(waymo_auth_session.get("session_id") or "")
+            if current_id != payload.session_id:
+                break
+            proc = waymo_auth_session.get("process")
+            if proc is not None and proc.poll() is not None:
+                return_code = int(proc.returncode or 0)
+                logs_tail = list(waymo_auth_session.get("logs", []))[-50:]
+                waymo_auth_session["finished"] = True
+                waymo_auth_session["returncode"] = return_code
+                if return_code == 0:
+                    return {
+                        "status": "success",
+                        "message": "Google application-default credentials updated",
+                        "logs_tail": logs_tail,
+                    }
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "gcloud auth failed; check code and try again",
+                        "logs_tail": logs_tail,
+                    },
+                )
+        time.sleep(0.2)
+
+    raise HTTPException(
+        status_code=504,
+        detail="Timed out waiting for gcloud auth to complete",
+    )
+
+
 @app.post("/search/text")
 def search_text(payload: TextSearchRequest):
     try:
+        ready, reason = _search_dependencies_ready()
+        if not ready:
+            logger.warning("search_text dependencies unavailable; returning empty results: %s", reason)
+            return {
+                "mode": "vector_server",
+                "results": [],
+            }
+
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
         started_at = time.perf_counter()
         with httpx.Client(timeout=timeout) as client:
             embed_started_at = time.perf_counter()
-            query_embedding, _ = _embed_text_direct(client, payload.query)
+            query_embedding, _ = _embed_text(client, payload.query)
             embed_elapsed_ms = (time.perf_counter() - embed_started_at) * 1000
         query_started_at = time.perf_counter()
-        results = storage_api.query_vectors(query_embedding, payload.top_k)
+        try:
+            results = storage_api.query_vectors(query_embedding, payload.top_k)
+        except Exception as exc:  # noqa: BLE001
+            if not _is_storage_query_unavailable_error(exc):
+                raise
+            logger.warning(
+                "search_text storage unavailable; returning empty results: %s",
+                str(exc),
+            )
+            results = []
         query_elapsed_ms = (time.perf_counter() - query_started_at) * 1000
         total_elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.info(
@@ -1456,14 +1789,34 @@ async def search_image_bytes(
         raise HTTPException(status_code=400, detail="Image bytes are required")
 
     try:
+        ready, reason = _search_dependencies_ready()
+        if not ready:
+            logger.warning(
+                "search_image_bytes dependencies unavailable; returning empty results: %s",
+                reason,
+            )
+            return {
+                "mode": "vector_server",
+                "results": [],
+            }
+
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
         started_at = time.perf_counter()
         with httpx.Client(timeout=timeout) as client:
             embed_started_at = time.perf_counter()
-            query_embedding, _ = _embed_image_direct(client, image_bytes)
+            query_embedding, _ = _embed_image(client, image_bytes)
             embed_elapsed_ms = (time.perf_counter() - embed_started_at) * 1000
         query_started_at = time.perf_counter()
-        results = storage_api.query_vectors(query_embedding, max(1, top_k))
+        try:
+            results = storage_api.query_vectors(query_embedding, max(1, top_k))
+        except Exception as exc:  # noqa: BLE001
+            if not _is_storage_query_unavailable_error(exc):
+                raise
+            logger.warning(
+                "search_image_bytes storage unavailable; returning empty results: %s",
+                str(exc),
+            )
+            results = []
         query_elapsed_ms = (time.perf_counter() - query_started_at) * 1000
         total_elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.info(

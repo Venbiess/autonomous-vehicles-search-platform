@@ -24,6 +24,7 @@ preprocessors:
         - FRONT
       resample_seconds: 5.0
       exist_skip: true
+      keep_local_images: false
       embed_on_install: false
 
   - key: argoverse
@@ -42,6 +43,7 @@ preprocessors:
         val: []
         test: []
       remove_after_load: false
+      keep_local_images: false
       embed_on_install: false
 
   - key: nuimages
@@ -59,5 +61,5 @@ preprocessors:
         - sweeps
         - samples
       extract_with_progress: false
-      keep_local_images: true
+      keep_local_images: false
       embed_on_install: false

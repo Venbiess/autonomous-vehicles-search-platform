@@ -1,7 +1,7 @@
 services:
   rabbitmq:
     image: rabbitmq:3.13-management
-    container_name: "rabbitmq-${USER}"
+    container_name: "avsp-rabbitmq-${USER}"
     user: "0:0"
     tmpfs:
       - /var/lib/rabbitmq
@@ -24,7 +24,7 @@ services:
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
-    container_name: "clickhouse-${USER}"
+    container_name: "avsp-clickhouse-${USER}"
     environment:
       CLICKHOUSE_DB: default
       CLICKHOUSE_USER: default
@@ -52,7 +52,7 @@ services:
       POSTGRES_PASSWORD: postgres
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./postgres-init:/docker-entrypoint-initdb.d
+      - ./server/postgres-init:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
     networks:
@@ -60,7 +60,7 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: "minio-${USER}"
+    container_name: "avsp-minio-${USER}"
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -75,7 +75,7 @@ services:
 
   minio-init:
     image: minio/mc:latest
-    container_name: "minio-init-${USER}"
+    container_name: "avsp-minio-init-${USER}"
     depends_on:
       - minio
     entrypoint: >
@@ -83,7 +83,7 @@ services:
       until mc alias set local http://minio:9000 minioadmin minioadmin; do
         sleep 2;
       done &&
-      for bucket in waymo argoverse avsp synthetic; do
+      for bucket in waymo argoverse nuimages nuscenes avsp synthetic; do
         mc mb --ignore-existing local/$$bucket;
         mc anonymous set download local/$$bucket;
       done
@@ -93,12 +93,12 @@ services:
 
   embedder:
     build:
-      context: ../..
+      context: ..
       dockerfile: docker/models/models-cpu.Dockerfile
     container_name: "embedder-${USER}"
     profiles: ["model-http"]
     volumes:
-      - "${PWD}/../..:/app"
+      - ../:/app
     ports:
       - "8000:8000"
     networks:
@@ -106,12 +106,12 @@ services:
 
   vlm:
     build:
-      context: ../..
+      context: ..
       dockerfile: docker/models/models-cpu.Dockerfile
     container_name: "vlm-${USER}"
     profiles: ["model-http"]
     volumes:
-      - "${PWD}/../..:/app"
+      - ../:/app
     command: >
       /bin/sh -c "
       uvicorn backend.models.vlm.vlm:app
@@ -125,8 +125,10 @@ services:
       - avsp-net
 
   embedder-worker:
+    image: avsp-embedder-worker
+    container_name: "avsp-embedder-worker-${USER}"
     build:
-      context: ../..
+      context: ..
       dockerfile: docker/models/models-cpu.Dockerfile
     depends_on:
       rabbitmq:
@@ -137,7 +139,7 @@ services:
       python -m backend.models.queue_worker --worker embedder
       "
     volumes:
-      - "${PWD}/../..:/app"
+      - ../:/app
     expose:
       - "8000"
     environment:
@@ -151,8 +153,10 @@ services:
       - avsp-net
 
   vlm-worker:
+    image: avsp-vlm-worker
+    container_name: "avsp-vlm-worker-${USER}"
     build:
-      context: ../..
+      context: ..
       dockerfile: docker/models/models-cpu.Dockerfile
     depends_on:
       rabbitmq:
@@ -163,7 +167,7 @@ services:
       python -m backend.models.queue_worker --worker vlm
       "
     volumes:
-      - "${PWD}/../..:/app"
+      - ../:/app
     expose:
       - "8001"
     environment:
@@ -177,10 +181,11 @@ services:
       - avsp-net
 
   storage-server:
+    image: avsp-storage
     build:
-      context: ../..
+      context: ..
       dockerfile: docker/storage/storage-server.Dockerfile
-    container_name: "storage-server-${USER}"
+    container_name: "avsp-storage-${USER}"
     depends_on:
       postgres:
         condition: service_started
@@ -192,6 +197,8 @@ services:
         condition: service_healthy
     environment:
       STORAGE_CONFIG_PATH: /app/storage/config/storage.yaml
+    volumes:
+      - ../storage/config:/app/storage/config:ro
     ports:
       - "9013:9012"
     networks:
@@ -199,10 +206,10 @@ services:
 
   avsp-server:
     build:
-      context: ../..
+      context: ..
       dockerfile: docker/server/server.Dockerfile
-    image: avsp-server
-    container_name: "avsp-server-${USER}"
+    image: avsp-analytics-service
+    container_name: "avsp-analytics-service-${USER}"
     depends_on:
       - postgres
       - minio
@@ -212,7 +219,7 @@ services:
       - vlm-worker
       - storage-server
     volumes:
-      - "${PWD}/../..:/app"
+      - ../:/app
       - "vscode-server:/root/.vscode-server"
     ports:
       - "9002:9002"
@@ -242,7 +249,7 @@ services:
 
   frontend:
     image: node:20
-    container_name: "frontend-${USER}"
+    container_name: "avsp-frontend-${USER}"
     depends_on:
       - avsp-server
     working_dir: /app/frontend
@@ -260,10 +267,10 @@ services:
       npm run dev -- --hostname 0.0.0.0 --webpack
       '
     volumes:
-      - "${PWD}/../../frontend:/app/frontend"
+      - ../frontend:/app/frontend
       - "frontend-node-modules:/app/frontend/node_modules"
     ports:
-      - "3003:3003"
+      - "3000:3000"
     environment:
       MASTER_ENDPOINT: http://avsp-server:9002
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012
