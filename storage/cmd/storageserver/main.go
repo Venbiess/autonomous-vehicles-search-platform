@@ -16,6 +16,33 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+func loadPreprocessorMethods(manifestPath string) ([]core.PreprocessorMethod, error) {
+	catalog, err := config.LoadPreprocessorCatalog(manifestPath)
+	if err != nil {
+		return nil, err
+	}
+
+	methods := make([]core.PreprocessorMethod, 0, len(catalog.Preprocessors))
+	for _, item := range catalog.Preprocessors {
+		key := strings.TrimSpace(item.Key)
+		label := strings.TrimSpace(item.Label)
+		if key == "" || label == "" {
+			continue
+		}
+		methods = append(methods, core.PreprocessorMethod{
+			Key:         key,
+			Label:       label,
+			Description: strings.TrimSpace(item.Description),
+			Runner: core.PreprocessorRunner{
+				Entrypoint: strings.TrimSpace(item.Runner.Entrypoint),
+				Module:     strings.TrimSpace(item.Runner.Module),
+			},
+			DefaultConfig: item.DefaultConfig,
+		})
+	}
+	return methods, nil
+}
+
 func main() {
 	cfg, err := config.LoadStorageServerConfig()
 	if err != nil {
@@ -63,36 +90,23 @@ func main() {
 	svc.AttachAnalytics(analyticsStore)
 
 	preprocessorMethods := make([]core.PreprocessorMethod, 0)
+	var methodsProvider func() ([]core.PreprocessorMethod, error)
 	if manifestPath := strings.TrimSpace(cfg.PreprocessorsManifestPath); manifestPath != "" {
-		catalog, err := config.LoadPreprocessorCatalog(manifestPath)
+		loadedMethods, err := loadPreprocessorMethods(manifestPath)
 		if err != nil {
 			observability.LogError("preprocessors_manifest_load_failed", map[string]any{
 				"path":  manifestPath,
 				"error": err.Error(),
 			})
 		} else {
-			preprocessorMethods = make([]core.PreprocessorMethod, 0, len(catalog.Preprocessors))
-			for _, item := range catalog.Preprocessors {
-				key := strings.TrimSpace(item.Key)
-				label := strings.TrimSpace(item.Label)
-				if key == "" || label == "" {
-					continue
-				}
-				preprocessorMethods = append(preprocessorMethods, core.PreprocessorMethod{
-					Key:         key,
-					Label:       label,
-					Description: strings.TrimSpace(item.Description),
-					Runner: core.PreprocessorRunner{
-						Entrypoint: strings.TrimSpace(item.Runner.Entrypoint),
-						Module:     strings.TrimSpace(item.Runner.Module),
-					},
-					DefaultConfig: item.DefaultConfig,
-				})
-			}
+			preprocessorMethods = loadedMethods
+		}
+		methodsProvider = func() ([]core.PreprocessorMethod, error) {
+			return loadPreprocessorMethods(manifestPath)
 		}
 	}
 
-	handler := apiv1.NewStorageHandler(svc, cfg.WriteToken, preprocessorMethods)
+	handler := apiv1.NewStorageHandler(svc, cfg.WriteToken, preprocessorMethods, methodsProvider)
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {

@@ -258,7 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--compose-file",
-        default=str((Path(__file__).parent / "docker-compose.yml").resolve()),
+        default=str((Path(__file__).resolve().parent.parent / "docker-compose.yml").resolve()),
         help="Path to docker-compose.yml",
     )
     common.add_argument("--pg-service", default="postgres")

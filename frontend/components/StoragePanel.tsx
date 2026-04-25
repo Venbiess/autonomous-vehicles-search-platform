@@ -373,6 +373,9 @@ export default function StoragePanel() {
   const [randomEmbeddingsCount, setRandomEmbeddingsCount] = useState(100);
   const [randomVlmCount, setRandomVlmCount] = useState(100);
   const [randomHardDeleteCount, setRandomHardDeleteCount] = useState(10);
+  const [datasetDeleteProgress, setDatasetDeleteProgress] = useState<
+    Record<string, number>
+  >({});
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
 
   const extractAxiosErrorMessage = (
@@ -629,24 +632,61 @@ export default function StoragePanel() {
       confirmLabel: "Удалить датасет",
       onConfirm: async () => {
         await runStorageAction(`delete-dataset-${dataset}`, async () => {
-          const response = await axios.post("/api/storage/delete-dataset", {
-            dataset,
-            confirm: true,
-          });
-          const selected = Number(response.data?.selected_images || 0);
-          const deleted = Number(response.data?.deleted_images || 0);
-          const remaining = Number(response.data?.remaining_images || 0);
-          const failed = Number(response.data?.failed_images || 0);
+          let initialSelected = 0;
+          let deletedTotal = 0;
+          let failedTotal = 0;
+          let remaining = 0;
+          let done = false;
+          let safetySteps = 0;
+          setDatasetDeleteProgress((prev) => ({ ...prev, [dataset]: 0 }));
+
+          try {
+            while (!done && safetySteps < 1000) {
+              safetySteps += 1;
+              const response = await axios.post("/api/storage/delete-dataset", {
+                dataset,
+                confirm: true,
+                progressive: true,
+                batch_size: 50,
+              });
+              const selected = Number(response.data?.selected_images || 0);
+              const deleted = Number(response.data?.deleted_images || 0);
+              remaining = Number(response.data?.remaining_images || 0);
+              const failed = Number(response.data?.failed_images || 0);
+              done = Boolean(response.data?.done);
+
+              if (initialSelected <= 0 && selected > 0) {
+                initialSelected = selected;
+              }
+              deletedTotal += deleted;
+              failedTotal += failed;
+
+              const baseTotal = Math.max(initialSelected, deletedTotal + remaining);
+              const completed = Math.max(0, baseTotal - remaining);
+              const progress =
+                baseTotal > 0 ? Math.min(100, (completed / baseTotal) * 100) : done ? 100 : 0;
+              setDatasetDeleteProgress((prev) => ({ ...prev, [dataset]: progress }));
+
+              if (!done && deleted === 0) {
+                break;
+              }
+            }
+          } finally {
+            setDatasetDeleteProgress((prev) => {
+              const next = { ...prev };
+              delete next[dataset];
+              return next;
+            });
+          }
+
+          const selected = Math.max(initialSelected, deletedTotal + remaining);
           setStatusMessage(
-            `Датасет '${dataset}' обработан: выбрано ${selected}, удалено ${deleted}, осталось ${remaining}, ошибок ${failed}.`
+            `Датасет '${dataset}' обработан: выбрано ${selected}, удалено ${deletedTotal}, осталось ${remaining}, ошибок ${failedTotal}.`
           );
-          await Promise.all([
-            loadStats(false),
-            loadObjectsPage("", [], 1),
-          ]);
-          if (failed > 0 || remaining > 0) {
+          await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
+          if (failedTotal > 0 || remaining > 0) {
             setWarningMessage(
-              `При удалении датасета '${dataset}' остались проблемы: осталось ${remaining}, ошибок ${failed}.`
+              `При удалении датасета '${dataset}' остались проблемы: осталось ${remaining}, ошибок ${failedTotal}.`
             );
           }
         });
@@ -768,16 +808,6 @@ export default function StoragePanel() {
             </button>
           </div>
 
-          {statusMessage && (
-            <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
-              {statusMessage}
-            </div>
-          )}
-          {warningMessage && (
-            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
-              {warningMessage}
-            </div>
-          )}
           {sourceTableMissing && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
               {stats.warning ??
@@ -1035,7 +1065,10 @@ export default function StoragePanel() {
             </div>
 
             <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="text-sm text-amber-800">
+                  Удаляет дубли (по одинаковому `storage_path`)
+                </span>
                 <button
                   type="button"
                   onClick={deleteDuplicates}
@@ -1044,9 +1077,6 @@ export default function StoragePanel() {
                 >
                   {actionInProgress === "delete-duplicates" ? "Deleting..." : "Delete duplicates"}
                 </button>
-                <span className="text-sm text-amber-800">
-                  Удаляет дубли (по одинаковому `storage_path`), оставляя по одной сцене.
-                </span>
               </div>
             </div>
 
@@ -1081,6 +1111,16 @@ export default function StoragePanel() {
 
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h3 className="text-lg font-semibold text-slate-900">Image Storage</h3>
+          {statusMessage && (
+            <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+              {statusMessage}
+            </div>
+          )}
+          {warningMessage && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+              {warningMessage}
+            </div>
+          )}
           <div className="mt-4 grid gap-4 md:grid-cols-4">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
               Объектов: <span className="font-semibold">{formatNumber(stats.storage.total_objects)}</span>
@@ -1118,34 +1158,65 @@ export default function StoragePanel() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
-                {stats.storage.bucket_stats.map((bucket) => (
-                  <tr key={bucket.bucket}>
-                    <td className="px-4 py-3 text-sm text-slate-800">{bucket.bucket}</td>
-                    <td className="px-4 py-3 text-sm text-slate-700">{formatNumber(bucket.objects)}</td>
-                    <td className="px-4 py-3 text-sm text-slate-700">{formatBytes(bucket.bytes)}</td>
-                    <td className="px-4 py-3 text-sm">
-                      {bucket.error ? (
-                        <span className="font-semibold text-amber-700">
-                          Warning: {bucket.error}
-                        </span>
-                      ) : (
-                        <span className="font-semibold text-emerald-700">OK</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-sm">
-                      <button
-                        type="button"
-                        onClick={() => deleteDataset(bucket.bucket)}
-                        disabled={actionInProgress !== null}
-                        className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {actionInProgress === `delete-dataset-${bucket.bucket}`
-                          ? "Deleting..."
-                          : "Delete dataset"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {stats.storage.bucket_stats.map((bucket) => {
+                  const deleteActionId = `delete-dataset-${bucket.bucket}`;
+                  const isDeleting = actionInProgress === deleteActionId;
+                  const progress = Math.max(
+                    0,
+                    Math.min(100, datasetDeleteProgress[bucket.bucket] ?? 0)
+                  );
+                  return (
+                    <tr key={bucket.bucket}>
+                      <td className="px-4 py-3 text-sm text-slate-800">{bucket.bucket}</td>
+                      <td className="px-4 py-3 text-sm text-slate-700">{formatNumber(bucket.objects)}</td>
+                      <td className="px-4 py-3 text-sm text-slate-700">{formatBytes(bucket.bytes)}</td>
+                      <td className="px-4 py-3 text-sm">
+                        {bucket.error ? (
+                          <span className="font-semibold text-amber-700">
+                            Warning: {bucket.error}
+                          </span>
+                        ) : (
+                          <span className="font-semibold text-emerald-700">OK</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        <button
+                          type="button"
+                          onClick={() => deleteDataset(bucket.bucket)}
+                          disabled={actionInProgress !== null}
+                          className={`relative overflow-hidden rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                            isDeleting
+                              ? "border-rose-400 bg-rose-100"
+                              : "border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                          }`}
+                        >
+                          {isDeleting && (
+                            <span
+                              aria-hidden="true"
+                              className="pointer-events-none absolute inset-y-0 left-0 bg-rose-600 transition-[width] duration-300 ease-out"
+                              style={{ width: `${progress}%` }}
+                            />
+                          )}
+                          {isDeleting ? (
+                            <span
+                              className="relative z-10"
+                              style={{
+                                backgroundImage: `linear-gradient(90deg, #ffffff ${progress}%, #be123c ${progress}%)`,
+                                WebkitBackgroundClip: "text",
+                                backgroundClip: "text",
+                                color: "transparent",
+                              }}
+                            >
+                              Deleting
+                            </span>
+                          ) : (
+                            <span className="relative z-10">Delete dataset</span>
+                          )}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

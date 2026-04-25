@@ -4,7 +4,7 @@ NUSCENES_CAMERAS = [
 ]
 
 # Time step
-NUSCENES_RESAMPLE_SECONDS = 0.5
+NUSCENES_RESAMPLE_SECONDS = 5.0
 
 # Path inside DATA_DIR to data (DATA_DIR is initialized in common.py)
 NUIMAGES_DIR = "nuimages/"

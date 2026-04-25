@@ -89,6 +89,12 @@ class StorageAPI:
         payload = response.json()
         return payload.get("results", [])
 
+    def health(self) -> Dict[str, Any]:
+        response = self._client.get(f"{self.endpoint}/health")
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {"status": "ok"}
+
     def list_objects(
         self,
         limit: int = 100,
@@ -109,7 +115,19 @@ class StorageAPI:
             json={"vectors": vectors},
             headers=self.write_headers,
         )
-        response.raise_for_status()
+        if response.is_error:
+            detail = response.text
+            try:
+                payload = response.json()
+                if isinstance(payload, dict):
+                    message = payload.get("error", {}).get("message")
+                    if isinstance(message, str) and message.strip():
+                        detail = message
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                f"vectors/upsert failed: status={response.status_code}, detail={detail}"
+            )
         payload = response.json()
         return int(payload.get("upserted", 0))
 

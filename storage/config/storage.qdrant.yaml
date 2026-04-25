@@ -37,5 +37,5 @@ storage_server:
     api_key: ""
     collection: image_embeddings
     distance: cosine
-    vector_size: 768
+    vector_size: 640
     timeout_sec: 10

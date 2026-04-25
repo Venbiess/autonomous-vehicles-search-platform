@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
+COMPOSE_FILE="${SCRIPT_DIR}/../docker-compose.yml"
 
 if docker compose version >/dev/null 2>&1; then
   COMPOSE_CMD=(docker compose)

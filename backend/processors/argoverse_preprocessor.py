@@ -4,11 +4,11 @@ from tqdm import tqdm
 import pandas as pd
 import requests
 from pathlib import Path
-from glob import glob
-import shutil
 import os
 import re
 import tarfile
+import time
+import json
 
 from configs.common import DATA_DIR, ARGOVERSE_DIR
 
@@ -37,6 +37,9 @@ class ArgoversePreprocessor(Preprocessor):
     REVERSE_CAMERA_TO_LABEL = {
         v: k for k, v in CAMERA_TO_LABEL.items()
     }
+    MEMBER_PATH_RE = re.compile(
+        r"sensor/(?P<split>[a-zA-Z0-9_-]+)/(?P<group>[^/]+)/sensors/cameras/(?P<camera>ring_[^/]+)/(?P<file>[^/]+\.jpg)$"
+    )
 
     def __init__(self,
                  cameras: Optional[List[str]] = ["FRONT"],
@@ -67,6 +70,7 @@ class ArgoversePreprocessor(Preprocessor):
         self.iteration = 0
         self.install_log_callback: Optional[Callable[[str], None]] = None
         self.download_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+        self.extract_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
         self.cancel_requested_callback: Optional[Callable[[], bool]] = None
 
     def _log(self, message: str) -> None:
@@ -94,6 +98,29 @@ class ArgoversePreprocessor(Preprocessor):
                 "file_name": str(file_name),
                 "downloaded_bytes": int(max(downloaded_bytes, 0)),
                 "total_bytes": int(max(total_bytes, 0)),
+                "done": bool(done),
+            }
+        )
+
+    def _report_extract_progress(
+        self,
+        file_index: int,
+        file_name: str,
+        extracted_bytes: int,
+        total_bytes: int,
+        extracted_files: int,
+        done: bool = False,
+    ) -> None:
+        if not self.extract_progress_callback:
+            return
+        self.extract_progress_callback(
+            {
+                "file_index": int(file_index),
+                "total_files": int(max(self.total_parts, 1)),
+                "file_name": str(file_name),
+                "extracted_bytes": int(max(extracted_bytes, 0)),
+                "total_bytes": int(max(total_bytes, 0)),
+                "extracted_files": int(max(extracted_files, 0)),
                 "done": bool(done),
             }
         )
@@ -126,7 +153,6 @@ class ArgoversePreprocessor(Preprocessor):
                     total_bytes=remote_size,
                     done=True,
                 )
-                self._extract_tar_with_progress(out_path)
                 return out_path
             if downloaded > 0:
                 self._log(
@@ -183,70 +209,287 @@ class ArgoversePreprocessor(Preprocessor):
         self._log(
             f"[Argoverse] Download done {part_index}/{self.total_parts}: {filename} ({final_size} bytes)"
         )
-
-        self._extract_tar_with_progress(out_path)
         return out_path
 
-    def _extract_tar_with_progress(self, tar_path: str) -> None:
+    def _part_tag(self, split: str, part: int) -> str:
+        return f"{split}_{part:03d}"
+
+    def _manifest_path(self, tar_name: str) -> Path:
+        return Path(DATA_FOLDER) / f".manifest_{tar_name}.csv"
+
+    def _meta_path(self, tar_name: str) -> Path:
+        return Path(DATA_FOLDER) / f".manifest_{tar_name}.meta.json"
+
+    def _build_part_df_from_manifest(self, manifest_path: Path) -> pd.DataFrame:
+        if not manifest_path.exists():
+            return pd.DataFrame(columns=OUTPUT_COLUMNS)
+        try:
+            df = pd.read_csv(manifest_path)
+        except Exception:  # noqa: BLE001
+            return pd.DataFrame(columns=OUTPUT_COLUMNS)
+        for col in OUTPUT_COLUMNS:
+            if col not in df.columns:
+                df[col] = None
+        return df[OUTPUT_COLUMNS]
+
+    def _extract_member_info(
+        self,
+        member_name: str,
+        expected_split: str,
+    ) -> Optional[Dict[str, str]]:
+        normalized = member_name.replace("\\", "/")
+        match = self.MEMBER_PATH_RE.search(normalized)
+        if not match:
+            return None
+        split = str(match.group("split"))
+        if split != expected_split:
+            return None
+        group = str(match.group("group"))
+        camera_raw = str(match.group("camera"))
+        file_name = str(match.group("file"))
+        stem = Path(file_name).stem
+        ts = self._extract_timestamp_from_stem(stem)
+        if ts is None:
+            return None
+        return {
+            "split": split,
+            "group": group,
+            "camera_raw": camera_raw,
+            "file_name": file_name,
+            "timestamp": str(ts),
+            "stem": stem,
+        }
+
+    def _extract_tar_with_progress(self, tar_path: str, part_index: int, split: str, part: int) -> pd.DataFrame:
         tar_name = Path(tar_path).name
         marker_path = Path(DATA_FOLDER) / f".extracted_{tar_name}.ok"
-        sensor_root = Path(DATA_FOLDER) / "sensor"
-        split_name = tar_name.split("-", 1)[0] if "-" in tar_name else ""
-        split_root = sensor_root / split_name if split_name else sensor_root
+        manifest_path = self._manifest_path(tar_name)
+        meta_path = self._meta_path(tar_name)
+        part_tag = self._part_tag(split, part)
+        archive_size = int(os.path.getsize(tar_path)) if os.path.exists(tar_path) else 0
+        archive_mtime_ns = int(os.stat(tar_path).st_mtime_ns) if os.path.exists(tar_path) else 0
+        current_config = {
+            "part_tag": part_tag,
+            "cameras": sorted(list(self.cameras)) if self.cameras else ["*"],
+            "resample_seconds": float(self.resample_seconds or 0.0),
+            "archive_size": archive_size,
+            "archive_mtime_ns": archive_mtime_ns,
+        }
 
-        # Skip only when this exact archive was already extracted and its split data exists.
-        if marker_path.exists() and split_root.exists():
-            has_split_files = any(p.is_file() for p in split_root.rglob("*.jpg"))
-            if has_split_files:
-                self._log(
-                    f"[Argoverse] Skip extract for {tar_name}: marker found and files already unpacked."
+        if marker_path.exists() and manifest_path.exists() and meta_path.exists():
+            try:
+                stored_meta = json.loads(meta_path.read_text())
+            except Exception:  # noqa: BLE001
+                stored_meta = {}
+            stored_manifest_version = int(stored_meta.get("manifest_version", 1) or 1)
+            stored_cfg = {
+                "part_tag": stored_meta.get("part_tag"),
+                "cameras": stored_meta.get("cameras"),
+                "resample_seconds": float(stored_meta.get("resample_seconds", 0.0)),
+                "archive_size": int(stored_meta.get("archive_size", 0) or 0),
+                "archive_mtime_ns": int(stored_meta.get("archive_mtime_ns", 0) or 0),
+            }
+            manifest_df = self._build_part_df_from_manifest(manifest_path)
+            selected_count = int(stored_meta.get("selected_count", len(manifest_df.index)) or 0)
+            existing_count = 0
+            if selected_count > 0 and "image_path" in manifest_df.columns:
+                existing_count = int(
+                    manifest_df["image_path"].astype(str).map(lambda p: Path(p).exists()).sum()
                 )
-                return
+            if (
+                stored_manifest_version >= 2
+                and selected_count > 0
+                and stored_cfg == current_config
+                and selected_count == existing_count
+            ):
+                self._log(
+                    f"[Argoverse] Skip extract for {tar_name}: manifest matches config, "
+                    f"existing_files={existing_count}/{selected_count}"
+                )
+                self._report_extract_progress(
+                    file_index=part_index,
+                    file_name=tar_name,
+                    extracted_bytes=archive_size,
+                    total_bytes=archive_size,
+                    extracted_files=existing_count,
+                    done=True,
+                )
+                return manifest_df
 
-        self._log(f"[Argoverse] Start extract (stream mode, no pre-scan): {tar_name}")
-        self._log("[Argoverse] INFO: skipping full tar index/size scan for speed on large archives.")
+        self._log(
+            f"[Argoverse] Start extract {part_index}/{self.total_parts}: {tar_name} "
+            f"(archive_size={archive_size} bytes, stream mode, part={part_tag})"
+        )
+        self._log(
+            "[Argoverse] INFO: extracting only selected cameras and applying time-step filter during stream."
+        )
 
-        # Stream mode avoids expensive full archive indexing (getmembers) on huge tar files.
+        rows: List[Dict[str, Any]] = []
+        step_ns = int(self.resample_seconds * 1e9) if self.resample_seconds else 0
+        last_kept_ts: Dict[str, int] = {}
         with tarfile.open(tar_path, "r|*") as tar:
             extracted_files = 0
+            extracted_payload_bytes = 0
+            extracted_members = 0
+            selected_members = 0
+            last_logged_bytes = 0
+            last_logged_at = time.time()
             pbar = tqdm(
+                total=archive_size if archive_size > 0 else None,
                 unit="B",
                 unit_scale=True,
                 unit_divisor=1024,
                 desc=f"Extract {tar_name}",
                 dynamic_ncols=True,
             )
+            pbar_bytes = 0
+
+            def _sync_stream_progress() -> int:
+                nonlocal pbar_bytes, last_logged_bytes, last_logged_at
+                current_stream_pos = 0
+                file_obj = getattr(tar, "fileobj", None)
+                if file_obj is not None and hasattr(file_obj, "tell"):
+                    try:
+                        current_stream_pos = int(file_obj.tell())
+                    except Exception:  # noqa: BLE001
+                        current_stream_pos = 0
+                if archive_size > 0:
+                    extract_bytes_local = min(max(current_stream_pos, 0), archive_size)
+                else:
+                    extract_bytes_local = max(current_stream_pos, extracted_payload_bytes)
+                if extract_bytes_local > pbar_bytes:
+                    pbar.update(extract_bytes_local - pbar_bytes)
+                    pbar_bytes = extract_bytes_local
+
+                self._report_extract_progress(
+                    file_index=part_index,
+                    file_name=tar_name,
+                    extracted_bytes=extract_bytes_local,
+                    total_bytes=archive_size if archive_size > 0 else extract_bytes_local,
+                    extracted_files=extracted_files,
+                    done=False,
+                )
+
+                now = time.time()
+                should_log_progress = False
+                if extract_bytes_local - last_logged_bytes >= 2 * 1024 * 1024 * 1024:
+                    should_log_progress = True
+                if now - last_logged_at >= 30:
+                    should_log_progress = True
+                if should_log_progress:
+                    if archive_size > 0:
+                        percent = min(100.0, (extract_bytes_local / archive_size) * 100.0)
+                        self._log(
+                            f"[Argoverse] Extract progress {tar_name}: {percent:.1f}% "
+                            f"({extract_bytes_local}/{archive_size} bytes), kept_files={extracted_files}, selected={selected_members}, members={extracted_members}"
+                        )
+                    else:
+                        self._log(
+                            f"[Argoverse] Extract progress {tar_name}: "
+                            f"{extract_bytes_local} bytes, kept_files={extracted_files}, selected={selected_members}, members={extracted_members}"
+                        )
+                    last_logged_bytes = extract_bytes_local
+                    last_logged_at = now
+                return extract_bytes_local
+
             for member in tar:
-                tar.extract(member, path=DATA_FOLDER)
-                if member.isfile():
-                    extracted_files += 1
-                    pbar.update(max(member.size, 0))
+                if self._should_stop():
+                    raise InterruptedError("Dataset installation cancelled by user")
+                extracted_members += 1
+                if not member.isfile():
+                    _sync_stream_progress()
+                    continue
+
+                member_info = self._extract_member_info(member.name, expected_split=split)
+                if not member_info:
+                    _sync_stream_progress()
+                    continue
+                camera_raw = member_info["camera_raw"]
+                if self.cameras and camera_raw not in self.cameras:
+                    _sync_stream_progress()
+                    continue
+
+                ts = int(member_info["timestamp"])
+                group_key = re.sub(r"[^A-Za-z0-9_-]+", "_", member_info["group"])
+                keep_key = f"{group_key}::{camera_raw}"
+                if step_ns > 0:
+                    last_ts = last_kept_ts.get(keep_key)
+                    if last_ts is not None and (ts - last_ts) < step_ns:
+                        _sync_stream_progress()
+                        continue
+
+                selected_members += 1
+                tar_file = tar.extractfile(member)
+                if tar_file is None:
+                    continue
+
+                cam = self.REVERSE_CAMERA_TO_LABEL.get(camera_raw, camera_raw)
+                ts_str = member_info["timestamp"]
+                dst = DATA_FOLDER / f"{part_tag}_{cam}_{group_key}_{ts_str}.jpg"
+                if dst.exists():
+                    i = 1
+                    while (DATA_FOLDER / f"{part_tag}_{cam}_{group_key}_{ts_str}_{i}.jpg").exists():
+                        i += 1
+                    dst = DATA_FOLDER / f"{part_tag}_{cam}_{group_key}_{ts_str}_{i}.jpg"
+
+                with open(dst, "wb") as out_fp:
+                    while True:
+                        chunk = tar_file.read(self.CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        out_fp.write(chunk)
+
+                last_kept_ts[keep_key] = ts
+                extracted_files += 1
+                member_size = int(max(member.size, 0))
+                extracted_payload_bytes += member_size
+                rows.append(
+                    {
+                        "timestamp": ts,
+                        "camera_name": cam,
+                        "dataset_type": "argoverse",
+                        "image_path": str(dst),
+                        "source_link": os.path.join(S3_DATASET_LINK, f"{split}-{part:03d}.tar"),
+                    }
+                )
+                _sync_stream_progress()
+            if archive_size > 0 and pbar_bytes < archive_size:
+                pbar.update(archive_size - pbar_bytes)
             pbar.close()
         marker_path.write_text("ok\n")
+        result_df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+        result_df.to_csv(manifest_path, index=False)
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "manifest_version": 2,
+                    "part_tag": part_tag,
+                    "cameras": current_config["cameras"],
+                    "resample_seconds": current_config["resample_seconds"],
+                    "archive_size": archive_size,
+                    "archive_mtime_ns": archive_mtime_ns,
+                    "selected_count": int(len(result_df.index)),
+                    "saved_at": int(time.time()),
+                },
+                ensure_ascii=True,
+            )
+            + "\n"
+        )
+        final_extract_bytes = archive_size if archive_size > 0 else extracted_payload_bytes
+        self._report_extract_progress(
+            file_index=part_index,
+            file_name=tar_name,
+            extracted_bytes=final_extract_bytes,
+            total_bytes=archive_size if archive_size > 0 else final_extract_bytes,
+            extracted_files=extracted_files,
+            done=True,
+        )
 
-        self._log(f"[Argoverse] Done extract: {tar_name} (files: {extracted_files})")
-
-    def filter_by_step_seconds(self, files: List[Path]) -> List[Path]:
-        step_ns = int(self.resample_seconds * 1e9)
-
-        parsed = []
-        for file in files:
-            p = Path(file)
-            ts = self._extract_timestamp_from_stem(p.stem)
-            if ts is None:
-                continue
-            parsed.append((ts, p))
-
-        parsed.sort(key=lambda x: x[0])
-
-        out = []
-        last_ts = None
-        for ts, p in parsed:
-            if last_ts is None or (ts - last_ts) >= step_ns:
-                out.append(p)
-                last_ts = ts
-
-        return out
+        self._log(
+            f"[Argoverse] Done extract {part_index}/{self.total_parts}: {tar_name} "
+            f"(kept_files={extracted_files}, selected={selected_members}, members={extracted_members}, payload_bytes={extracted_payload_bytes})"
+        )
+        return result_df
 
     @staticmethod
     def _extract_timestamp_from_stem(stem: str) -> Optional[int]:
@@ -262,73 +505,11 @@ class ArgoversePreprocessor(Preprocessor):
         except ValueError:
             return None
 
-    def fitler_part(self, path, split, part):
-        trips_path = path / "sensor" / split
-
-        # filter cameras
-        paths = [
-            Path(p)
-            for camera in self.cameras
-            for p in glob(str(trips_path / "**" / camera / "*.jpg"), recursive=True)
-        ]
-
-        images: List[Path] = []
-        for src in paths:
-            ts_str = src.stem
-            cam_raw = src.parent.name
-            cam = self.REVERSE_CAMERA_TO_LABEL.get(cam_raw, cam_raw)
-            try:
-                rel = src.relative_to(trips_path)
-                group_key = rel.parts[0] if rel.parts else f"{split}_{part:03d}"
-            except ValueError:
-                group_key = src.parent.parent.name
-            group_key = re.sub(r"[^A-Za-z0-9_-]+", "_", group_key)
-
-            # Include a per-sequence key in file name to avoid camera+timestamp collisions.
-            dst = DATA_FOLDER / f"{cam}_{group_key}_{ts_str}.jpg"
-
-            if dst.exists():
-                i = 1
-                while (DATA_FOLDER / f"{cam}_{group_key}_{ts_str}_{i}.jpg").exists():
-                    i += 1
-                dst = DATA_FOLDER / f"{cam}_{group_key}_{ts_str}_{i}.jpg"
-
-            src.rename(dst)  # moves files from sensor to argoverse data folder
-            images.append(dst)
-        
-        if self.remove_after_load:
-            sensor_dir = Path(DATA_FOLDER) / "sensor"
-            if sensor_dir.exists():
-                shutil.rmtree(sensor_dir)
-
-        images = self.filter_by_step_seconds(images)
-
-        rows = []
-        for path in images:
-            ts = self._extract_timestamp_from_stem(path.stem)
-            if ts is None:
-                continue
-            rows.append(
-                {
-                    "timestamp": ts,
-                    "camera_name": self.REVERSE_CAMERA_TO_LABEL[path.parent.name],
-                    "dataset_type": "argoverse",
-                    "image_path": path,
-                    "source_link": os.path.join(S3_DATASET_LINK, f"{split}-{part:03d}.tar"),
-                }
-            )
-
-        result = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
-
-        # out_path = os.path.join(DATA_FOLDER, f"{split}-{part:03d}.parquet")
-        # result.to_parquet(out_path, index=False)
-        return result
-
     def process_part(self, split: str, part: int):
         part_index = self.iteration + 1
         self._log(f"[Argoverse] Process part {part_index}/{self.total_parts}: {split}-{part:03d}")
-        output = self.download_part(split, part, part_index=part_index)
-        output = self.fitler_part(Path(output).parent, split, part)
+        tar_path = self.download_part(split, part, part_index=part_index)
+        output = self._extract_tar_with_progress(tar_path, part_index=part_index, split=split, part=part)
         self._log(f"[Argoverse] Part complete {part_index}/{self.total_parts}: {split}-{part:03d}")
         return output
 
@@ -347,7 +528,7 @@ class ArgoversePreprocessor(Preprocessor):
 if __name__ == "__main__":
     processor = ArgoversePreprocessor(
         resample_seconds=0.5,
-        download_parts={"train": [0]},
+        download_parts={"train": [1]},
         cameras=["FRONT"]
     )
 

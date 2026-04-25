@@ -9,7 +9,7 @@ WAYMO_CAMERAS = [
 ]
 
 # Time step
-WAYMO_RESAMPLE_SECONDS = 0.1
+WAYMO_RESAMPLE_SECONDS = 5.0
 
 # Path inside DATA_DIR to data (DATA_DIR is initialized in common.py)
 WAYMO_DIR = "waymo/"
