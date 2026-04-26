@@ -50,8 +50,8 @@ interface Job {
   embedding_tasks_completed?: number;
   embedding_tasks_total?: number;
   embedding_worker_running?: boolean;
-  install_log?: string[];
-  install_log_path?: string;
+  job_log?: string[];
+  job_log_path?: string;
   errors: Array<{ storage_path?: string; object_id?: string; error: string; log?: string }>;
   created_at: number;
   updated_at: number;
@@ -61,7 +61,7 @@ interface LogViewerState {
   title: string;
   content: string;
   jobId?: string;
-  source?: "install" | "error";
+  source?: "job" | "error";
 }
 
 interface WaymoAuthStartResponse {
@@ -197,10 +197,10 @@ export default function SystemMonitor() {
       .join("\n\n");
   }, []);
 
-  const getJobInstallLog = useCallback((job: Job): string => {
-    const lines = Array.isArray(job.install_log) ? job.install_log : [];
+  const getJobMainLog = useCallback((job: Job): string => {
+    const lines = Array.isArray(job.job_log) ? job.job_log : [];
     if (lines.length === 0) {
-      return "No install log available.";
+      return "No job log available.";
     }
     return lines.join("\n");
   }, []);
@@ -355,8 +355,8 @@ export default function SystemMonitor() {
         if (entry?.log) chunks.push(String(entry.log));
       }
     }
-    if (Array.isArray(job.install_log)) {
-      chunks.push(job.install_log.join("\n"));
+    if (Array.isArray(job.job_log)) {
+      chunks.push(job.job_log.join("\n"));
     }
     const haystack = chunks.join("\n").toLowerCase();
     return (
@@ -487,11 +487,11 @@ export default function SystemMonitor() {
       return;
     }
     const nextTitle =
-      logViewer.source === "install"
-        ? `Install log for ${formatJobTypeLabel(job.job_type)}`
+      logViewer.source === "job"
+        ? `Job log for ${formatJobTypeLabel(job.job_type)}`
         : `Error log for ${formatJobTypeLabel(job.job_type)}`;
     const nextContent =
-      logViewer.source === "install" ? getJobInstallLog(job) : getJobErrorLog(job);
+      logViewer.source === "job" ? getJobMainLog(job) : getJobErrorLog(job);
     setLogViewer((current) => {
       if (!current || current.jobId !== logViewer.jobId || current.source !== logViewer.source) {
         return current;
@@ -510,9 +510,31 @@ export default function SystemMonitor() {
     logViewer?.jobId,
     logViewer?.source,
     formatJobTypeLabel,
-    getJobInstallLog,
+    getJobMainLog,
     getJobErrorLog,
   ]);
+
+  useEffect(() => {
+    if (!logViewer && !cancelDialogJob) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (logViewer) {
+        setLogViewer(null);
+        return;
+      }
+      if (cancelDialogJob) {
+        setCancelDialogJob(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [logViewer, cancelDialogJob]);
 
   if (isLoading && !systemInfo) {
     return (
@@ -787,14 +809,10 @@ export default function SystemMonitor() {
                     isInstallDatasetJob &&
                     extractTasksTotal > 0;
                   const hasErrorDetails = job.status === "error" && (job.errors?.length ?? 0) > 0;
-                  const hasInstallLogData =
-                    isInstallJob &&
-                    Array.isArray(job.install_log) &&
-                    job.install_log.length > 0;
-                  const canOpenInstallLogOnSuccess =
-                    job.status === "success" && hasInstallLogData;
-                  const canOpenInstallLogOnRunning =
-                    job.status === "running" && hasInstallLogData;
+                  const hasJobLogData =
+                    Array.isArray(job.job_log) && job.job_log.length > 0;
+                  const canOpenJobLogOnSuccess = job.status === "success" && hasJobLogData;
+                  const canOpenJobLogOnRunning = job.status === "running" && hasJobLogData;
                   
                   return (
                     <tr key={job.job_id} className="hover:bg-gray-50">
@@ -930,30 +948,30 @@ export default function SystemMonitor() {
                           >
                             Error
                           </button>
-                        ) : canOpenInstallLogOnSuccess ? (
+                        ) : canOpenJobLogOnSuccess ? (
                           <button
                             type="button"
                             onClick={() =>
                               setLogViewer({
-                                title: `Install log for ${formatJobTypeLabel(job.job_type)}`,
-                                content: getJobInstallLog(job),
+                                title: `Job log for ${formatJobTypeLabel(job.job_type)}`,
+                                content: getJobMainLog(job),
                                 jobId: job.job_id,
-                                source: "install",
+                                source: "job",
                               })
                             }
                             className="font-bold text-green-700 underline decoration-green-700 underline-offset-2 hover:text-green-800"
                           >
                             Success
                           </button>
-                        ) : canOpenInstallLogOnRunning ? (
+                        ) : canOpenJobLogOnRunning ? (
                           <button
                             type="button"
                             onClick={() =>
                               setLogViewer({
-                                title: `Install log for ${formatJobTypeLabel(job.job_type)}`,
-                                content: getJobInstallLog(job),
+                                title: `Job log for ${formatJobTypeLabel(job.job_type)}`,
+                                content: getJobMainLog(job),
                                 jobId: job.job_id,
-                                source: "install",
+                                source: "job",
                               })
                             }
                             className="font-bold text-blue-700 underline decoration-blue-700 underline-offset-2 hover:text-blue-800"
@@ -1023,7 +1041,14 @@ export default function SystemMonitor() {
       </div>
 
       {logViewer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setLogViewer(null);
+            }
+          }}
+        >
           <div className="max-h-[80vh] w-full max-w-4xl overflow-hidden rounded-xl bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
               <div>
@@ -1140,7 +1165,14 @@ export default function SystemMonitor() {
       )}
 
       {cancelDialogJob && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setCancelDialogJob(null);
+            }
+          }}
+        >
           <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl">
             <div className="border-b border-slate-200 px-5 py-4">
               <div className="text-base font-semibold text-slate-900">
@@ -1157,7 +1189,7 @@ export default function SystemMonitor() {
               <button
                 type="button"
                 onClick={() => setCancelDialogJob(null)}
-                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                className="inline-flex h-10 items-center justify-center rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
               >
                 Закрыть
               </button>
@@ -1167,7 +1199,7 @@ export default function SystemMonitor() {
                     type="button"
                     onClick={() => executeCancelJob(cancelDialogJob, "keep")}
                     disabled={cancellingJobId === cancelDialogJob.job_id}
-                    className="rounded-lg border border-blue-300 px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-60"
+                    className="inline-flex h-10 items-center justify-center rounded-lg border border-blue-300 px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-60"
                   >
                     {getCancelKeepLabel(cancelDialogJob.job_type)}
                   </button>
@@ -1175,7 +1207,7 @@ export default function SystemMonitor() {
                     type="button"
                     onClick={() => executeCancelJob(cancelDialogJob, "delete")}
                     disabled={cancellingJobId === cancelDialogJob.job_id}
-                    className="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+                    className="inline-flex h-10 items-center justify-center rounded-lg border border-red-600 bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
                   >
                     {getCancelDeleteLabel(cancelDialogJob.job_type)}
                   </button>
@@ -1185,7 +1217,7 @@ export default function SystemMonitor() {
                   type="button"
                   onClick={() => executeCancelJob(cancelDialogJob, "keep")}
                   disabled={cancellingJobId === cancelDialogJob.job_id}
-                  className="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+                  className="inline-flex h-10 items-center justify-center rounded-lg border border-red-600 bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
                 >
                   Остановить
                 </button>

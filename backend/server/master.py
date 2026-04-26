@@ -42,7 +42,7 @@ jobs_store: Dict[str, Dict[str, Any]] = {}
 jobs_lock = threading.Lock()
 JOB_LOG_DIR = Path("/tmp/avsp-job-logs")
 JOB_LOG_DIR.mkdir(parents=True, exist_ok=True)
-JOBS_INSTALL_LOG_TAIL_LINES = 200
+JOBS_JOB_LOG_TAIL_LINES = 200
 
 VLM_RESPONSE_TYPES = {"short_text", "text", "yes_no", "number", "category"}
 VLM_RESPONSE_HINTS = {
@@ -581,15 +581,15 @@ def _mark_job_cancelled(
             jobs_store[job_id].update(payload)
 
 
-def _append_install_log(job: Dict[str, Any], message: str) -> None:
+def _append_job_log(job: Dict[str, Any], message: str) -> None:
     text = str(message or "").strip()
     if not text:
         return
     line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {text}"
-    logs = job.get("install_log")
+    logs = job.get("job_log")
     if not isinstance(logs, list):
         logs = []
-        job["install_log"] = logs
+        job["job_log"] = logs
     logs.append(line)
     if len(logs) > 5000:
         del logs[:-5000]
@@ -597,12 +597,12 @@ def _append_install_log(job: Dict[str, Any], message: str) -> None:
     job_id = str(job.get("job_id", "")).strip()
     if job_id:
         log_path = JOB_LOG_DIR / f"{job_id}.log"
-        job["install_log_path"] = str(log_path)
+        job["job_log_path"] = str(log_path)
         try:
             with log_path.open("a", encoding="utf-8") as fp:
                 fp.write(line + "\n")
         except Exception:  # noqa: BLE001
-            logger.exception("Failed to write install log file for job_id=%s", job_id)
+            logger.exception("Failed to write job log file for job_id=%s", job_id)
 
 
 def _embed_install_queue_worker(
@@ -718,6 +718,8 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
             "total_seen": 0,
             "total_inserted": 0,
             "total_limit": payload.limit,
+            "job_log": [],
+            "job_log_path": str(JOB_LOG_DIR / f"{job_id}.log"),
             "errors": [],
             "created_at": time.time(),
             "updated_at": time.time(),
@@ -728,6 +730,8 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
     errors = []
     inserted_object_ids: List[str] = []
     inserted_object_ids_seen: set[str] = set()
+    last_progress_log_bucket = -1
+    last_progress_log_at = time.monotonic()
 
     def _cancel_backfill_job() -> None:
         cleanup_mode = _job_install_cleanup_mode(job_id)
@@ -753,6 +757,16 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
             max(0, total_inserted - cleanup_removed),
             cancel_errors,
         )
+        with jobs_lock:
+            job = jobs_store.get(job_id)
+            if job:
+                _append_job_log(
+                    job,
+                    (
+                        f"Cancelled (cleanup_mode={cleanup_mode}, "
+                        f"removed_embeddings={cleanup_removed}/{len(inserted_object_ids)})"
+                    ),
+                )
 
     try:
         logger.info(
@@ -762,6 +776,16 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
             payload.batch_size,
             payload.dry_run,
         )
+        with jobs_lock:
+            job = jobs_store.get(job_id)
+            if job:
+                _append_job_log(
+                    job,
+                    (
+                        "Backfill embeddings started: "
+                        f"limit={payload.limit}, batch_size={payload.batch_size}, dry_run={payload.dry_run}"
+                    ),
+                )
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
 
         object_ids = _list_pending_embedding_object_ids(payload.limit)
@@ -770,6 +794,10 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
             if job_id in jobs_store:
                 jobs_store[job_id]["total_limit"] = planned_total
                 jobs_store[job_id]["updated_at"] = time.time()
+                _append_job_log(
+                    jobs_store[job_id],
+                    f"Pending objects selected: {planned_total} (requested limit={payload.limit})",
+                )
         logger.info(
             "Backfill embeddings job %s pending objects=%s (requested limit=%s)",
             job_id,
@@ -861,6 +889,26 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                                 "updated_at": time.time(),
                             }
                         )
+                current_bucket = progress // 10
+                now_mono = time.monotonic()
+                should_log_progress = False
+                if total_seen > 0 and current_bucket > last_progress_log_bucket:
+                    should_log_progress = True
+                if total_seen > 0 and now_mono - last_progress_log_at >= 30:
+                    should_log_progress = True
+                if should_log_progress:
+                    with jobs_lock:
+                        job = jobs_store.get(job_id)
+                        if job:
+                            _append_job_log(
+                                job,
+                                (
+                                    f"Progress: {total_seen}/{planned_total} ({progress}%), "
+                                    f"embeddings_saved={total_inserted}, errors={len(errors)}"
+                                ),
+                            )
+                    last_progress_log_bucket = max(last_progress_log_bucket, current_bucket)
+                    last_progress_log_at = now_mono
                 if payload.stop_on_error and errors:
                     break
 
@@ -877,6 +925,14 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                         "updated_at": time.time(),
                     }
                 )
+                _append_job_log(
+                    jobs_store[job_id],
+                    (
+                        f"Finished with status={final_status.value}, "
+                        f"processed={total_seen}/{planned_total}, embeddings_saved={total_inserted}, "
+                        f"errors={len(errors)}"
+                    ),
+                )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Backfill embeddings job %s failed", job_id)
         with jobs_lock:
@@ -888,6 +944,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                         "updated_at": time.time(),
                     }
                 )
+                _append_job_log(jobs_store[job_id], f"Failed: {exc}")
 
 
 def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
@@ -908,6 +965,8 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
             "current_scene_tasks_total": 0,
             "current_scene_index": 0,
             "field_names": payload.field_names,
+            "job_log": [],
+            "job_log_path": str(JOB_LOG_DIR / f"{job_id}.log"),
             "errors": [],
             "created_at": time.time(),
             "updated_at": time.time(),
@@ -918,6 +977,8 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
     errors = []
     annotated_object_ids: List[str] = []
     annotated_object_ids_seen: set[str] = set()
+    last_progress_log_bucket = -1
+    last_progress_log_at = time.monotonic()
 
     try:
         timeout = httpx.Timeout(VLM_TIMEOUT_SEC)
@@ -968,6 +1029,16 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                     "total_tasks_planned": total_tasks_planned,
                 },
             )
+            with jobs_lock:
+                job = jobs_store.get(job_id)
+                if job:
+                    _append_job_log(
+                        job,
+                        (
+                            f"Cancelled (cleanup_mode={cleanup_mode}, "
+                            f"removed_annotations={cleanup_removed}/{len(annotated_object_ids)})"
+                        ),
+                    )
 
         with jobs_lock:
             if job_id in jobs_store:
@@ -977,6 +1048,22 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                         "total_tasks_planned": total_tasks_planned,
                         "updated_at": time.time(),
                     }
+                )
+                _append_job_log(
+                    jobs_store[job_id],
+                    (
+                        "Backfill VLM started: "
+                        f"limit={payload.limit}, batch_size={payload.batch_size}, "
+                        f"fields={len(field_names)}, dry_run={payload.dry_run}, "
+                        f"overwrite_existing={payload.overwrite_existing}"
+                    ),
+                )
+                _append_job_log(
+                    jobs_store[job_id],
+                    (
+                        f"Pending scenes selected: {planned_total} "
+                        f"(tasks_planned={total_tasks_planned})"
+                    ),
                 )
 
         with httpx.Client(timeout=timeout) as client:
@@ -1084,6 +1171,27 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                     "updated_at": time.time(),
                                 }
                             )
+                    current_bucket = progress // 10
+                    now_mono = time.monotonic()
+                    should_log_progress = False
+                    if total_seen > 0 and current_bucket > last_progress_log_bucket:
+                        should_log_progress = True
+                    if total_seen > 0 and now_mono - last_progress_log_at >= 30:
+                        should_log_progress = True
+                    if should_log_progress:
+                        with jobs_lock:
+                            job = jobs_store.get(job_id)
+                            if job:
+                                _append_job_log(
+                                    job,
+                                    (
+                                        f"Progress: scenes={total_seen}/{planned_total} ({progress}%), "
+                                        f"tasks={completed_tasks}/{total_tasks_planned}, "
+                                        f"annotations_saved={total_inserted}, errors={len(errors)}"
+                                    ),
+                                )
+                        last_progress_log_bucket = max(last_progress_log_bucket, current_bucket)
+                        last_progress_log_at = now_mono
 
                     if payload.stop_on_error and errors:
                         break
@@ -1108,6 +1216,15 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                         "updated_at": time.time(),
                     }
                 )
+                _append_job_log(
+                    jobs_store[job_id],
+                    (
+                        f"Finished with status={final_status.value}, "
+                        f"scenes={total_seen}/{planned_total}, "
+                        f"tasks={completed_tasks}/{total_tasks_planned}, "
+                        f"annotations_saved={total_inserted}, errors={len(errors)}"
+                    ),
+                )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Backfill VLM job %s failed", job_id)
         with jobs_lock:
@@ -1119,6 +1236,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                         "updated_at": time.time(),
                     }
                 )
+                _append_job_log(jobs_store[job_id], f"Failed: {exc}")
 
 
 def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[str, Any]):
@@ -1153,8 +1271,8 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
             "extract_files_done": 0,
             "install_phase": "",
             "errors": [],
-            "install_log": [],
-            "install_log_path": str(JOB_LOG_DIR / f"{job_id}.log"),
+            "job_log": [],
+            "job_log_path": str(JOB_LOG_DIR / f"{job_id}.log"),
             "created_at": time.time(),
             "updated_at": time.time(),
         }
@@ -1173,7 +1291,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
         with jobs_lock:
             job = jobs_store.get(job_id)
             if job:
-                _append_install_log(
+                _append_job_log(
                     job,
                     "Auto-embedding enabled, running in streaming mode during install.",
                 )
@@ -1244,7 +1362,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 total = int(event.get("total_planned", 0) or 0)
                 job["total_limit"] = total
                 job["total_planned"] = total
-                _append_install_log(job, f"Start installation for dataset={dataset_key}, planned={total}")
+                _append_job_log(job, f"Start installation for dataset={dataset_key}, planned={total}")
 
             if ev == "download":
                 job["install_phase"] = "download"
@@ -1302,7 +1420,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                     job["total_planned"] = total
 
             if ev == "log":
-                _append_install_log(job, str(event.get("message", "") or ""))
+                _append_job_log(job, str(event.get("message", "") or ""))
 
             if ev == "episode":
                 seen = int(event.get("episodes_done", job.get("total_seen", 0)) or 0)
@@ -1315,7 +1433,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 job["total_inserted"] = inserted
                 if failed > 0:
                     job["errors"] = [{"error": f"failed objects: {failed}"}]
-                    _append_install_log(job, f"Failed objects so far: {failed}")
+                    _append_job_log(job, f"Failed objects so far: {failed}")
                 job["current_scene_index"] = seen
 
             job["updated_at"] = time.time()
@@ -1343,7 +1461,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
             with jobs_lock:
                 job = jobs_store.get(job_id)
                 if job:
-                    _append_install_log(
+                    _append_job_log(
                         job,
                         "Dataset download finished, waiting for remaining embedding tasks...",
                     )
@@ -1382,7 +1500,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                         "updated_at": time.time(),
                     }
                 )
-                _append_install_log(
+                _append_job_log(
                     jobs_store[job_id],
                     (
                         f"Finished with status={jobs_store[job_id]['status']}, "
@@ -1436,7 +1554,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                         "updated_at": time.time(),
                     }
                 )
-                _append_install_log(
+                _append_job_log(
                     jobs_store[job_id],
                     f"Cancelled (cleanup_mode={cleanup_mode}, removed={removed_count}/{len(uploaded_object_ids)})",
                 )
@@ -1455,7 +1573,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                         "updated_at": time.time(),
                     }
                 )
-                _append_install_log(jobs_store[job_id], f"Failed: {exc}")
+                _append_job_log(jobs_store[job_id], f"Failed: {exc}")
 
 
 @app.get("/health")
@@ -1478,14 +1596,14 @@ def get_jobs():
         jobs = []
         for raw_job in jobs_store.values():
             job = dict(raw_job)
-            install_log = raw_job.get("install_log")
-            if isinstance(install_log, list):
-                if len(install_log) > JOBS_INSTALL_LOG_TAIL_LINES:
-                    job["install_log"] = install_log[-JOBS_INSTALL_LOG_TAIL_LINES:]
-                    job["install_log_truncated"] = True
+            job_log = raw_job.get("job_log")
+            if isinstance(job_log, list):
+                if len(job_log) > JOBS_JOB_LOG_TAIL_LINES:
+                    job["job_log"] = job_log[-JOBS_JOB_LOG_TAIL_LINES:]
+                    job["job_log_truncated"] = True
                 else:
-                    job["install_log"] = list(install_log)
-                    job["install_log_truncated"] = False
+                    job["job_log"] = list(job_log)
+                    job["job_log_truncated"] = False
             jobs.append(job)
     jobs.sort(key=lambda item: item.get("created_at", 0), reverse=True)
     return {"jobs": jobs}
