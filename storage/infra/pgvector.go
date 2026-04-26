@@ -18,6 +18,7 @@ const pgvectorLookupChunkSize = 512
 const pgvectorStartupWait = 60 * time.Second
 const pgvectorStartupPingInterval = 2 * time.Second
 const pgvectorDefaultANNLists = 100
+const pgvectorDefaultHNSWEfSearch = 40
 
 type VectorIndexConfig struct {
 	Provider    string `yaml:"provider"`
@@ -234,6 +235,26 @@ func (p *PgVectorAdapter) execUpsertRows(ctx context.Context, objectIDs []string
 }
 
 func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, topK int) ([]VectorQueryResult, error) {
+	if topK <= 0 {
+		topK = 5
+	}
+	efSearch := topK
+	if efSearch < pgvectorDefaultHNSWEfSearch {
+		efSearch = pgvectorDefaultHNSWEfSearch
+	}
+
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	// Prevent HNSW default ef_search=40 from capping results when topK is larger.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", efSearch)); err != nil {
+		log.Printf("pgvector: failed to set hnsw.ef_search=%d: %v", efSearch, err)
+	}
+
 	query := fmt.Sprintf(`
 		SELECT object_id,
 			embedding <=> $1::vector AS distance,
@@ -243,7 +264,7 @@ func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, to
 		ORDER BY embedding <=> $1::vector
 		LIMIT $2
 	`, p.qualifiedTable())
-	rows, err := p.db.QueryContext(ctx, query, vectorLiteral(embedding), topK, len(embedding))
+	rows, err := tx.QueryContext(ctx, query, vectorLiteral(embedding), topK, len(embedding))
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +278,13 @@ func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, to
 		}
 		results = append(results, item)
 	}
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 func (p *PgVectorAdapter) Delete(ctx context.Context, objectIDs []string) error {
