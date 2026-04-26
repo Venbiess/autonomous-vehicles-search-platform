@@ -6,7 +6,7 @@
 
 ### Server
 
-colima start --memory 8 --cpu 4 --disk 100
+colima start --memory 12 --cpu 4 --disk 100
 
 ```
 cd docker/

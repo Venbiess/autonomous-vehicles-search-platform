@@ -1,4 +1,5 @@
 const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
+const masterTimeoutMs = Number(process.env.MASTER_PROXY_TIMEOUT_MS || 10000);
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -6,14 +7,22 @@ export default async function handler(req, res) {
   }
 
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), masterTimeoutMs);
     const response = await fetch(`${masterEndpoint}/jobs/cancel`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
-    });
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
     const payload = await response.json();
     return res.status(response.status).json(payload);
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    if (error?.name === "AbortError") {
+      return res.status(504).json({
+        error: `Timed out waiting for master service (${masterTimeoutMs}ms)`,
+      });
+    }
+    return res.status(500).json({ error: error.message || "Unknown error" });
   }
 }

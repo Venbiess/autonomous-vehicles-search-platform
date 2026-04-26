@@ -223,6 +223,13 @@ services:
       - "vscode-server:/root/.vscode-server"
     ports:
       - "9002:9002"
+    command: >
+      /bin/sh -c "
+      uvicorn backend.server.master:app
+      --host 0.0.0.0
+      --port 9002
+      --log-level debug
+      "
     environment:
       S3_ENDPOINT_URL: http://minio:9000
       S3_ACCESS_KEY_ID: minioadmin
@@ -273,12 +280,16 @@ services:
       - "3000:3000"
     environment:
       MASTER_ENDPOINT: http://avsp-server:9002
+      MASTER_PROXY_TIMEOUT_MS: 10000
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012
       ANALYTICS_SERVER_ENDPOINT: http://storage-server:9012
       STORAGE_WRITE_TOKEN: change-me-storage-write-token
       MINIO_PUBLIC_ENDPOINT: http://localhost:9000
       MINIO_BUCKET: avsp
       NODE_OPTIONS: --max-old-space-size=1024
+      WATCHPACK_POLLING: "true"
+      WATCHPACK_POLLING_INTERVAL: "1000"
+      CHOKIDAR_USEPOLLING: "true"
     networks:
       - avsp-net
 
