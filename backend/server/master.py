@@ -115,6 +115,10 @@ class CancelJobRequest(BaseModel):
     install_cleanup_mode: str = Field("keep", min_length=1)
 
 
+class RetryJobRequest(BaseModel):
+    job_id: str = Field(..., min_length=1)
+
+
 class ObjectIDsRequest(BaseModel):
     object_ids: List[str] = Field(default_factory=list)
 
@@ -1341,6 +1345,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
             "extract_scene_index": 0,
             "extract_file_name": "",
             "extract_files_done": 0,
+            "download_label": "",
             "install_phase": "",
             "errors": [],
             "job_log": [],
@@ -1438,6 +1443,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
 
             if ev == "download":
                 job["install_phase"] = "download"
+                job["download_label"] = str(event.get("download_label", "") or "")
                 file_index = int(event.get("current_scene_index", 0) or 0)
                 job["current_scene_index"] = file_index
                 job["current_scene_tasks_completed"] = int(
@@ -1476,6 +1482,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
 
             if ev == "upload_progress":
                 job["install_phase"] = "upload"
+                job["download_label"] = ""
                 scene_index = int(event.get("episodes_done", job.get("current_scene_index", 0)) or 0)
                 job["current_scene_index"] = scene_index
                 job["current_scene_tasks_completed"] = int(
@@ -1501,6 +1508,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
 
             if ev == "extract":
                 job["install_phase"] = "extract"
+                job["download_label"] = ""
                 file_index = int(event.get("current_scene_index", 0) or 0)
                 job["extract_scene_index"] = file_index
                 job["extract_scene_tasks_completed"] = int(
@@ -1676,6 +1684,92 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 _append_job_log(jobs_store[job_id], f"Failed: {exc}")
 
 
+def _start_backfill_embeddings_job(payload: BackfillRequest) -> str:
+    job_id = str(uuid.uuid4())
+    thread = threading.Thread(
+        target=_run_backfill_job,
+        args=(job_id, payload),
+        daemon=True,
+    )
+    thread.start()
+    return job_id
+
+
+def _start_vlm_backfill_job(payload: VLMBackfillRequest) -> str:
+    job_id = str(uuid.uuid4())
+    thread = threading.Thread(
+        target=_run_vlm_backfill_job,
+        args=(job_id, payload),
+        daemon=True,
+    )
+    thread.start()
+    return job_id
+
+
+def _start_dataset_install_job(dataset_key: str, dataset_cfg: Dict[str, Any]) -> str:
+    job_id = str(uuid.uuid4())
+    thread = threading.Thread(
+        target=_run_dataset_install_job,
+        args=(job_id, dataset_key, dataset_cfg),
+        daemon=True,
+    )
+    thread.start()
+    return job_id
+
+
+def _retry_job_from_failed(source_job_id: str) -> Dict[str, Any]:
+    with jobs_lock:
+        source_job = jobs_store.get(source_job_id)
+        if not source_job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        snapshot = dict(source_job)
+
+    source_status = str(snapshot.get("status", "")).strip().lower()
+    if source_status != JobStatus.ERROR.value:
+        raise HTTPException(status_code=400, detail="Only failed jobs can be retried")
+
+    source_job_type = str(snapshot.get("job_type", "")).strip()
+    source_config = snapshot.get("job_config")
+    normalized_config = dict(source_config) if isinstance(source_config, dict) else {}
+
+    if source_job_type == "backfill_embeddings":
+        payload = BackfillRequest(**normalized_config)
+        job_id = _start_backfill_embeddings_job(payload)
+        return {
+            "job_id": job_id,
+            "status": "started",
+            "source_job_id": source_job_id,
+            "job_type": source_job_type,
+        }
+
+    if source_job_type == "backfill_vlm":
+        payload = VLMBackfillRequest(**normalized_config)
+        job_id = _start_vlm_backfill_job(payload)
+        return {
+            "job_id": job_id,
+            "status": "started",
+            "source_job_id": source_job_id,
+            "job_type": source_job_type,
+        }
+
+    if source_job_type.startswith("install_"):
+        dataset_key = str(snapshot.get("dataset", "")).strip().lower()
+        if not dataset_key:
+            dataset_key = source_job_type[len("install_") :].strip().lower()
+        if not dataset_key:
+            raise HTTPException(status_code=400, detail="Retry is unsupported for this install job")
+        job_id = _start_dataset_install_job(dataset_key, normalized_config)
+        return {
+            "job_id": job_id,
+            "status": "started",
+            "source_job_id": source_job_id,
+            "job_type": source_job_type,
+            "dataset": dataset_key,
+        }
+
+    raise HTTPException(status_code=400, detail=f"Retry is unsupported for job_type='{source_job_type}'")
+
+
 @app.get("/health")
 def healthcheck():
     model_health = model_gateway.health()
@@ -1762,13 +1856,7 @@ def get_system_info():
 
 @app.post("/embeddings/backfill")
 def backfill_embeddings(payload: BackfillRequest):
-    job_id = str(uuid.uuid4())
-    thread = threading.Thread(
-        target=_run_backfill_job,
-        args=(job_id, payload),
-        daemon=True,
-    )
-    thread.start()
+    job_id = _start_backfill_embeddings_job(payload)
     return {"job_id": job_id, "status": "started"}
 
 
@@ -1793,13 +1881,7 @@ def install_datasets(payload: DatasetInstallRequest):
 
     jobs = []
     for dataset_key in requested:
-        job_id = str(uuid.uuid4())
-        thread = threading.Thread(
-            target=_run_dataset_install_job,
-            args=(job_id, dataset_key, payload.configs.get(dataset_key, {})),
-            daemon=True,
-        )
-        thread.start()
+        job_id = _start_dataset_install_job(dataset_key, payload.configs.get(dataset_key, {}))
         jobs.append(
             {
                 "dataset": dataset_key,
@@ -2077,13 +2159,7 @@ def upsert_vlm_fields(payload: VLMFieldsRequest):
 
 @app.post("/vlm/backfill")
 def backfill_vlm(payload: VLMBackfillRequest):
-    job_id = str(uuid.uuid4())
-    thread = threading.Thread(
-        target=_run_vlm_backfill_job,
-        args=(job_id, payload),
-        daemon=True,
-    )
-    thread.start()
+    job_id = _start_vlm_backfill_job(payload)
     return {"job_id": job_id, "status": "started"}
 
 
@@ -2126,6 +2202,11 @@ def cancel_job(payload: CancelJobRequest):
         "status": "cancellation_requested",
         "install_cleanup_mode": cleanup_mode if supports_cleanup_mode else None,
     }
+
+
+@app.post("/jobs/retry")
+def retry_job(payload: RetryJobRequest):
+    return _retry_job_from_failed(payload.job_id)
 
 
 @app.post("/search/vlm")

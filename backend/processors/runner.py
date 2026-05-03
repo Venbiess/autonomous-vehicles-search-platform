@@ -156,6 +156,7 @@ def _build_preprocessor(
                     "total_planned": int(payload.get("total_files", 1) or 1),
                     "current_scene_tasks_completed": int(payload.get("downloaded_bytes", 0) or 0),
                     "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                    "download_label": str(payload.get("download_label", "") or ""),
                 }
             )
 
@@ -242,13 +243,16 @@ def _build_preprocessor(
         keep_local_images = _to_bool(cfg.get("keep_local_images", False), False)
         preprocessor = DrivingDojoPreprocessor(
             resample_seconds=_to_float(cfg.get("resample_seconds", 5.0), 5.0),
+            fps=max(1, _to_int(cfg.get("fps", 10), 10)),
             camera_name=str(cfg.get("camera_name", "FRONT")).strip() or "FRONT",
             repo_id=str(cfg.get("repo_id", "Yuqi1997/DrivingDojo")).strip() or "Yuqi1997/DrivingDojo",
             source_dir=str(cfg.get("source_dir", "")).strip() or None,
             videos_dir=str(cfg.get("videos_dir", "")).strip() or None,
+            extract_dir=str(cfg.get("extract_dir", "")).strip() or None,
             out_dir=str(cfg.get("out_dir", "")).strip() or None,
             allow_patterns=_to_str_list(cfg.get("allow_patterns"), ["videos/*"]),
             download_from_hf=_to_bool(cfg.get("download_from_hf", True), True),
+            extract_archives=_to_bool(cfg.get("extract_archives", True), True),
             hf_token=str(cfg.get("hf_token", "")).strip() or None,
             max_workers=max(1, _to_int(cfg.get("max_workers", 4), 4)),
             limit_videos=_to_optional_int(cfg.get("limit_videos")),
@@ -262,6 +266,7 @@ def _build_preprocessor(
                         "total_planned": int(payload.get("total_files", 1) or 1),
                         "current_scene_tasks_completed": int(payload.get("downloaded_bytes", 0) or 0),
                         "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                        "download_label": str(payload.get("download_label", "") or ""),
                     }
                 )) if progress_callback else None
             ),
@@ -331,6 +336,7 @@ def run_preprocessor_method(
                     "total_planned": int(payload.get("total_files", planned_total) or planned_total),
                     "current_scene_tasks_completed": int(payload.get("downloaded_bytes", 0) or 0),
                     "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                    "download_label": str(payload.get("download_label", "") or ""),
                 }
             )
 

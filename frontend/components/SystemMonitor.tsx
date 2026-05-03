@@ -47,6 +47,7 @@ interface Job {
   extract_scene_index?: number;
   extract_file_name?: string;
   extract_files_done?: number;
+  download_label?: string;
   install_phase?: string;
   embed_on_install?: boolean;
   embedding_tasks_completed?: number;
@@ -85,6 +86,7 @@ export default function SystemMonitor() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
+  const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
   const [logViewer, setLogViewer] = useState<LogViewerState | null>(null);
   const [configViewer, setConfigViewer] = useState<ConfigViewerState | null>(null);
@@ -313,6 +315,27 @@ export default function SystemMonitor() {
       alert(`Ошибка: ${message}`);
     } finally {
       setCancellingJobId(null);
+    }
+  };
+
+  const executeRetryJob = async (job: Job) => {
+    try {
+      setRetryingJobId(job.job_id);
+      await axios.post("/api/jobs/retry", { job_id: job.job_id });
+      await fetchJobs();
+    } catch (err) {
+      const detail = axios.isAxiosError(err) ? err.response?.data : null;
+      const message =
+        typeof detail?.detail === "string"
+          ? detail.detail
+          : typeof detail?.error === "string"
+            ? detail.error
+            : err instanceof Error
+              ? err.message
+              : "Не удалось перезапустить джобу";
+      alert(`Ошибка: ${message}`);
+    } finally {
+      setRetryingJobId(null);
     }
   };
 
@@ -776,7 +799,8 @@ export default function SystemMonitor() {
                     : `VLM calls: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
                   const currentSceneIndex = job.current_scene_index ?? 0;
                   const timing = getJobTiming(job);
-                  const installFileLabel = `Download: ${formatDataSize(
+                  const downloadLabelPrefix = String(job.download_label ?? "").trim() || "Download";
+                  const installFileLabel = `${downloadLabelPrefix}: ${formatDataSize(
                     currentSceneTasksCompleted
                   )} / ${formatDataSize(currentSceneTasksTotal)}`;
                   const isNuimagesInstallJob =
@@ -848,6 +872,8 @@ export default function SystemMonitor() {
                     Array.isArray(job.job_log) && job.job_log.length > 0;
                   const canOpenJobLogOnSuccess = job.status === "success" && hasJobLogData;
                   const canOpenJobLogOnRunning = job.status === "running" && hasJobLogData;
+                  const canOpenJobLogOnCancelled = job.status === "cancelled" && hasJobLogData;
+                  const canRetryJob = job.status === "error";
                   
                   return (
                     <tr key={job.job_id} className="hover:bg-gray-50">
@@ -1029,6 +1055,21 @@ export default function SystemMonitor() {
                           >
                             {getJobStatusText(job.status, job.cancel_requested)}
                           </button>
+                        ) : canOpenJobLogOnCancelled ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLogViewer({
+                                title: `Job log for ${formatJobTypeLabel(job.job_type)}`,
+                                content: getJobMainLog(job),
+                                jobId: job.job_id,
+                                source: "job",
+                              })
+                            }
+                            className="font-bold text-gray-600 underline decoration-gray-500 underline-offset-2 hover:text-gray-700"
+                          >
+                            {getJobStatusText(job.status, job.cancel_requested)}
+                          </button>
                         ) : (
                           <span className={`font-semibold ${statusColors.text}`}>
                             {getJobStatusText(job.status, job.cancel_requested)}
@@ -1068,7 +1109,7 @@ export default function SystemMonitor() {
                             job.cancel_requested ? (
                             <span className="text-red-600 font-medium">Остановка...</span>
                           ) : (
-                            <span className="text-gray-400">-</span>
+                            !canRetryJob && <span className="text-gray-400">-</span>
                           )}
 
                           {isWaymoAuthPermissionError(job) && (
@@ -1078,6 +1119,36 @@ export default function SystemMonitor() {
                               className="rounded-lg border border-indigo-300 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
                             >
                               Авторизовать Waymo
+                            </button>
+                          )}
+
+                          {canRetryJob && (
+                            <button
+                              type="button"
+                              onClick={() => executeRetryJob(job)}
+                              disabled={retryingJobId === job.job_id}
+                              title="Повторить джобу"
+                              aria-label="Повторить джобу"
+                              className={`inline-flex w-fit items-center justify-center rounded-md p-1 transition ${
+                                retryingJobId === job.job_id
+                                  ? "cursor-not-allowed text-slate-300"
+                                  : "text-slate-700 hover:text-sky-700"
+                              }`}
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                className="h-5 w-5 overflow-visible"
+                                aria-hidden="true"
+                              >
+                                <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                                <path d="M21 3v6h-6" />
+                              </svg>
                             </button>
                           )}
                         </div>

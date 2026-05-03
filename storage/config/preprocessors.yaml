@@ -129,11 +129,14 @@ preprocessors:
       repo_id: Yuqi1997/DrivingDojo
       source_dir: /app/data/drivingdojo/source
       videos_dir: /app/data/drivingdojo/source/videos
+      extract_dir: /app/data/drivingdojo/source/extracted
       out_dir: /app/data/drivingdojo/filtered
       allow_patterns:
         - videos/*
       download_from_hf: true
+      extract_archives: true
       hf_token: ""
+      fps: 10
       max_workers: 4
       limit_videos: null
       camera_name: FRONT
