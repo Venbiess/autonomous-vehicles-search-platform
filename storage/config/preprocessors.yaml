@@ -66,7 +66,7 @@ preprocessors:
 
   - key: once
     label: ONCE
-    description: Read local ONCE archives or download from Google Drive, preprocess, and upload camera frames to storage. Sources: https://once-for-auto-driving.github.io/download.html#downloads and configured Google Drive split folders.
+    description: "Read local ONCE archives or download from Google Drive, preprocess, and upload camera frames to storage. Sources: https://once-for-auto-driving.github.io/download.html#downloads and configured Google Drive split folders."
     runner:
       entrypoint: python -m backend.processors.once_preprocessor
       module: backend.processors.once_preprocessor
@@ -99,7 +99,7 @@ preprocessors:
 
   - key: bdd100k
     label: BDD100K
-    description: Read local BDD100K zip archives, preprocess, and upload camera frames to storage. Dataset: https://www.kaggle.com/datasets/alesssaulea/bdd100k?resource=download
+    description: "Read local BDD100K zip archives, preprocess, and upload camera frames to storage. Dataset: https://www.kaggle.com/datasets/alesssaulea/bdd100k?resource=download"
     runner:
       entrypoint: python -m backend.processors.bdd100k_preprocessor
       module: backend.processors.bdd100k_preprocessor
@@ -115,5 +115,28 @@ preprocessors:
         - test
       resample_seconds: 5.0
       fps: 10
+      keep_local_images: false
+      embed_on_install: false
+
+  - key: drivingdojo
+    label: DrivingDojo
+    description: "Download DrivingDojo videos from Hugging Face or use local videos, sample frames, and upload to storage. Dataset: https://huggingface.co/datasets/Yuqi1997/DrivingDojo"
+    runner:
+      entrypoint: python -m backend.processors.drivingdojo_preprocessor
+      module: backend.processors.drivingdojo_preprocessor
+    default_config:
+      bucket: drivingdojo
+      repo_id: Yuqi1997/DrivingDojo
+      source_dir: /app/data/drivingdojo/source
+      videos_dir: /app/data/drivingdojo/source/videos
+      out_dir: /app/data/drivingdojo/filtered
+      allow_patterns:
+        - videos/*
+      download_from_hf: true
+      hf_token: ""
+      max_workers: 4
+      limit_videos: null
+      camera_name: FRONT
+      resample_seconds: 5.0
       keep_local_images: false
       embed_on_install: false

@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .argoverse_preprocessor import ArgoversePreprocessor
 from .bdd100k_preprocessor import BDD100KPreprocessor
+from .drivingdojo_preprocessor import DrivingDojoPreprocessor
 from .nuimages_preprocessor import NuImagesPreprocessor
 from .once_preprocessor import OncePreprocessor
 from .synthetic_preprocessor import SyntheticRoadPreprocessor
@@ -234,6 +235,52 @@ def _build_preprocessor(
             cancel_requested_callback=cancel_requested_callback,
         )
         bucket = str(cfg.get("bucket", "bdd100k")).strip() or "bdd100k"
+        planned_total = len(preprocessor)
+        return preprocessor, bucket, planned_total
+
+    if key == "drivingdojo":
+        keep_local_images = _to_bool(cfg.get("keep_local_images", False), False)
+        preprocessor = DrivingDojoPreprocessor(
+            resample_seconds=_to_float(cfg.get("resample_seconds", 5.0), 5.0),
+            camera_name=str(cfg.get("camera_name", "FRONT")).strip() or "FRONT",
+            repo_id=str(cfg.get("repo_id", "Yuqi1997/DrivingDojo")).strip() or "Yuqi1997/DrivingDojo",
+            source_dir=str(cfg.get("source_dir", "")).strip() or None,
+            videos_dir=str(cfg.get("videos_dir", "")).strip() or None,
+            out_dir=str(cfg.get("out_dir", "")).strip() or None,
+            allow_patterns=_to_str_list(cfg.get("allow_patterns"), ["videos/*"]),
+            download_from_hf=_to_bool(cfg.get("download_from_hf", True), True),
+            hf_token=str(cfg.get("hf_token", "")).strip() or None,
+            max_workers=max(1, _to_int(cfg.get("max_workers", 4), 4)),
+            limit_videos=_to_optional_int(cfg.get("limit_videos")),
+            remove_local_images=not keep_local_images,
+            install_log_callback=early_log_callback,
+            download_progress_callback=(
+                (lambda payload: progress_callback(
+                    {
+                        "event": "download",
+                        "current_scene_index": int(payload.get("file_index", 0) or 0),
+                        "total_planned": int(payload.get("total_files", 1) or 1),
+                        "current_scene_tasks_completed": int(payload.get("downloaded_bytes", 0) or 0),
+                        "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                    }
+                )) if progress_callback else None
+            ),
+            extract_progress_callback=(
+                (lambda payload: progress_callback(
+                    {
+                        "event": "extract",
+                        "current_scene_index": int(payload.get("file_index", 0) or 0),
+                        "total_planned": int(payload.get("total_files", 1) or 1),
+                        "file_name": str(payload.get("file_name", "") or ""),
+                        "current_scene_tasks_completed": int(payload.get("extracted_bytes", 0) or 0),
+                        "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                        "extracted_files": int(payload.get("extracted_files", 0) or 0),
+                    }
+                )) if progress_callback else None
+            ),
+            cancel_requested_callback=cancel_requested_callback,
+        )
+        bucket = str(cfg.get("bucket", "drivingdojo")).strip() or "drivingdojo"
         planned_total = len(preprocessor)
         return preprocessor, bucket, planned_total
 

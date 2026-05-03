@@ -30,6 +30,18 @@ interface PreprocessorMethod {
   default_config?: Record<string, unknown>;
 }
 
+function isSyntheticMethod(method: Pick<PreprocessorMethod, "key" | "label">): boolean {
+  const key = String(method.key || "").trim().toLowerCase();
+  const label = String(method.label || "").trim().toLowerCase();
+  return key === "synthetic" || label.includes("synthetic");
+}
+
+function moveSyntheticToEnd(methods: PreprocessorMethod[]): PreprocessorMethod[] {
+  const regular = methods.filter((item) => !isSyntheticMethod(item));
+  const synthetic = methods.filter((item) => isSyntheticMethod(item));
+  return [...regular, ...synthetic];
+}
+
 interface WaymoAuthStartResponse {
   session_id?: string;
   auth_url?: string;
@@ -128,6 +140,7 @@ export default function AnnotationPanel({
   const [preprocessorMethods, setPreprocessorMethods] = useState<
     PreprocessorMethod[]
   >([]);
+  const [preprocessorMethodsError, setPreprocessorMethodsError] = useState<string | null>(null);
   const [installDatasets, setInstallDatasets] = useState<Record<string, boolean>>(
     {}
   );
@@ -245,23 +258,34 @@ export default function AnnotationPanel({
             };
           })
           .filter((item: PreprocessorMethod) => item.key && item.label);
-        setPreprocessorMethods(methods);
+        const orderedMethods = moveSyntheticToEnd(methods);
+        setPreprocessorMethods(orderedMethods);
         setInstallDatasets(
-          methods.reduce<Record<string, boolean>>((acc, item, idx) => {
-            acc[item.key] = idx === 0;
+          orderedMethods.reduce<Record<string, boolean>>((acc, item) => {
+            acc[item.key] = false;
             return acc;
           }, {})
         );
         setDatasetConfigText(
-          methods.reduce<Record<string, string>>((acc, item) => {
+          orderedMethods.reduce<Record<string, string>>((acc, item) => {
             acc[item.key] = JSON.stringify(item.default_config ?? {}, null, 2);
             return acc;
           }, {})
         );
-      } catch {
+        setPreprocessorMethodsError(null);
+      } catch (error: unknown) {
+        const message =
+          axios.isAxiosError(error) && error.response?.data?.detail
+            ? String(error.response.data.detail)
+            : axios.isAxiosError(error) && error.response?.data?.error
+              ? String(error.response.data.error)
+              : error instanceof Error
+                ? error.message
+                : "Failed to load preprocessor methods from storage API. Check storage-server logs for YAML/config parse errors.";
         setPreprocessorMethods([]);
         setInstallDatasets({});
         setDatasetConfigText({});
+        setPreprocessorMethodsError(message);
       }
     };
     loadPreprocessorMethods();
@@ -795,29 +819,13 @@ export default function AnnotationPanel({
             </p>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-3">
-            {preprocessorMethods.map((option) => (
-              <label
-                key={option.key}
-                className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-700"
-              >
-                <input
-                  type="checkbox"
-                  checked={installDatasets[option.key]}
-                  onChange={(event) =>
-                    setInstallDatasets((current) => ({
-                      ...current,
-                      [option.key]: event.target.checked,
-                    }))
-                  }
-                  className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                />
-                {option.label}
-              </label>
-            ))}
-          </div>
+          {preprocessorMethodsError && (
+            <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+              {preprocessorMethodsError}
+            </div>
+          )}
 
-          {preprocessorMethods.length === 0 && (
+          {!preprocessorMethodsError && preprocessorMethods.length === 0 && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
               No preprocessor methods were returned by storage API.
             </div>
@@ -833,20 +841,36 @@ export default function AnnotationPanel({
                     : "border-slate-200 bg-slate-50"
                 }`}
               >
-                <div className="mb-2 text-sm font-semibold text-slate-800">
-                  {option.label} config (JSON)
-                </div>
+                <label className="mb-3 flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={installDatasets[option.key]}
+                    onChange={(event) =>
+                      setInstallDatasets((current) => ({
+                        ...current,
+                        [option.key]: event.target.checked,
+                      }))
+                    }
+                    className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                  />
+                  <span>{option.label}</span>
+                </label>
+                <div className="mb-2 text-sm font-semibold text-slate-800">Config (JSON)</div>
                 {option.description && (
                   <div className="mb-2 text-xs text-slate-500">{option.description}</div>
                 )}
                 <textarea
                   value={datasetConfigText[option.key] ?? "{}"}
-                  onChange={(event) =>
+                  onChange={(event) => {
                     setDatasetConfigText((current) => ({
                       ...current,
                       [option.key]: event.target.value,
-                    }))
-                  }
+                    }));
+                    setInstallDatasets((current) => ({
+                      ...current,
+                      [option.key]: true,
+                    }));
+                  }}
                   rows={10}
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 outline-none focus:border-sky-500"
                 />

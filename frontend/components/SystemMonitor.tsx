@@ -224,6 +224,7 @@ export default function SystemMonitor() {
     if (jobType === "install_argoverse") return "Install Argoverse";
     if (jobType === "install_nuimages") return "Install NuImages (nuScenes)";
     if (jobType === "install_once") return "Install ONCE";
+    if (jobType === "install_drivingdojo") return "Install DrivingDojo";
     if (jobType === "install_nuscenes") return "Install NuScenes";
     if (jobType.startsWith("install_")) {
       const suffix = jobType.slice("install_".length);

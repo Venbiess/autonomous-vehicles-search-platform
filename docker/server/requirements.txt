@@ -14,5 +14,6 @@ uvicorn
 httpx
 psutil
 gdown
+opencv-python-headless
 
 pika
