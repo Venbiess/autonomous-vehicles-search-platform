@@ -31,6 +31,11 @@ type QueryResult struct {
 	Similarity float64 `json:"similarity"`
 }
 
+type StoredVector struct {
+	ObjectID  string    `json:"object_id"`
+	Embedding []float64 `json:"embedding"`
+}
+
 type PreprocessorRunner struct {
 	Entrypoint string `json:"entrypoint"`
 	Module     string `json:"module,omitempty"`

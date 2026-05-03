@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { Cog6ToothIcon } from "@heroicons/react/24/outline";
 import {
   SEARCH_MODE_STORAGE_KEY,
   type SearchMode,
@@ -25,8 +26,77 @@ interface ImageResult {
   storage_url?: string;
 }
 
+interface UISettings {
+  showSnapshotSection: boolean;
+  showSyntheticInAnnotation: boolean;
+  showSearchMeta: boolean;
+  showJobMonitorRuntime: boolean;
+}
+
 const IMAGES_PER_PAGE_OPTIONS = [6, 9, 12, 18, 24];
 const SEARCH_MODE_COOKIE_KEY = SEARCH_MODE_STORAGE_KEY;
+const UI_SETTINGS_STORAGE_KEY = "avsp_ui_settings_v1";
+
+const DEFAULT_UI_SETTINGS: UISettings = {
+  showSnapshotSection: true,
+  showSyntheticInAnnotation: true,
+  showSearchMeta: false,
+  showJobMonitorRuntime: true,
+};
+
+function parseStoragePathMeta(storagePath?: string): {
+  dataset: string;
+  key: string;
+} {
+  const raw = String(storagePath || "").trim();
+  if (!raw) return { dataset: "", key: "" };
+  const normalized = raw.replace(/^s3:\/\//i, "").replace(/^\/+/, "");
+  if (!normalized.includes("/")) {
+    return { dataset: normalized, key: "" };
+  }
+  const [dataset, ...rest] = normalized.split("/");
+  return { dataset, key: rest.join("/") };
+}
+
+function formatBrowserResultTitle(item: ImageResult, showMeta: boolean): string {
+  if (!showMeta) {
+    return item.object_id || item.title || item.storage_path || item.url || "";
+  }
+  const { dataset, key } = parseStoragePathMeta(item.storage_path);
+  const lines = [
+    item.object_id ? `object_id: ${item.object_id}` : "",
+    dataset ? `dataset: ${dataset}` : "",
+    key ? `key: ${key}` : "",
+    item.storage_path ? `storage_path: ${item.storage_path}` : "",
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+function IOSSwitch({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors duration-200 ${
+        checked ? "bg-emerald-500" : "bg-slate-300"
+      }`}
+    >
+      <span
+        className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform duration-200 ${
+          checked ? "translate-x-6" : "translate-x-1"
+        }`}
+      />
+    </button>
+  );
+}
 
 export default function HomePageClient({
   initialSearchMode,
@@ -43,6 +113,8 @@ export default function HomePageClient({
   const [imagesPerPage, setImagesPerPage] = useState(9);
   const [minScoreInput, setMinScoreInput] = useState("0.1");
   const [maxScoreInput, setMaxScoreInput] = useState("");
+  const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const minScore = minScoreInput.trim() === "" ? null : Number(minScoreInput);
   const maxScore = maxScoreInput.trim() === "" ? null : Number(maxScoreInput);
@@ -50,12 +122,21 @@ export default function HomePageClient({
   const hasValidMaxScore = maxScore !== null && Number.isFinite(maxScore);
   const hasScoreFilter = hasValidMinScore || hasValidMaxScore;
 
+  const presentedImages = useMemo(
+    () =>
+      images.map((item) => ({
+        ...item,
+        title: formatBrowserResultTitle(item, uiSettings.showSearchMeta),
+      })),
+    [images, uiSettings.showSearchMeta]
+  );
+
   const filteredImages = useMemo(() => {
     if (!hasScoreFilter) {
-      return images;
+      return presentedImages;
     }
 
-    return images.filter((item) => {
+    return presentedImages.filter((item) => {
       if (typeof item.score !== "number" || !Number.isFinite(item.score)) {
         return false;
       }
@@ -67,7 +148,14 @@ export default function HomePageClient({
       }
       return true;
     });
-  }, [hasScoreFilter, hasValidMaxScore, hasValidMinScore, images, maxScore, minScore]);
+  }, [
+    hasScoreFilter,
+    hasValidMaxScore,
+    hasValidMinScore,
+    maxScore,
+    minScore,
+    presentedImages,
+  ]);
 
   const totalPages = Math.max(1, Math.ceil(filteredImages.length / imagesPerPage));
   const pageStart = (currentPage - 1) * imagesPerPage;
@@ -108,6 +196,38 @@ export default function HomePageClient({
     window.localStorage.setItem(SEARCH_MODE_STORAGE_KEY, searchMode);
     document.cookie = `${SEARCH_MODE_COOKIE_KEY}=${encodeURIComponent(searchMode)}; path=/; max-age=31536000; samesite=lax`;
   }, [searchMode]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(UI_SETTINGS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<UISettings>;
+      setUiSettings({
+        showSnapshotSection:
+          typeof parsed?.showSnapshotSection === "boolean"
+            ? parsed.showSnapshotSection
+            : DEFAULT_UI_SETTINGS.showSnapshotSection,
+        showSyntheticInAnnotation:
+          typeof parsed?.showSyntheticInAnnotation === "boolean"
+            ? parsed.showSyntheticInAnnotation
+            : DEFAULT_UI_SETTINGS.showSyntheticInAnnotation,
+        showSearchMeta:
+          typeof parsed?.showSearchMeta === "boolean"
+            ? parsed.showSearchMeta
+            : DEFAULT_UI_SETTINGS.showSearchMeta,
+        showJobMonitorRuntime:
+          typeof parsed?.showJobMonitorRuntime === "boolean"
+            ? parsed.showJobMonitorRuntime
+            : DEFAULT_UI_SETTINGS.showJobMonitorRuntime,
+      });
+    } catch {
+      setUiSettings(DEFAULT_UI_SETTINGS);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(UI_SETTINGS_STORAGE_KEY, JSON.stringify(uiSettings));
+  }, [uiSettings]);
 
   const runSearch = async ({
     query,
@@ -205,6 +325,77 @@ export default function HomePageClient({
 
   return (
     <main className="min-h-screen bg-gray-100">
+      <div className="fixed right-4 top-4 z-[70]">
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen((value) => !value)}
+            className="group rounded-full border border-slate-300 bg-white p-2.5 text-slate-700 shadow-md transition hover:bg-slate-50"
+            aria-label="Open settings"
+          >
+            <Cog6ToothIcon className="h-6 w-6 transition-transform duration-500 group-hover:rotate-180" />
+          </button>
+          {settingsOpen && (
+            <div className="absolute right-0 mt-3 w-[340px] rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl">
+              <div className="mb-3 text-sm font-semibold text-slate-900">Interface Settings</div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">Show Snapshot Section</div>
+                    <div className="text-xs text-slate-500">Storage tab transfer block</div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showSnapshotSection}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({ ...prev, showSnapshotSection: next }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">Show Synthetic Dataset</div>
+                    <div className="text-xs text-slate-500">In annotation preprocessor list</div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showSyntheticInAnnotation}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({
+                        ...prev,
+                        showSyntheticInAnnotation: next,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">Show Search Metadata</div>
+                    <div className="text-xs text-slate-500">Dataset and storage info in result titles</div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showSearchMeta}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({ ...prev, showSearchMeta: next }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">Show Job Monitor Runtime</div>
+                    <div className="text-xs text-slate-500">GPU host and model runtime blocks</div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showJobMonitorRuntime}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({ ...prev, showJobMonitorRuntime: next }))
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Вкладки переключения режимов поиска */}
       <section className="bg-white border-b border-gray-200 shadow-sm">
         <div className="mx-auto max-w-5xl px-6">
@@ -274,7 +465,7 @@ export default function HomePageClient({
 
       {searchMode === "Job Monitor" ? (
         <section className="px-6 pt-8 pb-16">
-          <SystemMonitor />
+          <SystemMonitor showRuntimePanels={uiSettings.showJobMonitorRuntime} />
         </section>
       ) : searchMode === "VLM" ? (
         <VlmPanel />
@@ -282,9 +473,10 @@ export default function HomePageClient({
         <AnnotationPanel
           onOpenJobsMonitor={() => setSearchMode("Job Monitor")}
           onOpenStorage={() => setSearchMode("STORAGE")}
+          showSyntheticMethod={uiSettings.showSyntheticInAnnotation}
         />
       ) : searchMode === "STORAGE" ? (
-        <StoragePanel />
+        <StoragePanel showSnapshotSection={uiSettings.showSnapshotSection} />
       ) : (
         <>
           <section className="px-6 pt-12 pb-8">

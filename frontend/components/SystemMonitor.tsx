@@ -159,7 +159,11 @@ interface WaymoAuthStartResponse {
   error?: string;
 }
 
-export default function SystemMonitor() {
+export default function SystemMonitor({
+  showRuntimePanels = false,
+}: {
+  showRuntimePanels?: boolean;
+}) {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -807,140 +811,144 @@ export default function SystemMonitor() {
           </div>
         </div>
 
-        <div className="mt-6">
-          <h3 className="text-lg font-semibold text-gray-800 mb-3">
-            Модели и устройства
-          </h3>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {serviceEntries.map((service) => {
-              const runtime = service.data?.runtime ?? {};
-              const memory = service.data?.memory ?? {};
-              const counters = service.data?.counters ?? {};
-              const selectedDevice =
-                String(runtime.selected_device || service.data?.device || "unknown");
-              return (
-                <div key={service.key} className="bg-slate-50 rounded-lg border border-slate-200 p-4">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-base font-semibold text-slate-800">{service.label}</h4>
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-semibold ${serviceStatusBadge(
-                        service.data?.reachable
-                      )}`}
-                    >
-                      {service.data?.reachable ? "online" : "offline"}
-                    </span>
-                  </div>
-                  <div className="mt-2 space-y-1 text-sm text-slate-700">
-                    <div>
-                      <span className="text-slate-500">Модель: </span>
-                      <span className="font-medium">{service.data?.model || "—"}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500">Endpoint: </span>
-                      <span className="font-mono text-xs">{service.data?.endpoint || "—"}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500">Устройство: </span>
-                      <span className="font-semibold">{selectedDevice}</span>
-                      {runtime.cuda_device_name ? (
-                        <span className="text-xs text-slate-500">{` (${runtime.cuda_device_name})`}</span>
-                      ) : null}
-                    </div>
-                    <div>
-                      <span className="text-slate-500">Конфиг: </span>
-                      <span>{String(runtime.configured_device || "—")}</span>
-                      {runtime.dtype ? (
-                        <span className="text-xs text-slate-500">{` · dtype=${runtime.dtype}`}</span>
-                      ) : null}
-                    </div>
-                    <div>
-                      <span className="text-slate-500">RAM процесса: </span>
-                      <span>{formatMb(memory.process_rss_mb)}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500">GPU память: </span>
-                      <span>
-                        {`${formatMb(memory.gpu_allocated_mb)} alloc / ${formatMb(
-                          memory.gpu_reserved_mb
-                        )} reserved`}
-                      </span>
-                    </div>
-                    {(memory.gpu_total_mb ?? 0) > 0 ? (
-                      <div>
-                        <span className="text-slate-500">GPU всего/свободно: </span>
-                        <span>{`${formatMb(memory.gpu_total_mb)} / ${formatMb(
-                          memory.gpu_free_mb
-                        )}`}</span>
+        {showRuntimePanels && (
+          <>
+            <div className="mt-6">
+              <h3 className="text-lg font-semibold text-gray-800 mb-3">
+                Модели и устройства
+              </h3>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {serviceEntries.map((service) => {
+                  const runtime = service.data?.runtime ?? {};
+                  const memory = service.data?.memory ?? {};
+                  const counters = service.data?.counters ?? {};
+                  const selectedDevice =
+                    String(runtime.selected_device || service.data?.device || "unknown");
+                  return (
+                    <div key={service.key} className="bg-slate-50 rounded-lg border border-slate-200 p-4">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-base font-semibold text-slate-800">{service.label}</h4>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-xs font-semibold ${serviceStatusBadge(
+                            service.data?.reachable
+                          )}`}
+                        >
+                          {service.data?.reachable ? "online" : "offline"}
+                        </span>
                       </div>
-                    ) : null}
-                    {typeof counters.in_progress === "number" ? (
-                      <div>
-                        <span className="text-slate-500">Запросы: </span>
-                        <span>{`in_progress=${counters.in_progress}, completed=${counters.completed ?? 0}, received=${counters.received ?? 0}`}</span>
+                      <div className="mt-2 space-y-1 text-sm text-slate-700">
+                        <div>
+                          <span className="text-slate-500">Модель: </span>
+                          <span className="font-medium">{service.data?.model || "—"}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Endpoint: </span>
+                          <span className="font-mono text-xs">{service.data?.endpoint || "—"}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Устройство: </span>
+                          <span className="font-semibold">{selectedDevice}</span>
+                          {runtime.cuda_device_name ? (
+                            <span className="text-xs text-slate-500">{` (${runtime.cuda_device_name})`}</span>
+                          ) : null}
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Конфиг: </span>
+                          <span>{String(runtime.configured_device || "—")}</span>
+                          {runtime.dtype ? (
+                            <span className="text-xs text-slate-500">{` · dtype=${runtime.dtype}`}</span>
+                          ) : null}
+                        </div>
+                        <div>
+                          <span className="text-slate-500">RAM процесса: </span>
+                          <span>{formatMb(memory.process_rss_mb)}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500">GPU память: </span>
+                          <span>
+                            {`${formatMb(memory.gpu_allocated_mb)} alloc / ${formatMb(
+                              memory.gpu_reserved_mb
+                            )} reserved`}
+                          </span>
+                        </div>
+                        {(memory.gpu_total_mb ?? 0) > 0 ? (
+                          <div>
+                            <span className="text-slate-500">GPU всего/свободно: </span>
+                            <span>{`${formatMb(memory.gpu_total_mb)} / ${formatMb(
+                              memory.gpu_free_mb
+                            )}`}</span>
+                          </div>
+                        ) : null}
+                        {typeof counters.in_progress === "number" ? (
+                          <div>
+                            <span className="text-slate-500">Запросы: </span>
+                            <span>{`in_progress=${counters.in_progress}, completed=${counters.completed ?? 0}, received=${counters.received ?? 0}`}</span>
+                          </div>
+                        ) : null}
+                        {service.data?.error ? (
+                          <div className="text-xs text-rose-600">{service.data.error}</div>
+                        ) : null}
                       </div>
-                    ) : null}
-                    {service.data?.error ? (
-                      <div className="text-xs text-rose-600">{service.data.error}</div>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
 
-        <div className="mt-6">
-          <h3 className="text-lg font-semibold text-gray-800 mb-3">GPU хоста</h3>
-          {gpuList.length === 0 ? (
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-              {systemInfo.gpu?.error
-                ? `GPU недоступен: ${systemInfo.gpu.error}`
-                : "GPU не обнаружен на текущем хосте master-сервиса."}
+            <div className="mt-6">
+              <h3 className="text-lg font-semibold text-gray-800 mb-3">GPU хоста</h3>
+              {gpuList.length === 0 ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                  {systemInfo.gpu?.error
+                    ? `GPU недоступен: ${systemInfo.gpu.error}`
+                    : "GPU не обнаружен на текущем хосте master-сервиса."}
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                  <table className="min-w-full divide-y divide-slate-200 bg-white">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                          GPU
+                        </th>
+                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                          Util
+                        </th>
+                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                          Memory
+                        </th>
+                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                          Temp
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {gpuList.map((gpu) => (
+                        <tr key={`${gpu.index}-${gpu.uuid || gpu.name}`}>
+                          <td className="px-3 py-2 text-sm text-slate-700">
+                            <div className="font-medium">{`#${gpu.index} ${gpu.name}`}</div>
+                            {gpu.uuid ? <div className="text-xs text-slate-500">{gpu.uuid}</div> : null}
+                          </td>
+                          <td className="px-3 py-2 text-sm text-slate-700">
+                            {`${Number(gpu.utilization_percent ?? 0).toFixed(1)}%`}
+                          </td>
+                          <td className="px-3 py-2 text-sm text-slate-700">
+                            {`${formatMb(gpu.memory_used_mb)} / ${formatMb(gpu.memory_total_mb)} (${Number(
+                              gpu.memory_used_percent ?? 0
+                            ).toFixed(1)}%)`}
+                          </td>
+                          <td className="px-3 py-2 text-sm text-slate-700">
+                            {`${Number(gpu.temperature_c ?? 0).toFixed(0)}°C`}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
-          ) : (
-            <div className="overflow-x-auto rounded-lg border border-slate-200">
-              <table className="min-w-full divide-y divide-slate-200 bg-white">
-                <thead className="bg-slate-50">
-                  <tr>
-                    <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      GPU
-                    </th>
-                    <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Util
-                    </th>
-                    <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Memory
-                    </th>
-                    <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Temp
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {gpuList.map((gpu) => (
-                    <tr key={`${gpu.index}-${gpu.uuid || gpu.name}`}>
-                      <td className="px-3 py-2 text-sm text-slate-700">
-                        <div className="font-medium">{`#${gpu.index} ${gpu.name}`}</div>
-                        {gpu.uuid ? <div className="text-xs text-slate-500">{gpu.uuid}</div> : null}
-                      </td>
-                      <td className="px-3 py-2 text-sm text-slate-700">
-                        {`${Number(gpu.utilization_percent ?? 0).toFixed(1)}%`}
-                      </td>
-                      <td className="px-3 py-2 text-sm text-slate-700">
-                        {`${formatMb(gpu.memory_used_mb)} / ${formatMb(gpu.memory_total_mb)} (${Number(
-                          gpu.memory_used_percent ?? 0
-                        ).toFixed(1)}%)`}
-                      </td>
-                      <td className="px-3 py-2 text-sm text-slate-700">
-                        {`${Number(gpu.temperature_c ?? 0).toFixed(0)}°C`}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+          </>
+        )}
       </div>
 
       {/* Таблица джобов */}

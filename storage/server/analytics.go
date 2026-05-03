@@ -127,6 +127,43 @@ func (s *AnalyticsStore) UpsertAnnotations(ctx context.Context, rows []Annotatio
 	return nil
 }
 
+func (s *AnalyticsStore) GetAnnotations(ctx context.Context, objectIDs []string) ([]AnnotationRow, error) {
+	if s == nil || len(s.shards) == 0 {
+		return []AnnotationRow{}, nil
+	}
+	normalized := dedupeTrimmed(objectIDs)
+	if len(normalized) == 0 {
+		return []AnnotationRow{}, nil
+	}
+	grouped := make([][]string, len(s.shards))
+	for _, objectID := range normalized {
+		idx := shardIndex(objectID, len(s.shards))
+		grouped[idx] = append(grouped[idx], objectID)
+	}
+	outByObjectID := make(map[string]AnnotationRow, len(normalized))
+	for idx, ids := range grouped {
+		if len(ids) == 0 {
+			continue
+		}
+		rows, err := s.shards[idx].getAnnotations(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			outByObjectID[row.ObjectID] = row
+		}
+	}
+	out := make([]AnnotationRow, 0, len(outByObjectID))
+	for _, objectID := range normalized {
+		row, ok := outByObjectID[objectID]
+		if !ok {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
 func (s *AnalyticsStore) DeleteAnnotations(ctx context.Context, objectIDs []string) (int, error) {
 	normalized := dedupeTrimmed(objectIDs)
 	if len(normalized) == 0 {
@@ -481,6 +518,35 @@ func (s *clickHouseAnalyticsShard) upsertAnnotations(ctx context.Context, rows [
 	return s.insertJSONEachRow(ctx, s.annotationsTable, []string{"object_id", "values_json", "updated_at"}, insertRows)
 }
 
+func (s *clickHouseAnalyticsShard) getAnnotations(ctx context.Context, objectIDs []string) ([]AnnotationRow, error) {
+	normalizedIDs := dedupeTrimmed(objectIDs)
+	if len(normalizedIDs) == 0 {
+		return []AnnotationRow{}, nil
+	}
+	query := fmt.Sprintf(
+		"SELECT object_id, argMax(values_json, updated_at) AS values_json FROM %s WHERE object_id IN (%s) GROUP BY object_id",
+		chIdent(s.annotationsTable),
+		quotedList(normalizedIDs),
+	)
+	var payload struct {
+		Data []struct {
+			ObjectID   string `json:"object_id"`
+			ValuesJSON string `json:"values_json"`
+		} `json:"data"`
+	}
+	if err := s.queryJSON(ctx, query, &payload); err != nil {
+		return nil, err
+	}
+	out := make([]AnnotationRow, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		out = append(out, AnnotationRow{
+			ObjectID: item.ObjectID,
+			Values:   decodeValues(item.ValuesJSON),
+		})
+	}
+	return out, nil
+}
+
 func (s *clickHouseAnalyticsShard) deleteAnnotations(ctx context.Context, objectIDs []string) error {
 	normalized := dedupeTrimmed(objectIDs)
 	if len(normalized) == 0 {
@@ -554,8 +620,32 @@ func (s *clickHouseAnalyticsShard) search(ctx context.Context, filters []SearchF
 			continue
 		}
 		extract := fmt.Sprintf("ifNull(JSONExtractString(values_json, %s), '')", chQuote(fieldName))
-		if strings.EqualFold(strings.TrimSpace(filter.MatchMode), "contains") {
+		mode := strings.ToLower(strings.TrimSpace(filter.MatchMode))
+		if mode == "contains" {
 			clauses = append(clauses, fmt.Sprintf("positionCaseInsensitiveUTF8(%s, %s) > 0", extract, chQuote(filter.Value)))
+		} else if mode == "exact" || mode == "equal" {
+			clauses = append(clauses, fmt.Sprintf("lowerUTF8(%s) = lowerUTF8(%s)", extract, chQuote(filter.Value)))
+		} else if mode == "not_equal" {
+			clauses = append(clauses, fmt.Sprintf("lowerUTF8(%s) != lowerUTF8(%s)", extract, chQuote(filter.Value)))
+		} else if mode == "greater" || mode == "greater_or_equal" || mode == "less" || mode == "less_or_equal" {
+			leftNum := fmt.Sprintf("toFloat64OrNull(%s)", extract)
+			rightNum := fmt.Sprintf("toFloat64OrNull(%s)", chQuote(filter.Value))
+			op := ">"
+			if mode == "greater_or_equal" {
+				op = ">="
+			} else if mode == "less" {
+				op = "<"
+			} else if mode == "less_or_equal" {
+				op = "<="
+			}
+			clauses = append(clauses, fmt.Sprintf(
+				"%s IS NOT NULL AND %s IS NOT NULL AND %s %s %s",
+				leftNum,
+				rightNum,
+				leftNum,
+				op,
+				rightNum,
+			))
 		} else {
 			clauses = append(clauses, fmt.Sprintf("lowerUTF8(%s) = lowerUTF8(%s)", extract, chQuote(filter.Value)))
 		}

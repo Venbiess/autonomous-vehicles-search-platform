@@ -125,6 +125,8 @@ interface ConfirmDialogState {
   onConfirm: () => Promise<void>;
 }
 
+type TransferKind = "full" | "vlm" | "embeddings";
+
 function toErrorMessage(value: unknown): string {
   if (typeof value === "string" && value.trim()) {
     return value;
@@ -163,6 +165,69 @@ function formatBytes(value: number): string {
 
 function pct(value: number): string {
   return `${value.toFixed(2)}%`;
+}
+
+function fileNameFromDisposition(disposition: string | null): string {
+  if (!disposition) return "";
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]).trim();
+    } catch {
+      return utf8Match[1].trim();
+    }
+  }
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  return match?.[1]?.trim() || "";
+}
+
+function buildImportSummary(result: unknown): string {
+  if (!result || typeof result !== "object") {
+    return "Импорт завершен.";
+  }
+  const payload = result as Record<string, unknown>;
+  const format = String(payload.format || "").trim();
+
+  if (format === "avsp.storage.snapshot.v1") {
+    const objects =
+      payload.objects && typeof payload.objects === "object"
+        ? (payload.objects as Record<string, unknown>)
+        : {};
+    const embeddings =
+      payload.embeddings && typeof payload.embeddings === "object"
+        ? (payload.embeddings as Record<string, unknown>)
+        : {};
+    const vlm =
+      payload.vlm && typeof payload.vlm === "object"
+        ? (payload.vlm as Record<string, unknown>)
+        : {};
+    return (
+      `Импорт полного снапшота: объектов ${formatNumber(Number(objects.uploaded || 0))}` +
+      `, embeddings ${formatNumber(Number(embeddings.upserted || 0))}` +
+      `, VLM аннотаций ${formatNumber(Number(vlm.upserted_annotations || 0))}.`
+    );
+  }
+
+  if (format === "avsp.embedder.annotations.v1") {
+    const embeddings =
+      payload.embeddings && typeof payload.embeddings === "object"
+        ? (payload.embeddings as Record<string, unknown>)
+        : {};
+    return `Импорт embeddings: upsert ${formatNumber(Number(embeddings.upserted || 0))}.`;
+  }
+
+  if (format === "avsp.vlm.annotations.v1") {
+    const vlm =
+      payload.vlm && typeof payload.vlm === "object"
+        ? (payload.vlm as Record<string, unknown>)
+        : {};
+    return (
+      `Импорт VLM: полей ${formatNumber(Number(vlm.saved_fields || 0))}` +
+      `, аннотаций ${formatNumber(Number(vlm.upserted_annotations || 0))}.`
+    );
+  }
+
+  return "Импорт завершен.";
 }
 
 function polarToCartesian(
@@ -357,7 +422,11 @@ function PieChart({
   );
 }
 
-export default function StoragePanel() {
+export default function StoragePanel({
+  showSnapshotSection = true,
+}: {
+  showSnapshotSection?: boolean;
+}) {
   const [stats, setStats] = useState<StorageStatsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -381,6 +450,8 @@ export default function StoragePanel() {
   const [randomEmbeddingsCount, setRandomEmbeddingsCount] = useState(100);
   const [randomVlmCount, setRandomVlmCount] = useState(100);
   const [randomHardDeleteCount, setRandomHardDeleteCount] = useState(10);
+  const [transferFile, setTransferFile] = useState<File | null>(null);
+  const [transferFileInputKey, setTransferFileInputKey] = useState(0);
   const [cleanupDatasetFilter, setCleanupDatasetFilter] = useState("all");
   const [datasetDeleteProgress, setDatasetDeleteProgress] = useState<
     Record<string, number>
@@ -798,6 +869,85 @@ export default function StoragePanel() {
     });
   };
 
+  const downloadSnapshot = async (kind: TransferKind) => {
+    await runStorageAction(`download-${kind}`, async () => {
+      const response = await fetch(
+        `/api/storage/transfer/export?kind=${encodeURIComponent(kind)}`
+      );
+      if (!response.ok) {
+        let message = response.statusText || "Failed to export snapshot";
+        const text = await response.text();
+        if (text) {
+          try {
+            const payload = JSON.parse(text);
+            message = toErrorMessage(payload) || message;
+          } catch {
+            message = text || message;
+          }
+        }
+        throw new Error(message || "Failed to export snapshot");
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("content-disposition");
+      const fallbackName = `avsp-${kind}-snapshot-${new Date()
+        .toISOString()
+        .replace(/[:.]/g, "-")}.tar.gz`;
+      const filename = fileNameFromDisposition(disposition) || fallbackName;
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = href;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(href);
+      setStatusMessage(`Файл '${filename}' выгружен.`);
+    });
+  };
+
+  const askImportSnapshot = async () => {
+    if (!transferFile) {
+      setWarningMessage("Выберите файл снапшота перед импортом.");
+      return;
+    }
+    openConfirmDialog({
+      title: "Import snapshot",
+      description:
+        "Импорт может перезаписать существующие embeddings/VLM аннотации и добавить объекты в storage. Продолжить?",
+      confirmLabel: "Импортировать",
+      onConfirm: async () => {
+        await runStorageAction("import-snapshot", async () => {
+          const response = await fetch("/api/storage/transfer/import", {
+            method: "POST",
+            headers: {
+              "Content-Type": transferFile.type || "application/json",
+            },
+            body: transferFile,
+          });
+          let payload: unknown = {};
+          try {
+            payload = await response.json();
+          } catch {
+            payload = {};
+          }
+          if (!response.ok) {
+            const message = toErrorMessage(payload) || response.statusText;
+            throw new Error(message || "Failed to import snapshot");
+          }
+
+          const responsePayload =
+            payload && typeof payload === "object"
+              ? (payload as Record<string, unknown>)
+              : {};
+          setStatusMessage(buildImportSummary(responsePayload.result));
+          setTransferFile(null);
+          setTransferFileInputKey((value) => value + 1);
+          await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
+        });
+      },
+    });
+  };
+
   const refreshAll = async () => {
     setStatusMessage(null);
     setWarningMessage(null);
@@ -908,6 +1058,86 @@ export default function StoragePanel() {
     allDatasetBuckets.every((dataset) => Boolean(stats.dataset_visibility?.[dataset] ?? true));
   const allVisibilityActionId = "toggle-visibility-all";
   const isTogglingAllVisibility = actionInProgress === allVisibilityActionId;
+  const snapshotSection = (
+    <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+      <h3 className="text-lg font-semibold text-slate-900">Transfer Snapshot</h3>
+      <p className="mt-1 text-sm text-slate-600">
+        Экспорт/импорт полного storage и отдельной разметки (VLM/Embedder) через файл.
+      </p>
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-sm font-medium text-slate-800">Выгрузка</div>
+          <p className="mt-1 text-xs text-slate-500">
+            Файл можно перенести на другую VM и загрузить обратно после разметки.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => downloadSnapshot("full")}
+              disabled={actionInProgress !== null}
+              className="rounded-full bg-sky-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {actionInProgress === "download-full"
+                ? "Выгружаем..."
+                : "Скачать полный storage"}
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadSnapshot("embeddings")}
+              disabled={actionInProgress !== null}
+              className="rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {actionInProgress === "download-embeddings"
+                ? "Выгружаем..."
+                : "Скачать Embedder"}
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadSnapshot("vlm")}
+              disabled={actionInProgress !== null}
+              className="rounded-full bg-violet-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {actionInProgress === "download-vlm"
+                ? "Выгружаем..."
+                : "Скачать VLM"}
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-sm font-medium text-slate-800">Загрузка файла</div>
+          <p className="mt-1 text-xs text-slate-500">
+            Поддерживаются снапшоты: full storage, embeddings-only, VLM-only.
+          </p>
+          <div className="mt-3 flex flex-col gap-2">
+            <input
+              key={transferFileInputKey}
+              type="file"
+              accept=".tar.gz,.tgz,.tar,.gz,application/gzip,application/x-gzip,application/x-tar"
+              onChange={(event) =>
+                setTransferFile(event.target.files?.[0] ?? null)
+              }
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700"
+            />
+            <div className="break-all text-xs text-slate-500">
+              {transferFile ? `Выбран файл: ${transferFile.name}` : "Файл не выбран"}
+            </div>
+            <button
+              type="button"
+              onClick={askImportSnapshot}
+              disabled={actionInProgress !== null || transferFile === null}
+              className="w-fit rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {actionInProgress === "import-snapshot"
+                ? "Импортируем..."
+                : "Загрузить снапшот"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <section className="px-6 pt-10 pb-16">
@@ -1535,6 +1765,8 @@ export default function StoragePanel() {
             </table>
           </div>
         </div>
+
+        {showSnapshotSection && snapshotSection}
       </div>
 
       {confirmDialog && (

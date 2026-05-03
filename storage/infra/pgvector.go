@@ -355,6 +355,57 @@ func (p *PgVectorAdapter) ExistingObjectIDs(ctx context.Context, objectIDs []str
 	return out, nil
 }
 
+func (p *PgVectorAdapter) GetByObjectIDs(ctx context.Context, objectIDs []string) (map[string][]float64, error) {
+	out := make(map[string][]float64)
+	if len(objectIDs) == 0 {
+		return out, nil
+	}
+
+	for start := 0; start < len(objectIDs); start += pgvectorLookupChunkSize {
+		end := start + pgvectorLookupChunkSize
+		if end > len(objectIDs) {
+			end = len(objectIDs)
+		}
+		chunk := objectIDs[start:end]
+		args := make([]string, 0, len(chunk))
+		vals := make([]any, 0, len(chunk))
+		for i, id := range chunk {
+			args = append(args, fmt.Sprintf("$%d", i+1))
+			vals = append(vals, id)
+		}
+		query := fmt.Sprintf(
+			"SELECT object_id, embedding::text FROM %s WHERE object_id IN (%s)",
+			p.qualifiedTable(),
+			strings.Join(args, ","),
+		)
+		rows, err := p.db.QueryContext(ctx, query, vals...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var objectID string
+			var rawVector string
+			if err := rows.Scan(&objectID, &rawVector); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			parsed, err := parseVectorLiteral(rawVector)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[objectID] = parsed
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+
+	return out, nil
+}
+
 func (p *PgVectorAdapter) Health(ctx context.Context) error { return p.db.PingContext(ctx) }
 
 func (p *PgVectorAdapter) qualifiedTable() string {
@@ -387,6 +438,26 @@ func vectorLiteral(values []float64) string {
 		parts[i] = fmt.Sprintf("%.8f", value)
 	}
 	return "[" + strings.Join(parts, ",") + "]"
+}
+
+func parseVectorLiteral(raw string) ([]float64, error) {
+	trimmed := strings.TrimSpace(raw)
+	trimmed = strings.TrimPrefix(trimmed, "[")
+	trimmed = strings.TrimSuffix(trimmed, "]")
+	trimmed = strings.TrimSpace(trimmed)
+	if trimmed == "" {
+		return []float64{}, nil
+	}
+	parts := strings.Split(trimmed, ",")
+	out := make([]float64, 0, len(parts))
+	for _, part := range parts {
+		value, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, value)
+	}
+	return out, nil
 }
 
 func waitForPostgres(db *sql.DB, timeout time.Duration, interval time.Duration) error {
