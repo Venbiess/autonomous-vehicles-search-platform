@@ -780,6 +780,7 @@ export default function SystemMonitor() {
                   )} / ${formatDataSize(currentSceneTasksTotal)}`;
                   const isNuimagesInstallJob =
                     job.job_type === "install_nuimages" || job.job_type === "install_nuscenes";
+                  const isBddInstallJob = job.job_type === "install_bdd100k";
                   const isOnceInstallJob =
                     job.job_type === "install_once" || String(job.dataset ?? "").toLowerCase() === "once";
                   const installArchiveLabel = `Archive: ${formatDataSize(
@@ -792,7 +793,7 @@ export default function SystemMonitor() {
                       ? installUploadLabel
                       : installPhase === "download" && isOnceInstallJob
                         ? installSplitLabel
-                      : isNuimagesInstallJob
+                      : isNuimagesInstallJob || isBddInstallJob
                         ? installArchiveLabel
                         : installFileLabel;
                   const extractTasksCompleted = job.extract_scene_tasks_completed ?? 0;
@@ -827,10 +828,16 @@ export default function SystemMonitor() {
                   const showExtractProgress =
                     job.status === "running" &&
                     isInstallDatasetJob &&
-                    extractTasksTotal > 0;
+                    extractTasksTotal > 0 &&
+                    (installPhase === "extract" || (isOnceInstallJob && installPhase === "download"));
                   const extractRightLabel =
                     isOnceInstallJob && installPhase === "download"
                       ? `File ${Math.min(extractSceneIndex, plannedTotal || extractSceneIndex)}`
+                      : isBddInstallJob
+                        ? `Archive ${Math.min(
+                            extractSceneIndex,
+                            plannedTotal || extractSceneIndex
+                          )} · files ${extractFilesDone}`
                       : `Part ${Math.min(
                           extractSceneIndex,
                           plannedTotal || extractSceneIndex
@@ -905,6 +912,11 @@ export default function SystemMonitor() {
                                             currentSceneIndex,
                                             plannedTotal || currentSceneIndex
                                           )}`
+                                        : isBddInstallJob
+                                          ? `Archive ${Math.min(
+                                              currentSceneIndex,
+                                              plannedTotal || currentSceneIndex
+                                            )}`
                                         : `File ${Math.min(
                                             currentSceneIndex,
                                             plannedTotal || currentSceneIndex

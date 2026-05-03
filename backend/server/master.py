@@ -1484,6 +1484,11 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 job["current_scene_tasks_total"] = int(
                     event.get("current_scene_tasks_total", 0) or 0
                 )
+                # Hide extraction detail bar once installation switched to upload stage.
+                job["extract_scene_tasks_completed"] = 0
+                job["extract_scene_tasks_total"] = 0
+                job["extract_file_name"] = ""
+                job["extract_files_done"] = 0
                 object_id = str(event.get("last_uploaded_object_id", "") or "").strip()
                 if object_id and object_id not in uploaded_object_ids_seen:
                     uploaded_object_ids_seen.add(object_id)

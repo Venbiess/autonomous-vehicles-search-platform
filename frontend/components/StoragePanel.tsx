@@ -751,7 +751,7 @@ export default function StoragePanel() {
                 dataset,
                 confirm: true,
                 progressive: true,
-                batch_size: 50,
+                batch_size: 200,
               });
               const selected = Number(response.data?.selected_images || 0);
               const deleted = Number(response.data?.deleted_images || 0);
@@ -900,6 +900,14 @@ export default function StoragePanel() {
   const objectsToRender = hasObjectsFilter
     ? (filteredObjects ?? []).slice(filteredStart, filteredEnd)
     : objects;
+  const allDatasetBuckets = (stats.storage.all_bucket_stats || stats.storage.bucket_stats).map(
+    (bucket) => bucket.bucket
+  );
+  const allDatasetsVisible =
+    allDatasetBuckets.length > 0 &&
+    allDatasetBuckets.every((dataset) => Boolean(stats.dataset_visibility?.[dataset] ?? true));
+  const allVisibilityActionId = "toggle-visibility-all";
+  const isTogglingAllVisibility = actionInProgress === allVisibilityActionId;
 
   return (
     <section className="px-6 pt-10 pb-16">
@@ -1354,7 +1362,43 @@ export default function StoragePanel() {
                     Actions
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Visibility
+                    <div className="flex items-center gap-2">
+                      <span>Visibility</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (allDatasetBuckets.length === 0) return;
+                          const nextVisible = !allDatasetsVisible;
+                          openConfirmDialog({
+                            title: nextVisible ? "Show all datasets" : "Hide all datasets",
+                            description: nextVisible
+                              ? "Show all datasets across Browser, VLM, annotation, cleanup/deletion and Storage analytics?"
+                              : "Hide all datasets from Browser, VLM, annotation, cleanup/deletion and Storage analytics?",
+                            confirmLabel: nextVisible ? "Show all" : "Hide all",
+                            onConfirm: async () => {
+                              await runStorageAction(allVisibilityActionId, async () => {
+                                await Promise.all(
+                                  allDatasetBuckets.map((dataset) =>
+                                    axios.post("/api/storage/dataset-visibility", {
+                                      dataset,
+                                      visible: nextVisible,
+                                    })
+                                  )
+                                );
+                                await Promise.all([
+                                  loadStats(false),
+                                  loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
+                                ]);
+                              });
+                            },
+                          });
+                        }}
+                        disabled={isTogglingAllVisibility || actionInProgress !== null}
+                        className="rounded-md border border-slate-300 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {allDatasetsVisible ? "Hide all" : "Show all"}
+                      </button>
+                    </div>
                   </th>
                 </tr>
               </thead>
@@ -1404,16 +1448,17 @@ export default function StoragePanel() {
                             />
                           )}
                           {isDeleting ? (
-                            <span
-                              className="relative z-10"
-                              style={{
-                                backgroundImage: `linear-gradient(90deg, #ffffff ${progress}%, #be123c ${progress}%)`,
-                                WebkitBackgroundClip: "text",
-                                backgroundClip: "text",
-                                color: "transparent",
-                              }}
-                            >
-                              Deleting
+                            <span className="relative z-10 inline-block whitespace-nowrap text-rose-700">
+                              <span aria-hidden="true" className="invisible">
+                                Deleting
+                              </span>
+                              <span className="absolute inset-0">Deleting</span>
+                              <span
+                                className="absolute inset-y-0 left-0 overflow-hidden whitespace-nowrap text-white transition-[width] duration-300 ease-out"
+                                style={{ width: `${progress}%` }}
+                              >
+                                Deleting
+                              </span>
                             </span>
                           ) : (
                             <span className="relative z-10">Delete dataset</span>

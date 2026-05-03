@@ -4,6 +4,7 @@ import math
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .argoverse_preprocessor import ArgoversePreprocessor
+from .bdd100k_preprocessor import BDD100KPreprocessor
 from .nuimages_preprocessor import NuImagesPreprocessor
 from .once_preprocessor import OncePreprocessor
 from .synthetic_preprocessor import SyntheticRoadPreprocessor
@@ -202,6 +203,37 @@ def _build_preprocessor(
             cancel_requested_callback=cancel_requested_callback,
         )
         bucket = str(cfg.get("bucket", "once")).strip() or "once"
+        planned_total = len(preprocessor)
+        return preprocessor, bucket, planned_total
+
+    if key == "bdd100k":
+        keep_local_images = _to_bool(cfg.get("keep_local_images", False), False)
+        preprocessor = BDD100KPreprocessor(
+            splits=_to_str_list(cfg.get("splits"), ["train", "val", "test"]),
+            resample_seconds=_to_float(cfg.get("resample_seconds", 5.0), 5.0),
+            fps=max(1, _to_int(cfg.get("fps", 10), 10)),
+            zip_dir=str(cfg.get("zip_dir", "")).strip() or None,
+            extract_dir=str(cfg.get("extract_dir", "")).strip() or None,
+            out_dir=str(cfg.get("out_dir", "")).strip() or None,
+            extract_archives=_to_bool(cfg.get("extract_archives", True), True),
+            remove_local_images=not keep_local_images,
+            install_log_callback=early_log_callback,
+            extract_progress_callback=(
+                (lambda payload: progress_callback(
+                    {
+                        "event": "extract",
+                        "current_scene_index": int(payload.get("file_index", 0) or 0),
+                        "total_planned": int(payload.get("total_files", 1) or 1),
+                        "file_name": str(payload.get("file_name", "") or ""),
+                        "current_scene_tasks_completed": int(payload.get("extracted_bytes", 0) or 0),
+                        "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                        "extracted_files": int(payload.get("extracted_files", 0) or 0),
+                    }
+                )) if progress_callback else None
+            ),
+            cancel_requested_callback=cancel_requested_callback,
+        )
+        bucket = str(cfg.get("bucket", "bdd100k")).strip() or "bdd100k"
         planned_total = len(preprocessor)
         return preprocessor, bucket, planned_total
 

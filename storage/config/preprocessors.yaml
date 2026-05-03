@@ -66,7 +66,7 @@ preprocessors:
 
   - key: once
     label: ONCE
-    description: Read local ONCE archives, preprocess, and upload camera frames to storage.
+    description: Read local ONCE archives or download from Google Drive, preprocess, and upload camera frames to storage. Sources: https://once-for-auto-driving.github.io/download.html#downloads and configured Google Drive split folders.
     runner:
       entrypoint: python -m backend.processors.once_preprocessor
       module: backend.processors.once_preprocessor
@@ -92,6 +92,27 @@ preprocessors:
         - unlabeled_9
       cameras:
         - FRONT
+      resample_seconds: 5.0
+      fps: 10
+      keep_local_images: false
+      embed_on_install: false
+
+  - key: bdd100k
+    label: BDD100K
+    description: Read local BDD100K zip archives, preprocess, and upload camera frames to storage. Dataset: https://www.kaggle.com/datasets/alesssaulea/bdd100k?resource=download
+    runner:
+      entrypoint: python -m backend.processors.bdd100k_preprocessor
+      module: backend.processors.bdd100k_preprocessor
+    default_config:
+      bucket: bdd100k
+      zip_dir: /app/data/bdd100k/zips
+      extract_dir: /app/data/bdd100k/extracted
+      out_dir: /app/data/bdd100k/filtered
+      extract_archives: true
+      splits:
+        - train
+        - val
+        - test
       resample_seconds: 5.0
       fps: 10
       keep_local_images: false
