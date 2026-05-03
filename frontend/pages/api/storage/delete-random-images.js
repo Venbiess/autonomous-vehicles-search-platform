@@ -1,4 +1,5 @@
 import { listStorageObjects } from "../../../lib/storageServer";
+import { isDatasetVisible } from "../../../lib/datasetVisibility";
 
 const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
 
@@ -12,8 +13,16 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "confirm=true is required" });
     }
     const count = Math.max(1, Number(req.body?.count || 1));
+    const dataset = String(req.body?.dataset || "").trim();
+    if (dataset && !isDatasetVisible(dataset)) {
+      return res.status(400).json({ error: `dataset '${dataset}' is hidden` });
+    }
     const objects = await listStorageObjects();
-    const shuffled = [...objects].sort(() => Math.random() - 0.5);
+    const scoped = (dataset
+      ? objects.filter((item) => String(item?.bucket || "").trim() === dataset)
+      : objects
+    ).filter((item) => isDatasetVisible(String(item?.bucket || "").trim()));
+    const shuffled = [...scoped].sort(() => Math.random() - 0.5);
     const selected = shuffled.slice(0, Math.min(count, shuffled.length));
     const errors = [];
     let deletedImages = 0;

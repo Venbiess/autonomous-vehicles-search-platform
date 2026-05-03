@@ -30,6 +30,7 @@ from configs.common import (
     VLM_TIMEOUT_SEC,
 )
 from backend.server.analytics_api import AnalyticsAPI
+from backend.server.dataset_visibility import load_hidden_datasets
 from backend.server.model_bus import ModelGateway
 from backend.server.storage_api import StorageAPI
 
@@ -66,6 +67,7 @@ class BackfillRequest(BaseModel):
     batch_size: int = Field(50, ge=1)
     stop_on_error: bool = False
     dry_run: bool = False
+    dataset: Optional[str] = None
 
 
 class TextSearchRequest(BaseModel):
@@ -94,6 +96,7 @@ class VLMBackfillRequest(BaseModel):
     dry_run: bool = False
     overwrite_existing: bool = False
     max_new_tokens: int = Field(32, ge=1, le=512)
+    dataset: Optional[str] = None
 
 
 class VLMFilterDefinition(BaseModel):
@@ -110,6 +113,10 @@ class VLMSearchRequest(BaseModel):
 class CancelJobRequest(BaseModel):
     job_id: str = Field(..., min_length=1)
     install_cleanup_mode: str = Field("keep", min_length=1)
+
+
+class RetryJobRequest(BaseModel):
+    job_id: str = Field(..., min_length=1)
 
 
 class ObjectIDsRequest(BaseModel):
@@ -368,16 +375,24 @@ def _filter_pending_vlm_object_ids(
     return [object_id for object_id in object_ids if object_id not in completed]
 
 
-def _list_object_ids(limit: int, page_size: int = 500) -> List[str]:
+def _list_object_ids(limit: int, page_size: int = 500, dataset: Optional[str] = None) -> List[str]:
     remaining = max(limit, 0)
     cursor: Optional[str] = None
     object_ids: List[str] = []
+    dataset_filter = str(dataset or "").strip().lower()
+    hidden = {name.lower() for name in load_hidden_datasets()}
     while remaining > 0:
         payload = storage_api.list_objects(limit=min(page_size, remaining), cursor=cursor)
         items = payload.get("items", [])
         if not items:
             break
         for item in items:
+            bucket_name = str(item.get("bucket", "")).strip().lower()
+            if bucket_name and bucket_name in hidden:
+                continue
+            if dataset_filter:
+                if bucket_name != dataset_filter:
+                    continue
             object_id = item.get("object_id")
             if object_id:
                 object_ids.append(object_id)
@@ -402,10 +417,16 @@ def _filter_pending_embedding_object_ids(object_ids: List[str]) -> List[str]:
     return [object_id for object_id in object_ids if object_id not in completed]
 
 
-def _list_pending_embedding_object_ids(limit: int, page_size: int = 500) -> List[str]:
+def _list_pending_embedding_object_ids(
+    limit: int,
+    page_size: int = 500,
+    dataset: Optional[str] = None,
+) -> List[str]:
     remaining = max(limit, 0)
     cursor: Optional[str] = None
     pending: List[str] = []
+    dataset_filter = str(dataset or "").strip().lower()
+    hidden = {name.lower() for name in load_hidden_datasets()}
 
     while remaining > 0:
         payload = storage_api.list_objects(limit=page_size, cursor=cursor)
@@ -415,6 +436,12 @@ def _list_pending_embedding_object_ids(limit: int, page_size: int = 500) -> List
 
         batch_ids: List[str] = []
         for item in items:
+            bucket_name = str(item.get("bucket", "")).strip().lower()
+            if bucket_name and bucket_name in hidden:
+                continue
+            if dataset_filter:
+                if bucket_name != dataset_filter:
+                    continue
             object_id = str(item.get("object_id", "")).strip()
             if object_id:
                 batch_ids.append(object_id)
@@ -446,6 +473,28 @@ def _to_bool(value: Any, default: bool = False) -> bool:
         if normalized in {"0", "false", "no", "off"}:
             return False
     return default
+
+
+def _normalize_job_config(payload: Any) -> Dict[str, Any]:
+    if payload is None:
+        return {}
+    if hasattr(payload, "model_dump"):
+        try:
+            dumped = payload.model_dump()  # pydantic v2
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:  # noqa: BLE001
+            pass
+    if hasattr(payload, "dict"):
+        try:
+            dumped = payload.dict()  # pydantic v1
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:  # noqa: BLE001
+            pass
+    if isinstance(payload, dict):
+        return dict(payload)
+    return {}
 
 
 def _storage_vector_upsert_batch(rows: List[EmbedResult]) -> int:
@@ -707,10 +756,12 @@ def _embed_install_queue_worker(
 
 
 def _run_backfill_job(job_id: str, payload: BackfillRequest):
+    job_config = _normalize_job_config(payload)
     with jobs_lock:
         jobs_store[job_id] = {
             "job_id": job_id,
             "job_type": "backfill_embeddings",
+            "job_config": job_config,
             "status": JobStatus.RUNNING.value,
             "cancel_requested": False,
             "install_cleanup_mode": "keep",
@@ -770,11 +821,12 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
 
     try:
         logger.info(
-            "Backfill embeddings job %s started: limit=%s batch_size=%s dry_run=%s",
+            "Backfill embeddings job %s started: limit=%s batch_size=%s dry_run=%s dataset=%s",
             job_id,
             payload.limit,
             payload.batch_size,
             payload.dry_run,
+            str(payload.dataset or "").strip() or "all",
         )
         with jobs_lock:
             job = jobs_store.get(job_id)
@@ -783,12 +835,13 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                     job,
                     (
                         "Backfill embeddings started: "
-                        f"limit={payload.limit}, batch_size={payload.batch_size}, dry_run={payload.dry_run}"
+                        f"limit={payload.limit}, batch_size={payload.batch_size}, dry_run={payload.dry_run}, "
+                        f"dataset={str(payload.dataset or '').strip() or 'all'}"
                     ),
                 )
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
 
-        object_ids = _list_pending_embedding_object_ids(payload.limit)
+        object_ids = _list_pending_embedding_object_ids(payload.limit, dataset=payload.dataset)
         planned_total = len(object_ids)
         with jobs_lock:
             if job_id in jobs_store:
@@ -796,13 +849,17 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                 jobs_store[job_id]["updated_at"] = time.time()
                 _append_job_log(
                     jobs_store[job_id],
-                    f"Pending objects selected: {planned_total} (requested limit={payload.limit})",
+                    (
+                        f"Pending objects selected: {planned_total} "
+                        f"(requested limit={payload.limit}, dataset={str(payload.dataset or '').strip() or 'all'})"
+                    ),
                 )
         logger.info(
-            "Backfill embeddings job %s pending objects=%s (requested limit=%s)",
+            "Backfill embeddings job %s pending objects=%s (requested limit=%s, dataset=%s)",
             job_id,
             planned_total,
             payload.limit,
+            str(payload.dataset or "").strip() or "all",
         )
         with httpx.Client(timeout=timeout) as client:
             for i in range(0, len(object_ids), payload.batch_size):
@@ -948,10 +1005,12 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
 
 
 def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
+    job_config = _normalize_job_config(payload)
     with jobs_lock:
         jobs_store[job_id] = {
             "job_id": job_id,
             "job_type": "backfill_vlm",
+            "job_config": job_config,
             "status": JobStatus.RUNNING.value,
             "cancel_requested": False,
             "install_cleanup_mode": "keep",
@@ -982,6 +1041,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
 
     try:
         timeout = httpx.Timeout(VLM_TIMEOUT_SEC)
+        dataset_filter = str(payload.dataset or "").strip()
 
         if payload.field_names:
             fields = _validate_existing_vlm_fields(payload.field_names)
@@ -991,7 +1051,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
             raise ValueError("No VLM fields configured")
 
         field_names = [field["field_name"] for field in fields]
-        object_ids = _list_object_ids(payload.limit)
+        object_ids = _list_object_ids(payload.limit, dataset=payload.dataset)
         object_ids = _filter_pending_vlm_object_ids(
             object_ids,
             field_names,
@@ -1000,6 +1060,20 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
         planned_total = len(object_ids)
         total_tasks_planned = len(object_ids) * len(field_names)
         completed_tasks = 0
+        with jobs_lock:
+            job = jobs_store.get(job_id)
+            if job:
+                _append_job_log(
+                    job,
+                    (
+                        f"VLM backfill started: limit={payload.limit}, fields={len(field_names)}, "
+                        f"dataset={dataset_filter or 'all'}"
+                    ),
+                )
+                _append_job_log(
+                    job,
+                    f"Objects selected: {planned_total} (dataset={dataset_filter or 'all'})",
+                )
 
         def _cancel_vlm_job() -> None:
             cleanup_mode = _job_install_cleanup_mode(job_id)
@@ -1242,12 +1316,14 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
 def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[str, Any]):
     cfg = dict(dataset_cfg or {})
     embed_on_install = _to_bool(cfg.get("embed_on_install", False), False)
+    job_config = dict(cfg)
 
     with jobs_lock:
         jobs_store[job_id] = {
             "job_id": job_id,
             "job_type": f"install_{dataset_key}",
             "dataset": dataset_key,
+            "job_config": job_config,
             "embed_on_install": embed_on_install,
             "status": JobStatus.RUNNING.value,
             "cancel_requested": False,
@@ -1269,6 +1345,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
             "extract_scene_index": 0,
             "extract_file_name": "",
             "extract_files_done": 0,
+            "download_label": "",
             "install_phase": "",
             "errors": [],
             "job_log": [],
@@ -1366,7 +1443,9 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
 
             if ev == "download":
                 job["install_phase"] = "download"
-                job["current_scene_index"] = int(event.get("current_scene_index", 0) or 0)
+                job["download_label"] = str(event.get("download_label", "") or "")
+                file_index = int(event.get("current_scene_index", 0) or 0)
+                job["current_scene_index"] = file_index
                 job["current_scene_tasks_completed"] = int(
                     event.get("current_scene_tasks_completed", 0) or 0
                 )
@@ -1382,9 +1461,28 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 if total > 0:
                     job["total_limit"] = total
                     job["total_planned"] = total
+                    seen = min(max(file_index, 0), total)
+                    job["total_seen"] = seen
+                    job["progress"] = min(100, int((seen / max(total, 1)) * 100))
+
+            if ev == "download_detail":
+                # Keep main phase as download, use extract_* fields for 3rd progress bar details.
+                job["extract_scene_index"] = int(event.get("current_scene_index", 0) or 0)
+                job["extract_scene_tasks_completed"] = int(
+                    event.get("current_scene_tasks_completed", 0) or 0
+                )
+                job["extract_scene_tasks_total"] = int(
+                    event.get("current_scene_tasks_total", 0) or 0
+                )
+                job["extract_file_name"] = str(event.get("file_name", "") or "")
+                total = int(event.get("total_planned", job.get("total_planned", 0)) or 0)
+                if total > 0:
+                    job["total_limit"] = total
+                    job["total_planned"] = total
 
             if ev == "upload_progress":
                 job["install_phase"] = "upload"
+                job["download_label"] = ""
                 scene_index = int(event.get("episodes_done", job.get("current_scene_index", 0)) or 0)
                 job["current_scene_index"] = scene_index
                 job["current_scene_tasks_completed"] = int(
@@ -1393,6 +1491,11 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 job["current_scene_tasks_total"] = int(
                     event.get("current_scene_tasks_total", 0) or 0
                 )
+                # Hide extraction detail bar once installation switched to upload stage.
+                job["extract_scene_tasks_completed"] = 0
+                job["extract_scene_tasks_total"] = 0
+                job["extract_file_name"] = ""
+                job["extract_files_done"] = 0
                 object_id = str(event.get("last_uploaded_object_id", "") or "").strip()
                 if object_id and object_id not in uploaded_object_ids_seen:
                     uploaded_object_ids_seen.add(object_id)
@@ -1405,7 +1508,9 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
 
             if ev == "extract":
                 job["install_phase"] = "extract"
-                job["extract_scene_index"] = int(event.get("current_scene_index", 0) or 0)
+                job["download_label"] = ""
+                file_index = int(event.get("current_scene_index", 0) or 0)
+                job["extract_scene_index"] = file_index
                 job["extract_scene_tasks_completed"] = int(
                     event.get("current_scene_tasks_completed", 0) or 0
                 )
@@ -1418,6 +1523,9 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 if total > 0:
                     job["total_limit"] = total
                     job["total_planned"] = total
+                    seen = min(max(file_index, 0), total)
+                    job["total_seen"] = seen
+                    job["progress"] = min(100, int((seen / max(total, 1)) * 100))
 
             if ev == "log":
                 _append_job_log(job, str(event.get("message", "") or ""))
@@ -1576,6 +1684,92 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 _append_job_log(jobs_store[job_id], f"Failed: {exc}")
 
 
+def _start_backfill_embeddings_job(payload: BackfillRequest) -> str:
+    job_id = str(uuid.uuid4())
+    thread = threading.Thread(
+        target=_run_backfill_job,
+        args=(job_id, payload),
+        daemon=True,
+    )
+    thread.start()
+    return job_id
+
+
+def _start_vlm_backfill_job(payload: VLMBackfillRequest) -> str:
+    job_id = str(uuid.uuid4())
+    thread = threading.Thread(
+        target=_run_vlm_backfill_job,
+        args=(job_id, payload),
+        daemon=True,
+    )
+    thread.start()
+    return job_id
+
+
+def _start_dataset_install_job(dataset_key: str, dataset_cfg: Dict[str, Any]) -> str:
+    job_id = str(uuid.uuid4())
+    thread = threading.Thread(
+        target=_run_dataset_install_job,
+        args=(job_id, dataset_key, dataset_cfg),
+        daemon=True,
+    )
+    thread.start()
+    return job_id
+
+
+def _retry_job_from_failed(source_job_id: str) -> Dict[str, Any]:
+    with jobs_lock:
+        source_job = jobs_store.get(source_job_id)
+        if not source_job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        snapshot = dict(source_job)
+
+    source_status = str(snapshot.get("status", "")).strip().lower()
+    if source_status != JobStatus.ERROR.value:
+        raise HTTPException(status_code=400, detail="Only failed jobs can be retried")
+
+    source_job_type = str(snapshot.get("job_type", "")).strip()
+    source_config = snapshot.get("job_config")
+    normalized_config = dict(source_config) if isinstance(source_config, dict) else {}
+
+    if source_job_type == "backfill_embeddings":
+        payload = BackfillRequest(**normalized_config)
+        job_id = _start_backfill_embeddings_job(payload)
+        return {
+            "job_id": job_id,
+            "status": "started",
+            "source_job_id": source_job_id,
+            "job_type": source_job_type,
+        }
+
+    if source_job_type == "backfill_vlm":
+        payload = VLMBackfillRequest(**normalized_config)
+        job_id = _start_vlm_backfill_job(payload)
+        return {
+            "job_id": job_id,
+            "status": "started",
+            "source_job_id": source_job_id,
+            "job_type": source_job_type,
+        }
+
+    if source_job_type.startswith("install_"):
+        dataset_key = str(snapshot.get("dataset", "")).strip().lower()
+        if not dataset_key:
+            dataset_key = source_job_type[len("install_") :].strip().lower()
+        if not dataset_key:
+            raise HTTPException(status_code=400, detail="Retry is unsupported for this install job")
+        job_id = _start_dataset_install_job(dataset_key, normalized_config)
+        return {
+            "job_id": job_id,
+            "status": "started",
+            "source_job_id": source_job_id,
+            "job_type": source_job_type,
+            "dataset": dataset_key,
+        }
+
+    raise HTTPException(status_code=400, detail=f"Retry is unsupported for job_type='{source_job_type}'")
+
+
 @app.get("/health")
 def healthcheck():
     model_health = model_gateway.health()
@@ -1662,13 +1856,7 @@ def get_system_info():
 
 @app.post("/embeddings/backfill")
 def backfill_embeddings(payload: BackfillRequest):
-    job_id = str(uuid.uuid4())
-    thread = threading.Thread(
-        target=_run_backfill_job,
-        args=(job_id, payload),
-        daemon=True,
-    )
-    thread.start()
+    job_id = _start_backfill_embeddings_job(payload)
     return {"job_id": job_id, "status": "started"}
 
 
@@ -1693,13 +1881,7 @@ def install_datasets(payload: DatasetInstallRequest):
 
     jobs = []
     for dataset_key in requested:
-        job_id = str(uuid.uuid4())
-        thread = threading.Thread(
-            target=_run_dataset_install_job,
-            args=(job_id, dataset_key, payload.configs.get(dataset_key, {})),
-            daemon=True,
-        )
-        thread.start()
+        job_id = _start_dataset_install_job(dataset_key, payload.configs.get(dataset_key, {}))
         jobs.append(
             {
                 "dataset": dataset_key,
@@ -1977,13 +2159,7 @@ def upsert_vlm_fields(payload: VLMFieldsRequest):
 
 @app.post("/vlm/backfill")
 def backfill_vlm(payload: VLMBackfillRequest):
-    job_id = str(uuid.uuid4())
-    thread = threading.Thread(
-        target=_run_vlm_backfill_job,
-        args=(job_id, payload),
-        daemon=True,
-    )
-    thread.start()
+    job_id = _start_vlm_backfill_job(payload)
     return {"job_id": job_id, "status": "started"}
 
 
@@ -2026,6 +2202,11 @@ def cancel_job(payload: CancelJobRequest):
         "status": "cancellation_requested",
         "install_cleanup_mode": cleanup_mode if supports_cleanup_mode else None,
     }
+
+
+@app.post("/jobs/retry")
+def retry_job(payload: RetryJobRequest):
+    return _retry_job_from_failed(payload.job_id)
 
 
 @app.post("/search/vlm")

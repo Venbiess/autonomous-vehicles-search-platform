@@ -1,6 +1,11 @@
 import { listStorageObjects } from "../../../lib/storageServer";
+import { isDatasetVisible } from "../../../lib/datasetVisibility";
 
 const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
+const DELETE_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.DATASET_DELETE_CONCURRENCY || 12)
+);
 
 async function deleteStorageObject(item, errors, attemptLabel = null) {
   try {
@@ -26,6 +31,30 @@ async function deleteStorageObject(item, errors, attemptLabel = null) {
   }
 }
 
+async function deleteObjectsConcurrent(items, errors, attemptLabel = null) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return 0;
+  }
+
+  let cursor = 0;
+  let deletedCount = 0;
+  const workerCount = Math.min(DELETE_CONCURRENCY, items.length);
+
+  const worker = async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      const deleted = await deleteStorageObject(items[index], errors, attemptLabel);
+      if (deleted) {
+        deletedCount += 1;
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return deletedCount;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -38,6 +67,9 @@ export default async function handler(req, res) {
     const dataset = String(req.body?.dataset || "").trim();
     if (!dataset) {
       return res.status(400).json({ error: "dataset is required" });
+    }
+    if (!isDatasetVisible(dataset)) {
+      return res.status(400).json({ error: `dataset '${dataset}' is hidden` });
     }
     const progressive = Boolean(req.body?.progressive);
     const batchSize = Math.min(
@@ -65,13 +97,7 @@ export default async function handler(req, res) {
       }
 
       const batch = selected.slice(0, batchSize);
-      let deletedInBatch = 0;
-      for (const item of batch) {
-        const deleted = await deleteStorageObject(item, errors);
-        if (deleted) {
-          deletedInBatch += 1;
-        }
-      }
+      const deletedInBatch = await deleteObjectsConcurrent(batch, errors);
 
       const refreshed = await listStorageObjects();
       const remainingInDataset = refreshed.filter(
@@ -107,14 +133,8 @@ export default async function handler(req, res) {
         break;
       }
 
-      let deletedInAttempt = 0;
-      for (const item of selected) {
-        const wasDeleted = await deleteStorageObject(item, errors, attempts);
-        if (wasDeleted) {
-          deleted += 1;
-          deletedInAttempt += 1;
-        }
-      }
+      const deletedInAttempt = await deleteObjectsConcurrent(selected, errors, attempts);
+      deleted += deletedInAttempt;
 
       const refreshed = await listStorageObjects();
       remainingInDataset = refreshed.filter(

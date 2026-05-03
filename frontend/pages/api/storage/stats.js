@@ -3,6 +3,11 @@ import {
   listStorageObjects,
   readStorageJson,
 } from "../../../lib/storageServer";
+import {
+  filterVisibleObjects,
+  loadDatasetVisibility,
+  visibilityMapForBuckets,
+} from "../../../lib/datasetVisibility";
 
 const DEFAULT_ANALYTICS_ENDPOINTS = [
   process.env.ANALYTICS_SERVER_ENDPOINT,
@@ -47,10 +52,16 @@ export default async function handler(req, res) {
   }
 
   try {
-    const objects = await listStorageObjects();
-    const stats = buildStorageStats(objects);
-    const totalObjects = objects.length;
+    const allObjects = await listStorageObjects();
+    const visibleObjects = filterVisibleObjects(allObjects);
+    const stats = buildStorageStats(visibleObjects);
+    const totalObjects = visibleObjects.length;
     const warnings = [];
+    const allBuckets = Array.from(
+      new Set(allObjects.map((item) => String(item?.bucket || "").trim()).filter(Boolean))
+    ).sort((a, b) => a.localeCompare(b));
+    const visibilityPayload = loadDatasetVisibility();
+    const visibilityMap = visibilityMapForBuckets(allBuckets);
 
     // Embeddings coverage from vector index.
     try {
@@ -85,7 +96,7 @@ export default async function handler(req, res) {
 
       if (fieldNames.length > 0 && totalObjects > 0) {
         const completed = new Set();
-        const objectIDs = objects.map((item) => item.object_id).filter(Boolean);
+        const objectIDs = visibleObjects.map((item) => item.object_id).filter(Boolean);
         const chunks = chunkArray(objectIDs, 500);
         for (const objectIDsChunk of chunks) {
           const payload = await readAnalyticsJson("/annotations/completed-object-ids", {
@@ -124,6 +135,30 @@ export default async function handler(req, res) {
     if (warnings.length > 0) {
       stats.warning = warnings.join("; ");
     }
+    stats.dataset_visibility = visibilityMap;
+    stats.hidden_datasets = visibilityPayload.hidden_datasets || [];
+    const allBucketStatsByName = new Map(
+      stats.storage.bucket_stats.map((bucket) => [String(bucket.bucket), bucket])
+    );
+    for (const bucket of allBuckets) {
+      if (allBucketStatsByName.has(bucket)) continue;
+      const objectsInBucket = allObjects.filter(
+        (item) => String(item?.bucket || "").trim() === bucket
+      );
+      const bytes = objectsInBucket.reduce(
+        (sum, item) => sum + Number(item?.size_bytes || 0),
+        0
+      );
+      allBucketStatsByName.set(bucket, {
+        bucket,
+        objects: objectsInBucket.length,
+        bytes,
+        gigabytes: bytes / 1024 ** 3,
+      });
+    }
+    stats.storage.all_bucket_stats = Array.from(allBucketStatsByName.values()).sort((a, b) =>
+      String(a.bucket).localeCompare(String(b.bucket))
+    );
 
     return res.status(200).json(stats);
   } catch (error) {

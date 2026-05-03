@@ -1,14 +1,15 @@
 import os
 
 from .argoverse import *
+from .once import *
 from .waymo import *
 from .nuscenes import *
 
 DATA_DIR = "/app/data"
 
-# Available: WAYMO, ARGOVERSE
+# Available: WAYMO, ARGOVERSE, ONCE
 # Make sure that the appropriate configs are filled in.
-DATASETS = ["WAYMO", "ARGOVERSE"]
+DATASETS = ["WAYMO", "ARGOVERSE", "ONCE"]
 
 
 def _env_first(primary: str, secondary: str, default: str) -> str:

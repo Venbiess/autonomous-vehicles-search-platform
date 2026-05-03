@@ -277,9 +277,12 @@ export default function HomePageClient({
           <SystemMonitor />
         </section>
       ) : searchMode === "VLM" ? (
-        <VlmPanel onOpenJobsMonitor={() => setSearchMode("Job Monitor")} />
+        <VlmPanel />
       ) : searchMode === "ANNOTATION" ? (
-        <AnnotationPanel onOpenJobsMonitor={() => setSearchMode("Job Monitor")} />
+        <AnnotationPanel
+          onOpenJobsMonitor={() => setSearchMode("Job Monitor")}
+          onOpenStorage={() => setSearchMode("STORAGE")}
+        />
       ) : searchMode === "STORAGE" ? (
         <StoragePanel />
       ) : (

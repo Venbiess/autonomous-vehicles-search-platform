@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 
 interface AnnotationPanelProps {
   onOpenJobsMonitor: () => void;
+  onOpenStorage: () => void;
 }
 
 type ResponseType = "short_text" | "text" | "yes_no" | "number" | "category";
@@ -29,6 +30,18 @@ interface PreprocessorMethod {
   default_config?: Record<string, unknown>;
 }
 
+function isSyntheticMethod(method: Pick<PreprocessorMethod, "key" | "label">): boolean {
+  const key = String(method.key || "").trim().toLowerCase();
+  const label = String(method.label || "").trim().toLowerCase();
+  return key === "synthetic" || label.includes("synthetic");
+}
+
+function moveSyntheticToEnd(methods: PreprocessorMethod[]): PreprocessorMethod[] {
+  const regular = methods.filter((item) => !isSyntheticMethod(item));
+  const synthetic = methods.filter((item) => isSyntheticMethod(item));
+  return [...regular, ...synthetic];
+}
+
 interface WaymoAuthStartResponse {
   session_id?: string;
   auth_url?: string;
@@ -46,6 +59,15 @@ interface WaymoAuthStatusResponse {
 interface PendingInstallPayload {
   datasets: string[];
   configs: Record<string, Record<string, unknown>>;
+}
+
+interface LocalUploadFormState {
+  bucket: string;
+  datasetType: string;
+  cameraName: string;
+  timestamp: string;
+  sourceLink: string;
+  objectKey: string;
 }
 
 const RESPONSE_TYPE_OPTIONS: Array<{
@@ -81,11 +103,12 @@ function normalizeFieldName(name: string): string {
 
 export default function AnnotationPanel({
   onOpenJobsMonitor,
+  onOpenStorage,
 }: AnnotationPanelProps) {
+  const localUploadFileInputRef = useRef<HTMLInputElement | null>(null);
   const [limit, setLimit] = useState(1000);
   const [batchSize, setBatchSize] = useState(50);
   const [stopOnError, setStopOnError] = useState(false);
-  const [dryRun, setDryRun] = useState(false);
   const [isStartingJob, setIsStartingJob] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [warningMessage, setWarningMessage] = useState<string | null>(null);
@@ -102,7 +125,6 @@ export default function AnnotationPanel({
   const [vlmMaxNewTokens, setVlmMaxNewTokens] = useState(64);
   const [isSavingVlmSchema, setIsSavingVlmSchema] = useState(false);
   const [isStartingVlmJob, setIsStartingVlmJob] = useState(false);
-  const [isClearingVlmAnnotations, setIsClearingVlmAnnotations] = useState(false);
   const [schemaDeleteDialog, setSchemaDeleteDialog] = useState<{
     fields: Array<{ name: string; prompt: string; response_type: ResponseType }>;
     removedFieldNames: string[];
@@ -112,9 +134,13 @@ export default function AnnotationPanel({
   const [vlmErrorMessage, setVlmErrorMessage] = useState<string | null>(null);
   const [showVlmJobsLink, setShowVlmJobsLink] = useState(false);
   const [sourceWarning, setSourceWarning] = useState<string | null>(null);
+  const [availableDatasets, setAvailableDatasets] = useState<string[]>([]);
+  const [embeddingDataset, setEmbeddingDataset] = useState<string>("all");
+  const [vlmDataset, setVlmDataset] = useState<string>("all");
   const [preprocessorMethods, setPreprocessorMethods] = useState<
     PreprocessorMethod[]
   >([]);
+  const [preprocessorMethodsError, setPreprocessorMethodsError] = useState<string | null>(null);
   const [installDatasets, setInstallDatasets] = useState<Record<string, boolean>>(
     {}
   );
@@ -137,6 +163,19 @@ export default function AnnotationPanel({
   const [waymoAuthError, setWaymoAuthError] = useState<string | null>(null);
   const [waymoAuthSuccess, setWaymoAuthSuccess] = useState<string | null>(null);
   const [pendingWaymoInstall, setPendingWaymoInstall] = useState<PendingInstallPayload | null>(null);
+  const [localUploadModalOpen, setLocalUploadModalOpen] = useState(false);
+  const [localUploadFile, setLocalUploadFile] = useState<File | null>(null);
+  const [isUploadingLocalImage, setIsUploadingLocalImage] = useState(false);
+  const [localUploadError, setLocalUploadError] = useState<string | null>(null);
+  const [localUploadSuccess, setLocalUploadSuccess] = useState<string | null>(null);
+  const [localUploadForm, setLocalUploadForm] = useState<LocalUploadFormState>({
+    bucket: "manual",
+    datasetType: "local_upload",
+    cameraName: "FRONT",
+    timestamp: "",
+    sourceLink: "",
+    objectKey: "",
+  });
 
   useEffect(() => {
     const loadSchema = async () => {
@@ -165,6 +204,27 @@ export default function AnnotationPanel({
       }
     };
     loadSchema();
+  }, []);
+
+  useEffect(() => {
+    const loadDatasets = async () => {
+      try {
+        const response = await axios.get("/api/storage/stats", {
+          params: { include_storage_details: 0 },
+        });
+        const rows = Array.isArray(response.data?.datasets?.rows_distribution)
+          ? response.data.datasets.rows_distribution
+          : [];
+        const datasetNames = rows
+          .map((item: any) => String(item?.dataset || "").trim())
+          .filter((name: string) => Boolean(name));
+        const unique = Array.from(new Set(datasetNames)).sort((a, b) => a.localeCompare(b));
+        setAvailableDatasets(unique);
+      } catch {
+        setAvailableDatasets([]);
+      }
+    };
+    loadDatasets();
   }, []);
 
   useEffect(() => {
@@ -198,23 +258,34 @@ export default function AnnotationPanel({
             };
           })
           .filter((item: PreprocessorMethod) => item.key && item.label);
-        setPreprocessorMethods(methods);
+        const orderedMethods = moveSyntheticToEnd(methods);
+        setPreprocessorMethods(orderedMethods);
         setInstallDatasets(
-          methods.reduce<Record<string, boolean>>((acc, item, idx) => {
-            acc[item.key] = idx === 0;
+          orderedMethods.reduce<Record<string, boolean>>((acc, item) => {
+            acc[item.key] = false;
             return acc;
           }, {})
         );
         setDatasetConfigText(
-          methods.reduce<Record<string, string>>((acc, item) => {
+          orderedMethods.reduce<Record<string, string>>((acc, item) => {
             acc[item.key] = JSON.stringify(item.default_config ?? {}, null, 2);
             return acc;
           }, {})
         );
-      } catch {
+        setPreprocessorMethodsError(null);
+      } catch (error: unknown) {
+        const message =
+          axios.isAxiosError(error) && error.response?.data?.detail
+            ? String(error.response.data.detail)
+            : axios.isAxiosError(error) && error.response?.data?.error
+              ? String(error.response.data.error)
+              : error instanceof Error
+                ? error.message
+                : "Failed to load preprocessor methods from storage API. Check storage-server logs for YAML/config parse errors.";
         setPreprocessorMethods([]);
         setInstallDatasets({});
         setDatasetConfigText({});
+        setPreprocessorMethodsError(message);
       }
     };
     loadPreprocessorMethods();
@@ -264,7 +335,7 @@ export default function AnnotationPanel({
         limit: Math.max(1, limit),
         batch_size: Math.max(1, batchSize),
         stop_on_error: stopOnError,
-        dry_run: dryRun,
+        dataset: embeddingDataset === "all" ? null : embeddingDataset,
       });
       setStatusMessage(
         `Embedding backfill started. Job ID: ${response.data.job_id}.`
@@ -415,6 +486,7 @@ export default function AnnotationPanel({
         limit: vlmBackfillLimit,
         overwrite_existing: false,
         max_new_tokens: vlmMaxNewTokens,
+        dataset: vlmDataset === "all" ? null : vlmDataset,
       });
       setVlmStatusMessage(`VLM backfill started. Job ID: ${response.data.job_id}.`);
       setShowVlmJobsLink(true);
@@ -428,34 +500,6 @@ export default function AnnotationPanel({
       setVlmErrorMessage(message);
     } finally {
       setIsStartingVlmJob(false);
-    }
-  };
-
-  const clearVlmAnnotations = async () => {
-    const confirmed = window.confirm(
-      "Delete all saved VLM annotations from the database?"
-    );
-    if (!confirmed) return;
-
-    setIsClearingVlmAnnotations(true);
-    setVlmStatusMessage(null);
-    setVlmWarningMessage(null);
-    setShowVlmJobsLink(false);
-    setVlmErrorMessage(null);
-    try {
-      const response = await axios.post("/api/vlm/clear");
-      const deletedRows = response.data?.deleted_rows ?? 0;
-      setVlmStatusMessage(`VLM annotations cleared. Deleted rows: ${deletedRows}.`);
-    } catch (error: unknown) {
-      const message =
-        axios.isAxiosError(error) && error.response?.data?.detail
-          ? error.response.data.detail
-          : error instanceof Error
-            ? error.message
-            : "Failed to clear VLM annotations";
-      setVlmErrorMessage(message);
-    } finally {
-      setIsClearingVlmAnnotations(false);
     }
   };
 
@@ -657,6 +701,109 @@ export default function AnnotationPanel({
     await executeDatasetInstall(selectedDatasets, configs, { clearPending: true });
   };
 
+  const openLocalUploadDialog = () => {
+    setLocalUploadError(null);
+    setLocalUploadSuccess(null);
+    localUploadFileInputRef.current?.click();
+  };
+
+  const handleLocalImageSelected = (event: any) => {
+    const file = event.target.files?.[0] ?? null;
+    if (!file) return;
+    setLocalUploadFile(file);
+    setLocalUploadForm((current) => ({
+      ...current,
+      objectKey: "",
+      timestamp: "",
+    }));
+    setLocalUploadModalOpen(true);
+    setLocalUploadError(null);
+    setLocalUploadSuccess(null);
+    event.target.value = "";
+  };
+
+  const buildLocalUploadObjectKey = () => {
+    const explicitKey = localUploadForm.objectKey.trim();
+    if (explicitKey) return explicitKey;
+
+    const ext = localUploadFile?.name.includes(".")
+      ? localUploadFile.name.slice(localUploadFile.name.lastIndexOf("."))
+      : ".jpg";
+    const safeDataset = (localUploadForm.datasetType.trim() || "local_upload").replace(
+      /[^a-zA-Z0-9/_-]+/g,
+      "_"
+    );
+    const safeCamera = (localUploadForm.cameraName.trim() || "FRONT").replace(
+      /[^a-zA-Z0-9_-]+/g,
+      "_"
+    );
+    const ts = localUploadForm.timestamp.trim() || String(Date.now());
+    return `${safeDataset}/${safeCamera}_${ts}${ext}`;
+  };
+
+  const submitLocalImageUpload = async () => {
+    if (!localUploadFile) {
+      setLocalUploadError("Choose an image file first.");
+      return;
+    }
+    const bucket = localUploadForm.bucket.trim();
+    if (!bucket) {
+      setLocalUploadError("Bucket is required.");
+      return;
+    }
+
+    setIsUploadingLocalImage(true);
+    setLocalUploadError(null);
+    setLocalUploadSuccess(null);
+    setInstallErrorMessage(null);
+    setInstallStatusMessage(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", localUploadFile, localUploadFile.name);
+      formData.append("bucket", bucket);
+      formData.append("key", buildLocalUploadObjectKey());
+      formData.append("content_type", localUploadFile.type || "application/octet-stream");
+      formData.append("camera_name", localUploadForm.cameraName.trim() || "FRONT");
+      if (localUploadForm.datasetType.trim()) {
+        formData.append("dataset_type", localUploadForm.datasetType.trim());
+      }
+      if (localUploadForm.timestamp.trim()) {
+        formData.append("timestamp", localUploadForm.timestamp.trim());
+      }
+      if (localUploadForm.sourceLink.trim()) {
+        formData.append("source_link", localUploadForm.sourceLink.trim());
+      }
+
+      const response = await axios.post("/api/storage/upload-local", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      const payload = response.data || {};
+      const objectId = String(payload.object_id || "").trim();
+      const storagePath = String(payload.storage_path || "").trim();
+      const summary = `Local image uploaded: ${objectId || "n/a"}${
+        storagePath ? ` (${storagePath})` : ""
+      }`;
+      setLocalUploadSuccess(summary);
+      setInstallStatusMessage(summary);
+      setShowInstallJobsLink(false);
+      setLocalUploadModalOpen(false);
+      setLocalUploadFile(null);
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && error.response?.data?.error
+          ? String(error.response.data.error)
+          : axios.isAxiosError(error) && error.response?.data?.detail
+            ? String(error.response.data.detail)
+            : error instanceof Error
+              ? error.message
+              : "Failed to upload local image";
+      setLocalUploadError(message);
+    } finally {
+      setIsUploadingLocalImage(false);
+    }
+  };
+
   return (
     <section className="px-6 pt-10 pb-16">
       <div className="mx-auto flex max-w-5xl flex-col gap-8">
@@ -672,29 +819,13 @@ export default function AnnotationPanel({
             </p>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-3">
-            {preprocessorMethods.map((option) => (
-              <label
-                key={option.key}
-                className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-700"
-              >
-                <input
-                  type="checkbox"
-                  checked={installDatasets[option.key]}
-                  onChange={(event) =>
-                    setInstallDatasets((current) => ({
-                      ...current,
-                      [option.key]: event.target.checked,
-                    }))
-                  }
-                  className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-                />
-                {option.label}
-              </label>
-            ))}
-          </div>
+          {preprocessorMethodsError && (
+            <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+              {preprocessorMethodsError}
+            </div>
+          )}
 
-          {preprocessorMethods.length === 0 && (
+          {!preprocessorMethodsError && preprocessorMethods.length === 0 && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
               No preprocessor methods were returned by storage API.
             </div>
@@ -710,20 +841,36 @@ export default function AnnotationPanel({
                     : "border-slate-200 bg-slate-50"
                 }`}
               >
-                <div className="mb-2 text-sm font-semibold text-slate-800">
-                  {option.label} config (JSON)
-                </div>
+                <label className="mb-3 flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={installDatasets[option.key]}
+                    onChange={(event) =>
+                      setInstallDatasets((current) => ({
+                        ...current,
+                        [option.key]: event.target.checked,
+                      }))
+                    }
+                    className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                  />
+                  <span>{option.label}</span>
+                </label>
+                <div className="mb-2 text-sm font-semibold text-slate-800">Config (JSON)</div>
                 {option.description && (
                   <div className="mb-2 text-xs text-slate-500">{option.description}</div>
                 )}
                 <textarea
                   value={datasetConfigText[option.key] ?? "{}"}
-                  onChange={(event) =>
+                  onChange={(event) => {
                     setDatasetConfigText((current) => ({
                       ...current,
                       [option.key]: event.target.value,
-                    }))
-                  }
+                    }));
+                    setInstallDatasets((current) => ({
+                      ...current,
+                      [option.key]: true,
+                    }));
+                  }}
                   rows={10}
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 outline-none focus:border-sky-500"
                 />
@@ -732,6 +879,13 @@ export default function AnnotationPanel({
           </div>
 
           <div className="mt-6 flex flex-wrap gap-3">
+            <input
+              ref={localUploadFileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleLocalImageSelected}
+              className="hidden"
+            />
             <button
               type="button"
               onClick={startDatasetInstall}
@@ -746,6 +900,26 @@ export default function AnnotationPanel({
               className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
               Open Job Monitor
+            </button>
+            <button
+              type="button"
+              onClick={openLocalUploadDialog}
+              className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+              title="Upload local image"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="h-4 w-4"
+                aria-hidden="true"
+              >
+                <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.9-9.9a4 4 0 0 1 5.66 5.66l-10.6 10.6a2 2 0 0 1-2.83-2.83l9.2-9.19" />
+              </svg>
             </button>
           </div>
 
@@ -799,6 +973,146 @@ export default function AnnotationPanel({
           )}
         </div>
 
+        {localUploadModalOpen && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/45 px-4">
+            <div className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+              <div className="mb-4">
+                <h3 className="text-lg font-semibold text-slate-900">Upload Local Image</h3>
+                <p className="mt-1 text-sm text-slate-600">
+                  Set storage parameters for selected file:{" "}
+                  <span className="font-semibold">{localUploadFile?.name || "unknown"}</span>
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="flex flex-col gap-1 text-sm text-slate-600">
+                  Bucket
+                  <input
+                    value={localUploadForm.bucket}
+                    onChange={(event) =>
+                      setLocalUploadForm((current) => ({
+                        ...current,
+                        bucket: event.target.value,
+                      }))
+                    }
+                    className="rounded-xl border border-slate-300 px-3 py-2 text-slate-900 outline-none focus:border-sky-500"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-sm text-slate-600">
+                  Camera
+                  <select
+                    value={localUploadForm.cameraName}
+                    onChange={(event) =>
+                      setLocalUploadForm((current) => ({
+                        ...current,
+                        cameraName: event.target.value,
+                      }))
+                    }
+                    className="rounded-xl border border-slate-300 px-3 py-2 text-slate-900 outline-none focus:border-sky-500"
+                  >
+                    <option value="FRONT">FRONT</option>
+                    <option value="FRONT_LEFT">FRONT_LEFT</option>
+                    <option value="FRONT_RIGHT">FRONT_RIGHT</option>
+                    <option value="REAR">REAR</option>
+                    <option value="BACK_LEFT">BACK_LEFT</option>
+                    <option value="BACK_RIGHT">BACK_RIGHT</option>
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-sm text-slate-600">
+                  Dataset type
+                  <input
+                    value={localUploadForm.datasetType}
+                    onChange={(event) =>
+                      setLocalUploadForm((current) => ({
+                        ...current,
+                        datasetType: event.target.value,
+                      }))
+                    }
+                    className="rounded-xl border border-slate-300 px-3 py-2 text-slate-900 outline-none focus:border-sky-500"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-sm text-slate-600">
+                  Timestamp (optional)
+                  <input
+                    value={localUploadForm.timestamp}
+                    onChange={(event) =>
+                      setLocalUploadForm((current) => ({
+                        ...current,
+                        timestamp: event.target.value,
+                      }))
+                    }
+                    placeholder="e.g. 1714637835123"
+                    className="rounded-xl border border-slate-300 px-3 py-2 text-slate-900 outline-none focus:border-sky-500"
+                  />
+                </label>
+              </div>
+
+              <div className="mt-3 grid gap-3">
+                <label className="flex flex-col gap-1 text-sm text-slate-600">
+                  Storage key (optional override)
+                  <input
+                    value={localUploadForm.objectKey}
+                    onChange={(event) =>
+                      setLocalUploadForm((current) => ({
+                        ...current,
+                        objectKey: event.target.value,
+                      }))
+                    }
+                    placeholder="local_upload/FRONT_1714637835123.jpg"
+                    className="rounded-xl border border-slate-300 px-3 py-2 text-slate-900 outline-none focus:border-sky-500"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-sm text-slate-600">
+                  Source link (optional)
+                  <input
+                    value={localUploadForm.sourceLink}
+                    onChange={(event) =>
+                      setLocalUploadForm((current) => ({
+                        ...current,
+                        sourceLink: event.target.value,
+                      }))
+                    }
+                    placeholder="local://my-dataset/path/image.jpg"
+                    className="rounded-xl border border-slate-300 px-3 py-2 text-slate-900 outline-none focus:border-sky-500"
+                  />
+                </label>
+              </div>
+
+              {localUploadError && (
+                <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+                  {localUploadError}
+                </div>
+              )}
+              {localUploadSuccess && (
+                <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+                  {localUploadSuccess}
+                </div>
+              )}
+
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isUploadingLocalImage) return;
+                    setLocalUploadModalOpen(false);
+                  }}
+                  className="rounded-full border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={submitLocalImageUpload}
+                  disabled={isUploadingLocalImage}
+                  className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isUploadingLocalImage ? "Uploading..." : "Upload"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {sourceWarning && (
           <div className="rounded-3xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 shadow-sm">
             {sourceWarning}
@@ -840,6 +1154,22 @@ export default function AnnotationPanel({
               />
             </label>
 
+            <label className="flex flex-col gap-1 text-sm text-slate-600">
+              Dataset
+              <select
+                value={embeddingDataset}
+                onChange={(event) => setEmbeddingDataset(event.target.value)}
+                className="rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
+              >
+                <option value="all">All datasets</option>
+                {availableDatasets.map((dataset) => (
+                  <option key={`embed-${dataset}`} value={dataset}>
+                    {dataset}
+                  </option>
+                ))}
+              </select>
+            </label>
+
             <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
               <input
                 type="checkbox"
@@ -848,16 +1178,6 @@ export default function AnnotationPanel({
                 className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
               />
               Stop on error
-            </label>
-
-            <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-              <input
-                type="checkbox"
-                checked={dryRun}
-                onChange={(event) => setDryRun(event.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-              />
-              Dry run
             </label>
           </div>
 
@@ -876,6 +1196,13 @@ export default function AnnotationPanel({
               className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
               Open Job Monitor
+            </button>
+            <button
+              type="button"
+              onClick={onOpenStorage}
+              className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+            >
+              Go to Storage
             </button>
           </div>
 
@@ -994,16 +1321,16 @@ export default function AnnotationPanel({
         </div>
 
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="mb-5 flex flex-wrap items-end gap-4">
-            <div>
-              <h2 className="text-2xl font-semibold text-slate-900">
-                Analyze Scenes
-              </h2>
-              <p className="mt-2 text-sm text-slate-600">
-                Run VLM over stored scenes and save generated field values.
-              </p>
-            </div>
-            <div className="ml-auto flex flex-wrap gap-3">
+          <div className="mb-5">
+            <h2 className="text-2xl font-semibold text-slate-900">
+              VLM Annotation
+            </h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Start a background job that computes and saves VLM annotations for
+              scenes in the annotation storage.
+            </p>
+          </div>
+          <div className="mb-6 flex flex-wrap items-end gap-3">
               <label className="flex flex-col gap-1 text-sm text-slate-600">
                 Limit
                 <input
@@ -1031,30 +1358,45 @@ export default function AnnotationPanel({
                   className="w-32 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
                 />
               </label>
-              <button
-                type="button"
-                onClick={startVlmBackfill}
-                disabled={isStartingVlmJob || vlmSavedFields.length === 0}
-                className="rounded-full bg-emerald-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isStartingVlmJob ? "Starting..." : "Start VLM backfill"}
-              </button>
-              <button
-                type="button"
-                onClick={clearVlmAnnotations}
-                disabled={isClearingVlmAnnotations}
-                className="rounded-full bg-rose-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isClearingVlmAnnotations ? "Clearing..." : "Clear VLM annotations"}
-              </button>
-              <button
-                type="button"
-                onClick={onOpenJobsMonitor}
-                className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
-              >
-                Open Job Monitor
-              </button>
-            </div>
+              <label className="flex flex-col gap-1 text-sm text-slate-600">
+                Dataset
+                <select
+                  value={vlmDataset}
+                  onChange={(event) => setVlmDataset(event.target.value)}
+                  className="w-44 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
+                >
+                  <option value="all">All datasets</option>
+                  {availableDatasets.map((dataset) => (
+                    <option key={`vlm-${dataset}`} value={dataset}>
+                      {dataset}
+                    </option>
+                  ))}
+                </select>
+              </label>
+          </div>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={startVlmBackfill}
+              disabled={isStartingVlmJob || vlmSavedFields.length === 0}
+              className="rounded-full bg-emerald-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isStartingVlmJob ? "Starting..." : "Start VLM backfill"}
+            </button>
+            <button
+              type="button"
+              onClick={onOpenJobsMonitor}
+              className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+            >
+              Go to Job Monitor
+            </button>
+            <button
+              type="button"
+              onClick={onOpenStorage}
+              className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+            >
+              Go to Storage
+            </button>
           </div>
 
           {vlmStatusMessage && (

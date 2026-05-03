@@ -4,7 +4,10 @@ import math
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .argoverse_preprocessor import ArgoversePreprocessor
+from .bdd100k_preprocessor import BDD100KPreprocessor
+from .drivingdojo_preprocessor import DrivingDojoPreprocessor
 from .nuimages_preprocessor import NuImagesPreprocessor
+from .once_preprocessor import OncePreprocessor
 from .synthetic_preprocessor import SyntheticRoadPreprocessor
 from .waymo_preprocessor import WaymoPreprocessor
 
@@ -78,6 +81,7 @@ def _build_preprocessor(
     cfg: Dict[str, Any],
     early_log_callback: Optional[Callable[[str], None]] = None,
     cancel_requested_callback: Optional[Callable[[], bool]] = None,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> Tuple[Any, str, int]:
     key = method_key.strip().lower()
     if key == "synthetic":
@@ -139,6 +143,152 @@ def _build_preprocessor(
         planned_total = len(preprocessor)
         return preprocessor, bucket, planned_total
 
+    if key == "once":
+        keep_local_images = _to_bool(cfg.get("keep_local_images", False), False)
+        download_splits = _to_str_list(cfg.get("download_splits"))
+        def _once_download_progress(payload: Dict[str, Any]) -> None:
+            if not progress_callback:
+                return
+            progress_callback(
+                {
+                    "event": "download",
+                    "current_scene_index": int(payload.get("file_index", 0) or 0),
+                    "total_planned": int(payload.get("total_files", 1) or 1),
+                    "current_scene_tasks_completed": int(payload.get("downloaded_bytes", 0) or 0),
+                    "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                    "download_label": str(payload.get("download_label", "") or ""),
+                }
+            )
+
+        def _once_extract_progress(payload: Dict[str, Any]) -> None:
+            if not progress_callback:
+                return
+            progress_callback(
+                {
+                    "event": "extract",
+                    "current_scene_index": int(payload.get("file_index", 0) or 0),
+                    "total_planned": int(payload.get("total_files", 1) or 1),
+                    "file_name": str(payload.get("file_name", "") or ""),
+                    "current_scene_tasks_completed": int(payload.get("extracted_bytes", 0) or 0),
+                    "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                    "extracted_files": int(payload.get("extracted_files", 0) or 0),
+                }
+            )
+        def _once_download_detail_progress(payload: Dict[str, Any]) -> None:
+            if not progress_callback:
+                return
+            progress_callback(
+                {
+                    "event": "download_detail",
+                    "current_scene_index": int(payload.get("file_index", 0) or 0),
+                    "total_planned": int(payload.get("total_files", 1) or 1),
+                    "file_name": str(payload.get("file_name", "") or ""),
+                    "current_scene_tasks_completed": int(payload.get("downloaded_bytes", 0) or 0),
+                    "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                }
+            )
+        preprocessor = OncePreprocessor(
+            cameras=_to_str_list(cfg.get("cameras"), ["FRONT"]),
+            resample_seconds=_to_float(cfg.get("resample_seconds", cfg.get("step_sec", 5.0)), 5.0),
+            fps=max(1, _to_int(cfg.get("fps", 10), 10)),
+            tar_dir=str(cfg.get("tar_dir", "")).strip() or None,
+            extract_dir=str(cfg.get("extract_dir", "")).strip() or None,
+            out_dir=str(cfg.get("out_dir", "")).strip() or None,
+            download_splits=download_splits or None,
+            use_local_archives=bool(cfg.get("use_local_archives", False)),
+            download_from_gdrive=bool(cfg.get("download_from_gdrive", True)),
+            remove_local_images=not keep_local_images,
+            install_log_callback=early_log_callback,
+            download_progress_callback=_once_download_progress,
+            download_detail_progress_callback=_once_download_detail_progress,
+            extract_progress_callback=_once_extract_progress,
+            cancel_requested_callback=cancel_requested_callback,
+        )
+        bucket = str(cfg.get("bucket", "once")).strip() or "once"
+        planned_total = len(preprocessor)
+        return preprocessor, bucket, planned_total
+
+    if key == "bdd100k":
+        keep_local_images = _to_bool(cfg.get("keep_local_images", False), False)
+        preprocessor = BDD100KPreprocessor(
+            splits=_to_str_list(cfg.get("splits"), ["train", "val", "test"]),
+            resample_seconds=_to_float(cfg.get("resample_seconds", 5.0), 5.0),
+            fps=max(1, _to_int(cfg.get("fps", 10), 10)),
+            zip_dir=str(cfg.get("zip_dir", "")).strip() or None,
+            extract_dir=str(cfg.get("extract_dir", "")).strip() or None,
+            out_dir=str(cfg.get("out_dir", "")).strip() or None,
+            extract_archives=_to_bool(cfg.get("extract_archives", True), True),
+            remove_local_images=not keep_local_images,
+            install_log_callback=early_log_callback,
+            extract_progress_callback=(
+                (lambda payload: progress_callback(
+                    {
+                        "event": "extract",
+                        "current_scene_index": int(payload.get("file_index", 0) or 0),
+                        "total_planned": int(payload.get("total_files", 1) or 1),
+                        "file_name": str(payload.get("file_name", "") or ""),
+                        "current_scene_tasks_completed": int(payload.get("extracted_bytes", 0) or 0),
+                        "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                        "extracted_files": int(payload.get("extracted_files", 0) or 0),
+                    }
+                )) if progress_callback else None
+            ),
+            cancel_requested_callback=cancel_requested_callback,
+        )
+        bucket = str(cfg.get("bucket", "bdd100k")).strip() or "bdd100k"
+        planned_total = len(preprocessor)
+        return preprocessor, bucket, planned_total
+
+    if key == "drivingdojo":
+        keep_local_images = _to_bool(cfg.get("keep_local_images", False), False)
+        preprocessor = DrivingDojoPreprocessor(
+            resample_seconds=_to_float(cfg.get("resample_seconds", 5.0), 5.0),
+            fps=max(1, _to_int(cfg.get("fps", 10), 10)),
+            camera_name=str(cfg.get("camera_name", "FRONT")).strip() or "FRONT",
+            repo_id=str(cfg.get("repo_id", "Yuqi1997/DrivingDojo")).strip() or "Yuqi1997/DrivingDojo",
+            source_dir=str(cfg.get("source_dir", "")).strip() or None,
+            videos_dir=str(cfg.get("videos_dir", "")).strip() or None,
+            extract_dir=str(cfg.get("extract_dir", "")).strip() or None,
+            out_dir=str(cfg.get("out_dir", "")).strip() or None,
+            allow_patterns=_to_str_list(cfg.get("allow_patterns"), ["videos/*"]),
+            download_from_hf=_to_bool(cfg.get("download_from_hf", True), True),
+            extract_archives=_to_bool(cfg.get("extract_archives", True), True),
+            hf_token=str(cfg.get("hf_token", "")).strip() or None,
+            max_workers=max(1, _to_int(cfg.get("max_workers", 4), 4)),
+            limit_videos=_to_optional_int(cfg.get("limit_videos")),
+            remove_local_images=not keep_local_images,
+            install_log_callback=early_log_callback,
+            download_progress_callback=(
+                (lambda payload: progress_callback(
+                    {
+                        "event": "download",
+                        "current_scene_index": int(payload.get("file_index", 0) or 0),
+                        "total_planned": int(payload.get("total_files", 1) or 1),
+                        "current_scene_tasks_completed": int(payload.get("downloaded_bytes", 0) or 0),
+                        "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                        "download_label": str(payload.get("download_label", "") or ""),
+                    }
+                )) if progress_callback else None
+            ),
+            extract_progress_callback=(
+                (lambda payload: progress_callback(
+                    {
+                        "event": "extract",
+                        "current_scene_index": int(payload.get("file_index", 0) or 0),
+                        "total_planned": int(payload.get("total_files", 1) or 1),
+                        "file_name": str(payload.get("file_name", "") or ""),
+                        "current_scene_tasks_completed": int(payload.get("extracted_bytes", 0) or 0),
+                        "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                        "extracted_files": int(payload.get("extracted_files", 0) or 0),
+                    }
+                )) if progress_callback else None
+            ),
+            cancel_requested_callback=cancel_requested_callback,
+        )
+        bucket = str(cfg.get("bucket", "drivingdojo")).strip() or "drivingdojo"
+        planned_total = len(preprocessor)
+        return preprocessor, bucket, planned_total
+
     raise ValueError(f"Unsupported preprocessor method: {method_key}")
 
 
@@ -164,6 +314,7 @@ def run_preprocessor_method(
         cfg,
         early_log_callback=_emit_early_log,
         cancel_requested_callback=cancel_requested_callback,
+        progress_callback=progress_callback,
     )
 
     if progress_callback:
@@ -185,6 +336,7 @@ def run_preprocessor_method(
                     "total_planned": int(payload.get("total_files", planned_total) or planned_total),
                     "current_scene_tasks_completed": int(payload.get("downloaded_bytes", 0) or 0),
                     "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                    "download_label": str(payload.get("download_label", "") or ""),
                 }
             )
 

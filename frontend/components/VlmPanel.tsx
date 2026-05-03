@@ -129,31 +129,20 @@ function normalizeFieldName(name: string): string {
   return /^[0-9]/.test(normalized) ? `field_${normalized}` : normalized;
 }
 
-interface VlmPanelProps {
-  onOpenJobsMonitor: () => void;
-}
-
-export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
+export default function VlmPanel() {
   const [draftFields, setDraftFields] = useState<FieldDraft[]>([createFieldDraft()]);
   const [savedFields, setSavedFields] = useState<SavedField[]>([]);
   const [filters, setFilters] = useState<Record<string, FilterState>>({});
   const [images, setImages] = useState<ImageResult[]>([]);
   const [schemaStatusMessage, setSchemaStatusMessage] = useState<string | null>(null);
-  const [analyzeStatusMessage, setAnalyzeStatusMessage] = useState<string | null>(null);
-  const [analyzeWarning, setAnalyzeWarning] = useState(false);
-  const [showAnalyzeJobsLink, setShowAnalyzeJobsLink] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
-  const [isStartingJob, setIsStartingJob] = useState(false);
-  const [isClearingAnnotations, setIsClearingAnnotations] = useState(false);
   const [schemaDeleteDialog, setSchemaDeleteDialog] = useState<{
     fields: Array<{ name: string; prompt: string; response_type: ResponseType }>;
     removedFieldNames: string[];
   } | null>(null);
-  const [backfillLimit, setBackfillLimit] = useState(200);
-  const [maxNewTokens, setMaxNewTokens] = useState(64);
   const [currentPage, setCurrentPage] = useState(1);
   const [imagesPerPage, setImagesPerPage] = useState(9);
   const [sourceWarning, setSourceWarning] = useState<string | null>(null);
@@ -256,9 +245,6 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
 
     if (fields.length === 0) {
       setSchemaStatusMessage(null);
-      setAnalyzeStatusMessage(null);
-      setAnalyzeWarning(false);
-      setShowAnalyzeJobsLink(false);
       setErrorMessage("Add at least one field with a prompt.");
       return;
     }
@@ -287,9 +273,6 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
     setSchemaDeleteDialog(null);
     setIsSaving(true);
     setSchemaStatusMessage(null);
-    setAnalyzeStatusMessage(null);
-    setAnalyzeWarning(false);
-    setShowAnalyzeJobsLink(false);
     setErrorMessage(null);
     setStatusMessage(null);
     try {
@@ -330,92 +313,6 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
     }
   };
 
-  const startBackfill = async () => {
-    if (savedFields.length === 0) {
-      setAnalyzeStatusMessage(null);
-      setAnalyzeWarning(false);
-      setShowAnalyzeJobsLink(false);
-      setErrorMessage("Save VLM fields before starting analysis.");
-      return;
-    }
-
-    setIsStartingJob(true);
-    setAnalyzeStatusMessage(null);
-    setAnalyzeWarning(false);
-    setShowAnalyzeJobsLink(false);
-    setErrorMessage(null);
-    setStatusMessage(null);
-    try {
-      const statsResponse = await axios.get("/api/storage/stats", {
-        params: { include_storage_details: 0 },
-      });
-      const pendingRows = Number(statsResponse.data?.vlm?.pending_rows ?? 0);
-      if (pendingRows <= 0) {
-        setAnalyzeStatusMessage(
-          "Все сцены уже размечены для VLM. Новая backfill-джоба не требуется."
-        );
-        setAnalyzeWarning(true);
-        return;
-      }
-
-      const response = await axios.post("/api/vlm/backfill", {
-        field_names: savedFields.map((field) => field.field_name),
-        limit: backfillLimit,
-        overwrite_existing: false,
-        max_new_tokens: maxNewTokens,
-      });
-      setAnalyzeStatusMessage(`VLM backfill started. Job ID: ${response.data.job_id}. `);
-      setAnalyzeWarning(false);
-      setShowAnalyzeJobsLink(true);
-    } catch (error: unknown) {
-      const message =
-        axios.isAxiosError(error) && error.response?.data?.detail
-          ? error.response.data.detail
-          : error instanceof Error
-            ? error.message
-            : "Failed to start VLM backfill";
-      setErrorMessage(message);
-    } finally {
-      setIsStartingJob(false);
-    }
-  };
-
-  const clearAnnotations = async () => {
-    const confirmed = window.confirm(
-      "Delete all saved VLM annotations from the database?"
-    );
-    if (!confirmed) {
-      return;
-    }
-
-    setIsClearingAnnotations(true);
-    setAnalyzeStatusMessage(null);
-    setAnalyzeWarning(false);
-    setShowAnalyzeJobsLink(false);
-    setErrorMessage(null);
-    setStatusMessage(null);
-    try {
-      const response = await axios.post("/api/vlm/clear");
-      const deletedRows = response.data?.deleted_rows ?? 0;
-      setImages([]);
-      setCurrentPage(1);
-      setAnalyzeStatusMessage(
-        `VLM annotations cleared. Deleted rows: ${deletedRows}.`
-      );
-      setAnalyzeWarning(false);
-    } catch (error: unknown) {
-      const message =
-        axios.isAxiosError(error) && error.response?.data?.detail
-          ? error.response.data.detail
-          : error instanceof Error
-            ? error.message
-            : "Failed to clear VLM annotations";
-      setErrorMessage(message);
-    } finally {
-      setIsClearingAnnotations(false);
-    }
-  };
-
   const runFilterSearch = async () => {
     const activeFilters = savedFields
       .map((field) => ({
@@ -434,8 +331,6 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
     }
 
     setIsSearching(true);
-    setAnalyzeStatusMessage(null);
-    setShowAnalyzeJobsLink(false);
     setErrorMessage(null);
     setStatusMessage(null);
     try {
@@ -551,86 +446,6 @@ export default function VlmPanel({ onOpenJobsMonitor }: VlmPanelProps) {
           {schemaStatusMessage && (
             <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
               {schemaStatusMessage}
-            </div>
-          )}
-        </div>
-
-        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="mb-5 flex flex-wrap items-end gap-4">
-            <div>
-              <h2 className="text-2xl font-semibold text-slate-900">
-                Analyze Scenes
-              </h2>
-              <p className="mt-2 text-sm text-slate-600">
-                Run VLM over stored scenes and save generated field values.
-              </p>
-            </div>
-            <div className="ml-auto flex flex-wrap gap-3">
-              <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Limit
-                <input
-                  type="number"
-                  min={1}
-                  value={backfillLimit}
-                  onChange={(event) => setBackfillLimit(Number(event.target.value) || 1)}
-                  className="w-28 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Max tokens
-                <input
-                  type="number"
-                  min={1}
-                  max={512}
-                  value={maxNewTokens}
-                  onChange={(event) =>
-                    setMaxNewTokens(
-                      Math.max(1, Math.min(512, Number(event.target.value) || 1))
-                    )
-                  }
-                  className="w-32 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={startBackfill}
-                disabled={isStartingJob || savedFields.length === 0}
-                className="rounded-full bg-emerald-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isStartingJob ? "Starting..." : "Start VLM backfill"}
-              </button>
-              <button
-                type="button"
-                onClick={clearAnnotations}
-                disabled={isClearingAnnotations}
-                className="rounded-full bg-rose-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isClearingAnnotations ? "Clearing..." : "Clear VLM annotations"}
-              </button>
-            </div>
-          </div>
-
-          {analyzeStatusMessage && (
-            <div
-              className={`mt-5 rounded-xl px-4 py-3 text-sm font-semibold ${
-                analyzeWarning
-                  ? "border border-amber-200 bg-amber-50 text-amber-800"
-                  : "border border-emerald-200 bg-emerald-50 text-emerald-800"
-              }`}
-            >
-              <span>{analyzeStatusMessage}</span>
-              {showAnalyzeJobsLink && (
-                <>
-                  {" "}
-                  <button
-                    type="button"
-                    onClick={onOpenJobsMonitor}
-                    className="font-bold text-teal-600 underline decoration-teal-500 underline-offset-2 transition hover:text-teal-700"
-                  >
-                    Go to Job Monitor
-                  </button>
-                </>
-              )}
             </div>
           )}
         </div>

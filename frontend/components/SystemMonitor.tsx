@@ -27,6 +27,8 @@ interface SystemInfo {
 interface Job {
   job_id: string;
   job_type: string;
+  dataset?: string;
+  job_config?: Record<string, unknown>;
   status: "running" | "success" | "error" | "cancelled";
   cancel_requested?: boolean;
   progress: number;
@@ -45,6 +47,7 @@ interface Job {
   extract_scene_index?: number;
   extract_file_name?: string;
   extract_files_done?: number;
+  download_label?: string;
   install_phase?: string;
   embed_on_install?: boolean;
   embedding_tasks_completed?: number;
@@ -64,6 +67,11 @@ interface LogViewerState {
   source?: "job" | "error";
 }
 
+interface ConfigViewerState {
+  title: string;
+  content: string;
+}
+
 interface WaymoAuthStartResponse {
   session_id?: string;
   auth_url?: string;
@@ -78,8 +86,10 @@ export default function SystemMonitor() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
+  const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
   const [logViewer, setLogViewer] = useState<LogViewerState | null>(null);
+  const [configViewer, setConfigViewer] = useState<ConfigViewerState | null>(null);
   const [cancelDialogJob, setCancelDialogJob] = useState<Job | null>(null);
   const [waymoAuthModalOpen, setWaymoAuthModalOpen] = useState(false);
   const [waymoAuthSessionId, setWaymoAuthSessionId] = useState<string | null>(null);
@@ -215,6 +225,8 @@ export default function SystemMonitor() {
     if (jobType === "install_waymo") return "Install Waymo";
     if (jobType === "install_argoverse") return "Install Argoverse";
     if (jobType === "install_nuimages") return "Install NuImages (nuScenes)";
+    if (jobType === "install_once") return "Install ONCE";
+    if (jobType === "install_drivingdojo") return "Install DrivingDojo";
     if (jobType === "install_nuscenes") return "Install NuScenes";
     if (jobType.startsWith("install_")) {
       const suffix = jobType.slice("install_".length);
@@ -303,6 +315,27 @@ export default function SystemMonitor() {
       alert(`Ошибка: ${message}`);
     } finally {
       setCancellingJobId(null);
+    }
+  };
+
+  const executeRetryJob = async (job: Job) => {
+    try {
+      setRetryingJobId(job.job_id);
+      await axios.post("/api/jobs/retry", { job_id: job.job_id });
+      await fetchJobs();
+    } catch (err) {
+      const detail = axios.isAxiosError(err) ? err.response?.data : null;
+      const message =
+        typeof detail?.detail === "string"
+          ? detail.detail
+          : typeof detail?.error === "string"
+            ? detail.error
+            : err instanceof Error
+              ? err.message
+              : "Не удалось перезапустить джобу";
+      alert(`Ошибка: ${message}`);
+    } finally {
+      setRetryingJobId(null);
     }
   };
 
@@ -515,7 +548,7 @@ export default function SystemMonitor() {
   ]);
 
   useEffect(() => {
-    if (!logViewer && !cancelDialogJob) {
+    if (!logViewer && !configViewer && !cancelDialogJob) {
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
@@ -526,6 +559,10 @@ export default function SystemMonitor() {
         setLogViewer(null);
         return;
       }
+      if (configViewer) {
+        setConfigViewer(null);
+        return;
+      }
       if (cancelDialogJob) {
         setCancelDialogJob(null);
       }
@@ -534,7 +571,7 @@ export default function SystemMonitor() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [logViewer, cancelDialogJob]);
+  }, [logViewer, configViewer, cancelDialogJob]);
 
   if (isLoading && !systemInfo) {
     return (
@@ -762,19 +799,26 @@ export default function SystemMonitor() {
                     : `VLM calls: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
                   const currentSceneIndex = job.current_scene_index ?? 0;
                   const timing = getJobTiming(job);
-                  const installFileLabel = `Download: ${formatDataSize(
+                  const downloadLabelPrefix = String(job.download_label ?? "").trim() || "Download";
+                  const installFileLabel = `${downloadLabelPrefix}: ${formatDataSize(
                     currentSceneTasksCompleted
                   )} / ${formatDataSize(currentSceneTasksTotal)}`;
                   const isNuimagesInstallJob =
                     job.job_type === "install_nuimages" || job.job_type === "install_nuscenes";
+                  const isBddInstallJob = job.job_type === "install_bdd100k";
+                  const isOnceInstallJob =
+                    job.job_type === "install_once" || String(job.dataset ?? "").toLowerCase() === "once";
                   const installArchiveLabel = `Archive: ${formatDataSize(
                     currentSceneTasksCompleted
                   )} / ${formatDataSize(currentSceneTasksTotal)}`;
                   const installUploadLabel = `Upload: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal} images`;
+                  const installSplitLabel = `Split: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
                   const installSecondaryLabel =
                     installPhase === "upload"
                       ? installUploadLabel
-                      : isNuimagesInstallJob
+                      : installPhase === "download" && isOnceInstallJob
+                        ? installSplitLabel
+                      : isNuimagesInstallJob || isBddInstallJob
                         ? installArchiveLabel
                         : installFileLabel;
                   const extractTasksCompleted = job.extract_scene_tasks_completed ?? 0;
@@ -786,7 +830,9 @@ export default function SystemMonitor() {
                       : 0;
                   const extractFileName = String(job.extract_file_name ?? "").trim();
                   const extractFilesDone = job.extract_files_done ?? 0;
-                  const extractLabelBase = `Extract: ${formatDataSize(
+                  const extractLabelPrefix =
+                    isOnceInstallJob && installPhase === "download" ? "Download file" : "Extract";
+                  const extractLabelBase = `${extractLabelPrefix}: ${formatDataSize(
                     extractTasksCompleted
                   )} / ${formatDataSize(extractTasksTotal)}`;
                   const extractLabel = extractFileName
@@ -807,17 +853,46 @@ export default function SystemMonitor() {
                   const showExtractProgress =
                     job.status === "running" &&
                     isInstallDatasetJob &&
-                    extractTasksTotal > 0;
+                    extractTasksTotal > 0 &&
+                    (installPhase === "extract" || (isOnceInstallJob && installPhase === "download"));
+                  const extractRightLabel =
+                    isOnceInstallJob && installPhase === "download"
+                      ? `File ${Math.min(extractSceneIndex, plannedTotal || extractSceneIndex)}`
+                      : isBddInstallJob
+                        ? `Archive ${Math.min(
+                            extractSceneIndex,
+                            plannedTotal || extractSceneIndex
+                          )} · files ${extractFilesDone}`
+                      : `Part ${Math.min(
+                          extractSceneIndex,
+                          plannedTotal || extractSceneIndex
+                        )} · files ${extractFilesDone}`;
                   const hasErrorDetails = job.status === "error" && (job.errors?.length ?? 0) > 0;
                   const hasJobLogData =
                     Array.isArray(job.job_log) && job.job_log.length > 0;
                   const canOpenJobLogOnSuccess = job.status === "success" && hasJobLogData;
                   const canOpenJobLogOnRunning = job.status === "running" && hasJobLogData;
+                  const canOpenJobLogOnCancelled = job.status === "cancelled" && hasJobLogData;
+                  const canRetryJob = job.status === "error";
                   
                   return (
                     <tr key={job.job_id} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {job.job_id.substring(0, 8)}...
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const config = job.job_config && typeof job.job_config === "object"
+                              ? job.job_config
+                              : {};
+                            setConfigViewer({
+                              title: `Job config for ${formatJobTypeLabel(job.job_type)}`,
+                              content: JSON.stringify(config, null, 2),
+                            });
+                          }}
+                          className="font-semibold text-sky-700 underline decoration-sky-600 underline-offset-2 hover:text-sky-800"
+                        >
+                          {job.job_id.substring(0, 8)}...
+                        </button>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {formatJobTypeLabel(job.job_type)}
@@ -864,6 +939,11 @@ export default function SystemMonitor() {
                                             currentSceneIndex,
                                             plannedTotal || currentSceneIndex
                                           )}`
+                                        : isBddInstallJob
+                                          ? `Archive ${Math.min(
+                                              currentSceneIndex,
+                                              plannedTotal || currentSceneIndex
+                                            )}`
                                         : `File ${Math.min(
                                             currentSceneIndex,
                                             plannedTotal || currentSceneIndex
@@ -912,10 +992,7 @@ export default function SystemMonitor() {
                               <div className="flex justify-between gap-2 text-xs mb-1">
                                 <span className="text-gray-600">{extractLabel}</span>
                                 <span className="font-medium pl-2 whitespace-nowrap">
-                                  {`Part ${Math.min(
-                                    extractSceneIndex,
-                                    plannedTotal || extractSceneIndex
-                                  )} · files ${extractFilesDone}`}
+                                  {extractRightLabel}
                                 </span>
                               </div>
                               <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
@@ -978,6 +1055,21 @@ export default function SystemMonitor() {
                           >
                             {getJobStatusText(job.status, job.cancel_requested)}
                           </button>
+                        ) : canOpenJobLogOnCancelled ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLogViewer({
+                                title: `Job log for ${formatJobTypeLabel(job.job_type)}`,
+                                content: getJobMainLog(job),
+                                jobId: job.job_id,
+                                source: "job",
+                              })
+                            }
+                            className="font-bold text-gray-600 underline decoration-gray-500 underline-offset-2 hover:text-gray-700"
+                          >
+                            {getJobStatusText(job.status, job.cancel_requested)}
+                          </button>
                         ) : (
                           <span className={`font-semibold ${statusColors.text}`}>
                             {getJobStatusText(job.status, job.cancel_requested)}
@@ -1017,7 +1109,7 @@ export default function SystemMonitor() {
                             job.cancel_requested ? (
                             <span className="text-red-600 font-medium">Остановка...</span>
                           ) : (
-                            <span className="text-gray-400">-</span>
+                            !canRetryJob && <span className="text-gray-400">-</span>
                           )}
 
                           {isWaymoAuthPermissionError(job) && (
@@ -1027,6 +1119,36 @@ export default function SystemMonitor() {
                               className="rounded-lg border border-indigo-300 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
                             >
                               Авторизовать Waymo
+                            </button>
+                          )}
+
+                          {canRetryJob && (
+                            <button
+                              type="button"
+                              onClick={() => executeRetryJob(job)}
+                              disabled={retryingJobId === job.job_id}
+                              title="Повторить джобу"
+                              aria-label="Повторить джобу"
+                              className={`inline-flex w-fit items-center justify-center rounded-md p-1 transition ${
+                                retryingJobId === job.job_id
+                                  ? "cursor-not-allowed text-slate-300"
+                                  : "text-slate-700 hover:text-sky-700"
+                              }`}
+                            >
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                className="h-5 w-5 overflow-visible"
+                                aria-hidden="true"
+                              >
+                                <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                                <path d="M21 3v6h-6" />
+                              </svg>
                             </button>
                           )}
                         </div>
@@ -1067,6 +1189,35 @@ export default function SystemMonitor() {
             <div className="max-h-[calc(80vh-72px)] overflow-auto p-5">
               <pre className="whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100">
                 {logViewer.content}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {configViewer && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setConfigViewer(null);
+            }
+          }}
+        >
+          <div className="max-h-[80vh] w-full max-w-4xl overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <div className="text-sm font-semibold text-slate-900">{configViewer.title}</div>
+              <button
+                type="button"
+                onClick={() => setConfigViewer(null)}
+                className="rounded-lg border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="max-h-[calc(80vh-72px)] overflow-auto p-5">
+              <pre className="whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100">
+                {configViewer.content}
               </pre>
             </div>
           </div>

@@ -118,6 +118,23 @@ func (m *S3Adapter) PutBytes(ctx context.Context, bucket, key string, data []byt
 	}
 	res, err := m.client.PutObject(ctx, bucket, key, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{ContentType: contentType})
 	if err != nil {
+		if isMinioNoSuchBucket(err) {
+			if mkErr := m.client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{}); mkErr != nil {
+				return PutResult{}, mkErr
+			}
+			res, err = m.client.PutObject(
+				ctx,
+				bucket,
+				key,
+				bytes.NewReader(data),
+				int64(len(data)),
+				minio.PutObjectOptions{ContentType: contentType},
+			)
+			if err != nil {
+				return PutResult{}, err
+			}
+			return PutResult{SizeBytes: res.Size, ContentType: contentType}, nil
+		}
 		return PutResult{}, err
 	}
 	return PutResult{SizeBytes: res.Size, ContentType: contentType}, nil
@@ -144,4 +161,9 @@ func isMinioNotFound(err error) bool {
 	default:
 		return false
 	}
+}
+
+func isMinioNoSuchBucket(err error) bool {
+	resp := minio.ToErrorResponse(err)
+	return strings.TrimSpace(resp.Code) == "NoSuchBucket"
 }

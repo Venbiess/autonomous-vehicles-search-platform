@@ -1,3 +1,5 @@
+import { loadDatasetVisibility } from "../../lib/datasetVisibility";
+
 function buildImageUrl(storagePath, defaultBucket) {
   if (!storagePath || typeof storagePath !== "string") return null;
   if (storagePath.startsWith("http://") || storagePath.startsWith("https://")) {
@@ -78,6 +80,7 @@ async function normalizeResults(results, defaultBucket) {
   const items = Array.isArray(results) ? results : [];
   const endpoint = storageEndpoint();
   const metadataByObjectId = new Map();
+  const hiddenDatasets = new Set(loadDatasetVisibility().hidden_datasets || []);
 
   const missingPathObjectIds = Array.from(
     new Set(
@@ -113,6 +116,17 @@ async function normalizeResults(results, defaultBucket) {
         extractStoragePath(item) ||
         extractStoragePath(metadata || {}) ||
         "";
+      const storageBucket = (() => {
+        if (metadata && typeof metadata.bucket === "string" && metadata.bucket.trim()) {
+          return metadata.bucket.trim();
+        }
+        const normalized = storagePath.replace(/^s3:\/\//, "").replace(/^\/+/, "");
+        const first = normalized.split("/")[0] || "";
+        return first.trim();
+      })();
+      if (storageBucket && hiddenDatasets.has(storageBucket)) {
+        return null;
+      }
       const storageUrl = buildImageUrl(storagePath, defaultBucket);
       const url =
         (objectId && `/api/objects/${encodeURIComponent(objectId)}`) ||
