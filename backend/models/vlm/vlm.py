@@ -3,6 +3,7 @@ import logging
 import os
 import resource
 import threading
+import time
 from typing import Optional
 
 import torch
@@ -40,28 +41,36 @@ def _resolve_device() -> str:
 DEVICE = _resolve_device()
 TORCH_DTYPE = torch.bfloat16 if DEVICE == "cuda" else torch.float32
 
+model_name = str(VLM_CONFIG.MODEL_NAME)
+init_started_at = time.time()
+logger.info("VLM init: loading processor for model=%s", model_name)
 processor = AutoProcessor.from_pretrained(VLM_CONFIG.MODEL_NAME)
+logger.info("VLM init: processor loaded in %.1fs", max(time.time() - init_started_at, 0.0))
 model_kwargs = {
     "torch_dtype": TORCH_DTYPE,
 }
 if DEVICE == "cuda":
     model_kwargs["_attn_implementation"] = "eager"
 
+model_load_started_at = time.time()
+logger.info("VLM init: loading model weights for model=%s (device=%s, dtype=%s)", model_name, DEVICE, TORCH_DTYPE)
 model = AutoModelForVision2Seq.from_pretrained(
     VLM_CONFIG.MODEL_NAME,
     **model_kwargs,
 ).to(DEVICE)
 model.eval()
+logger.info("VLM init: model weights loaded in %.1fs", max(time.time() - model_load_started_at, 0.0))
+logger.info("VLM init: total startup time %.1fs", max(time.time() - init_started_at, 0.0))
 
 cfg_device = VLM_CONFIG.DEVICE.lower()
 print(
-    f"Embedder has been successfully initialized.",
+    f"VLM has been successfully initialized.",
     f"Device: {DEVICE}.",
     f"Port: {VLM_CONFIG.PORT}"
 )
 if cfg_device != DEVICE:
     print(
-        f"Your config device was: {DEVICE}, but currently is used {DEVICE}.",
+        f"Your config device was: {cfg_device}, but currently is used {DEVICE}.",
         f"Check your {cfg_device} availability"
     )
 

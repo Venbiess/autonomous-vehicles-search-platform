@@ -1,6 +1,6 @@
 "use client"; // делаем компонент клиентским, чтобы можно было использовать useState
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { Cog6ToothIcon } from "@heroicons/react/24/outline";
 import {
@@ -115,6 +115,7 @@ export default function HomePageClient({
   const [maxScoreInput, setMaxScoreInput] = useState("");
   const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsPopoverRef = useRef<HTMLDivElement | null>(null);
 
   const minScore = minScoreInput.trim() === "" ? null : Number(minScoreInput);
   const maxScore = maxScoreInput.trim() === "" ? null : Number(maxScoreInput);
@@ -229,6 +230,24 @@ export default function HomePageClient({
     window.localStorage.setItem(UI_SETTINGS_STORAGE_KEY, JSON.stringify(uiSettings));
   }, [uiSettings]);
 
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const root = settingsPopoverRef.current;
+      const target = event.target as Node | null;
+      if (!root || !target) return;
+      if (!root.contains(target)) {
+        setSettingsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("touchstart", handlePointerDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("touchstart", handlePointerDown);
+    };
+  }, [settingsOpen]);
+
   const runSearch = async ({
     query,
     imageFile,
@@ -326,7 +345,7 @@ export default function HomePageClient({
   return (
     <main className="min-h-screen bg-gray-100">
       <div className="fixed right-4 top-4 z-[70]">
-        <div className="relative">
+        <div ref={settingsPopoverRef} className="relative">
           <button
             type="button"
             onClick={() => setSettingsOpen((value) => !value)}

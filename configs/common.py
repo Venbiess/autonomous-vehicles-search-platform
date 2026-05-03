@@ -36,7 +36,7 @@ POSTGRES_SCHEMA = os.getenv("POSTGRES_SCHEMA", "public")
 POSTGRES_TABLE = os.getenv("POSTGRES_TABLE", "frames")
 
 # Embeddings configuration
-EMBEDDER_ENDPOINT = os.getenv("EMBEDDER_ENDPOINT", "http://embedder:8000")
+EMBEDDER_ENDPOINT = os.getenv("EMBEDDER_ENDPOINT", "http://embedder-worker:8000")
 EMBEDDER_TIMEOUT_SEC = int(os.getenv("EMBEDDER_TIMEOUT_SEC", "30"))
 EMBEDDINGS_SCHEMA = os.getenv("EMBEDDINGS_SCHEMA", POSTGRES_SCHEMA)
 EMBEDDINGS_TABLE = os.getenv("EMBEDDINGS_TABLE", "image_embeddings")
@@ -53,7 +53,7 @@ STORAGE_SERVER_TIMEOUT_SEC = int(
 STORAGE_WRITE_TOKEN = os.getenv("STORAGE_WRITE_TOKEN", "change-me-storage-write-token")
 
 # VLM configuration
-VLM_ENDPOINT = os.getenv("VLM_ENDPOINT", "http://vlm:8001")
+VLM_ENDPOINT = os.getenv("VLM_ENDPOINT", "http://vlm-worker:8001")
 VLM_TIMEOUT_SEC = int(os.getenv("VLM_TIMEOUT_SEC", "120"))
 
 # Analytics server configuration

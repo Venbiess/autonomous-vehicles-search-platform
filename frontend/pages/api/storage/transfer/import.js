@@ -2,6 +2,7 @@ import { createReadStream } from "fs";
 import { access, mkdir, readFile } from "fs/promises";
 import path from "path";
 import readline from "readline";
+import { randomUUID } from "crypto";
 
 import {
   storageEndpoint,
@@ -14,12 +15,20 @@ import {
   SNAPSHOT_FORMAT_VLM,
   cleanupTempDir,
   createTempDir,
+  createTransferCancelledError,
   extractTarGzToDirectory,
   readMasterJson,
   writeRequestToFile,
 } from "../../../../lib/storageTransfer";
+import {
+  appendSnapshotTransferJobLog,
+  ensureSnapshotTransferJob,
+  isSnapshotTransferJobCancelRequested,
+  setSnapshotTransferJobError,
+  updateSnapshotTransferJob,
+} from "../../../../lib/snapshotTransferJobs";
 
-const DEFAULT_MAX_IMPORT_BYTES = 4 * 1024 * 1024 * 1024;
+const DEFAULT_MAX_IMPORT_BYTES = 16 * 1024 * 1024 * 1024;
 const EMBEDDINGS_BATCH_SIZE = 128;
 const VLM_BATCH_SIZE = 500;
 
@@ -29,6 +38,13 @@ export const config = {
     responseLimit: false,
   },
 };
+
+function normalizeImportId(rawImportId) {
+  return String(rawImportId || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "")
+    .slice(0, 128);
+}
 
 async function fileExists(filePath) {
   try {
@@ -61,7 +77,29 @@ async function readJsonFileOrDefault(filePath, fallbackValue) {
   return parsed;
 }
 
-async function processNdjson(filePath, onItem) {
+function createAbortState(req, res) {
+  const state = { aborted: false };
+  const markAborted = () => {
+    state.aborted = true;
+  };
+  req.on("aborted", markAborted);
+  req.on("close", markAborted);
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      markAborted();
+    }
+  });
+  return {
+    isAborted: () => state.aborted,
+    assertNotAborted: () => {
+      if (state.aborted) {
+        throw createTransferCancelledError();
+      }
+    },
+  };
+}
+
+async function processNdjson(filePath, onItem, options = {}) {
   if (!(await fileExists(filePath))) {
     return 0;
   }
@@ -74,6 +112,9 @@ async function processNdjson(filePath, onItem) {
 
   let processed = 0;
   for await (const rawLine of reader) {
+    if (typeof options.assertNotAborted === "function") {
+      options.assertNotAborted();
+    }
     const line = rawLine.trim();
     if (!line) {
       continue;
@@ -91,7 +132,10 @@ async function processNdjson(filePath, onItem) {
   return processed;
 }
 
-async function uploadObjectFromArchive(extractRoot, item) {
+async function uploadObjectFromArchive(extractRoot, item, options = {}) {
+  if (typeof options.assertNotAborted === "function") {
+    options.assertNotAborted();
+  }
   const objectID = String(item?.object_id || "").trim();
   const bucket = String(item?.bucket || "").trim();
   const key = String(item?.key || "").trim();
@@ -159,13 +203,16 @@ function normalizeVectorRow(row) {
   return { object_id: objectID, embedding };
 }
 
-async function importEmbeddingsFromNdjson(filePath) {
+async function importEmbeddingsFromNdjson(filePath, options = {}) {
   let received = 0;
   let valid = 0;
   let upserted = 0;
   let batch = [];
 
   const flushBatch = async () => {
+    if (typeof options.assertNotAborted === "function") {
+      options.assertNotAborted();
+    }
     if (batch.length === 0) {
       return;
     }
@@ -192,7 +239,7 @@ async function importEmbeddingsFromNdjson(filePath) {
     if (batch.length >= EMBEDDINGS_BATCH_SIZE) {
       await flushBatch();
     }
-  });
+  }, options);
 
   await flushBatch();
   return { received, valid, upserted };
@@ -234,6 +281,9 @@ function normalizeVlmAnnotation(row) {
 }
 
 async function importVlmFromArchive(extractRoot, options = {}) {
+  if (typeof options.assertNotAborted === "function") {
+    options.assertNotAborted();
+  }
   const fieldsPath = resolveArchivePath(extractRoot, options.fieldsFile || "fields.json");
   const annotationsPath = resolveArchivePath(extractRoot, options.annotationsFile || "vlm.ndjson");
 
@@ -256,6 +306,9 @@ async function importVlmFromArchive(extractRoot, options = {}) {
   let batch = [];
 
   const flushBatch = async () => {
+    if (typeof options.assertNotAborted === "function") {
+      options.assertNotAborted();
+    }
     if (batch.length === 0) {
       return;
     }
@@ -279,7 +332,7 @@ async function importVlmFromArchive(extractRoot, options = {}) {
     if (batch.length >= VLM_BATCH_SIZE) {
       await flushBatch();
     }
-  });
+  }, options);
 
   await flushBatch();
 
@@ -293,7 +346,7 @@ async function importVlmFromArchive(extractRoot, options = {}) {
   };
 }
 
-async function importObjectsFromArchive(extractRoot) {
+async function importObjectsFromArchive(extractRoot, options = {}) {
   const objectsPath = resolveArchivePath(extractRoot, "objects.ndjson");
 
   let received = 0;
@@ -302,13 +355,13 @@ async function importObjectsFromArchive(extractRoot) {
 
   await processNdjson(objectsPath, async (row) => {
     received += 1;
-    const result = await uploadObjectFromArchive(extractRoot, row);
+    const result = await uploadObjectFromArchive(extractRoot, row, options);
     if (result.uploaded) {
       uploaded += 1;
       return;
     }
     errors.push({ object_id: result.object_id, error: result.error });
-  });
+  }, options);
 
   return {
     received,
@@ -318,14 +371,18 @@ async function importObjectsFromArchive(extractRoot) {
   };
 }
 
-async function importSnapshotFromArchive(extractRoot, manifest) {
+async function importSnapshotFromArchive(extractRoot, manifest, options = {}) {
+  if (typeof options.assertNotAborted === "function") {
+    options.assertNotAborted();
+  }
   const format = String(manifest?.format || "").trim();
 
   if (format === SNAPSHOT_FORMAT_EMBEDDINGS) {
     return {
       format,
       embeddings: await importEmbeddingsFromNdjson(
-        resolveArchivePath(extractRoot, "embeddings.ndjson")
+        resolveArchivePath(extractRoot, "embeddings.ndjson"),
+        options
       ),
     };
   }
@@ -333,18 +390,19 @@ async function importSnapshotFromArchive(extractRoot, manifest) {
   if (format === SNAPSHOT_FORMAT_VLM) {
     return {
       format,
-      vlm: await importVlmFromArchive(extractRoot),
+      vlm: await importVlmFromArchive(extractRoot, options),
     };
   }
 
   if (format === SNAPSHOT_FORMAT_FULL) {
     return {
       format,
-      objects: await importObjectsFromArchive(extractRoot),
+      objects: await importObjectsFromArchive(extractRoot, options),
       embeddings: await importEmbeddingsFromNdjson(
-        resolveArchivePath(extractRoot, "embeddings.ndjson")
+        resolveArchivePath(extractRoot, "embeddings.ndjson"),
+        options
       ),
-      vlm: await importVlmFromArchive(extractRoot),
+      vlm: await importVlmFromArchive(extractRoot, options),
     };
   }
 
@@ -358,9 +416,36 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
+  const importId = normalizeImportId(req.query?.import_id);
+  const jobId = randomUUID().replace(/-/g, "").slice(0, 16);
+  const updateJob = (patch) => updateSnapshotTransferJob(jobId, patch);
+  const appendLog = (text) => appendSnapshotTransferJobLog(jobId, text);
   const workDir = await createTempDir("avsp-transfer-import-");
+  const { isAborted, assertNotAborted: assertClientNotAborted } = createAbortState(req, res);
+  const assertNotAborted = () => {
+    assertClientNotAborted();
+    if (isSnapshotTransferJobCancelRequested(jobId)) {
+      throw createTransferCancelledError("Transfer cancelled by user");
+    }
+  };
+  const isStopped = () => isAborted() || isSnapshotTransferJobCancelRequested(jobId);
 
   try {
+    const contentLength = Number(req.headers?.["content-length"] || 0);
+    const expectedBytes = Number.isFinite(contentLength) && contentLength > 0 ? contentLength : 0;
+    ensureSnapshotTransferJob(jobId, "snapshot_import", {
+      import_id: importId,
+      content_length: expectedBytes,
+    });
+    updateJob({
+      status: "running",
+      progress: 0,
+      total_seen: 0,
+      total_limit: expectedBytes,
+      total_planned: expectedBytes,
+    });
+    appendLog("Snapshot import started.");
+
     const parsedMaxBytes = Number(
       process.env.STORAGE_TRANSFER_IMPORT_MAX_BYTES || DEFAULT_MAX_IMPORT_BYTES
     );
@@ -370,12 +455,40 @@ export default async function handler(req, res) {
         : DEFAULT_MAX_IMPORT_BYTES;
 
     const archivePath = path.join(workDir, "snapshot.tar.gz");
-    await writeRequestToFile(req, archivePath, maxBytes);
+    const uploadedBytes = await writeRequestToFile(req, archivePath, maxBytes, {
+      isAborted: isStopped,
+      onChunk: (_chunkSize, total) => {
+        const uploaded = Math.max(0, Number(total || 0));
+        const progress =
+          expectedBytes > 0 ? Math.min(55, Math.round((uploaded / expectedBytes) * 55)) : 0;
+        updateJob({
+          progress,
+          total_seen: uploaded,
+          total_limit: expectedBytes,
+          total_planned: expectedBytes,
+        });
+      },
+    });
+    appendLog("Archive uploaded. Extracting...");
+    updateJob({
+      total_seen: uploadedBytes,
+      total_limit: expectedBytes > 0 ? expectedBytes : uploadedBytes,
+      total_planned: expectedBytes > 0 ? expectedBytes : uploadedBytes,
+    });
 
+    assertNotAborted();
     const extractRoot = path.join(workDir, "extracted");
     await mkdir(extractRoot, { recursive: true });
-    await extractTarGzToDirectory(archivePath, extractRoot);
+    await extractTarGzToDirectory(archivePath, extractRoot, { isAborted: isStopped });
+    appendLog("Archive extracted.");
+    updateJob({
+      progress: 70,
+      total_seen: expectedBytes > 0 ? expectedBytes : uploadedBytes,
+      total_limit: expectedBytes > 0 ? expectedBytes : uploadedBytes,
+      total_planned: expectedBytes > 0 ? expectedBytes : uploadedBytes,
+    });
 
+    assertNotAborted();
     const manifestPath = resolveArchivePath(extractRoot, "manifest.json");
     const manifest = await readJsonFileOrDefault(manifestPath, null);
     if (!manifest || typeof manifest !== "object") {
@@ -383,8 +496,20 @@ export default async function handler(req, res) {
       error.status = 400;
       throw error;
     }
+    appendLog(`Manifest loaded: format=${String(manifest?.format || "unknown")}.`);
 
-    const result = await importSnapshotFromArchive(extractRoot, manifest);
+    const result = await importSnapshotFromArchive(extractRoot, manifest, {
+      assertNotAborted,
+    });
+    appendLog(`Snapshot import completed: format=${String(result?.format || "unknown")}.`);
+    appendLog("Snapshot import data applied.");
+    updateJob({
+      status: "success",
+      progress: 100,
+      total_seen: expectedBytes > 0 ? expectedBytes : uploadedBytes,
+      total_limit: expectedBytes > 0 ? expectedBytes : uploadedBytes,
+      total_planned: expectedBytes > 0 ? expectedBytes : uploadedBytes,
+    });
 
     return res.status(200).json({
       status: "ok",
@@ -392,6 +517,19 @@ export default async function handler(req, res) {
       result,
     });
   } catch (error) {
+    if (isStopped()) {
+      appendLog("Snapshot import cancelled.");
+      updateJob({
+        status: "cancelled",
+      });
+      return;
+    }
+    const message = error?.message || "Failed to import snapshot";
+    appendLog(`Snapshot import failed: ${message}`);
+    setSnapshotTransferJobError(jobId, message);
+    updateJob({
+      status: "error",
+    });
     return res
       .status(error.status || 500)
       .json(error.payload || { error: error.message || "Failed to import snapshot" });

@@ -318,6 +318,11 @@ export default function SystemMonitor({
   };
 
   const formatJobTypeLabel = useCallback((jobType: string): string => {
+    if (jobType === "dataset_delete") return "Dataset Delete";
+    if (jobType === "snapshot_import") return "Snapshot Import";
+    if (jobType === "snapshot_export_full") return "Snapshot Export (Full)";
+    if (jobType === "snapshot_export_embeddings") return "Snapshot Export (Embeddings)";
+    if (jobType === "snapshot_export_vlm") return "Snapshot Export (VLM)";
     if (jobType === "backfill_embeddings") return "Backfill Embeddings";
     if (jobType === "backfill_vlm") return "Backfill VLM";
     if (jobType === "install_waymo") return "Install Waymo";
@@ -999,15 +1004,25 @@ export default function SystemMonitor({
                   const isCancellableJobType =
                     job.job_type === "backfill_vlm" ||
                     job.job_type === "backfill_embeddings" ||
-                    job.job_type.startsWith("install_");
+                    job.job_type.startsWith("install_") ||
+                    job.job_type === "snapshot_import" ||
+                    job.job_type.startsWith("snapshot_export_") ||
+                    job.job_type === "dataset_delete";
                   const canCancelJob =
                     isCancellableJobType && job.status === "running" && !job.cancel_requested;
                   const isVlmJob = job.job_type === "backfill_vlm";
                   const isInstallJob = job.job_type.startsWith("install_");
                   const isInstallDatasetJob = isInstallJob;
+                  const isSnapshotTransferJob =
+                    job.job_type === "snapshot_import" ||
+                    job.job_type.startsWith("snapshot_export_");
                   const plannedTotal = job.total_planned ?? job.total_limit;
-                  const progressLabel = `${job.total_seen} / ${plannedTotal}`;
-                  const processedLabel = `${job.total_seen} / ${plannedTotal}`;
+                  const progressLabel = isSnapshotTransferJob
+                    ? `${formatDataSize(job.total_seen ?? 0)} / ${
+                        plannedTotal && plannedTotal > 0 ? formatDataSize(plannedTotal) : "?"
+                      }`
+                    : `${job.total_seen} / ${plannedTotal ?? "?"}`;
+                  const processedLabel = progressLabel;
                   const scenesSavedLabel = `Сцен сохранено: ${job.total_inserted}`;
                   const installScenesSavedLabel = `Сцен сохранено: ${job.total_inserted}`;
                   const embeddingTasksCompleted = job.embedding_tasks_completed ?? 0;

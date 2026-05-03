@@ -144,7 +144,7 @@ services:
       - "8000"
     environment:
       EMBEDDER_PORT: 8000
-      WORKER_HTTP_ENABLED: 0
+      WORKER_HTTP_ENABLED: 1
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
@@ -172,7 +172,7 @@ services:
       - "8001"
     environment:
       VLM_PORT: 8001
-      WORKER_HTTP_ENABLED: 0
+      WORKER_HTTP_ENABLED: 1
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
@@ -240,8 +240,8 @@ services:
       POSTGRES_DB: avsp
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      EMBEDDER_ENDPOINT: http://embedder:8000
-      VLM_ENDPOINT: http://vlm:8001
+      EMBEDDER_ENDPOINT: http://embedder-worker:8000
+      VLM_ENDPOINT: http://vlm-worker:8001
       MODEL_EXECUTION_MODE: rabbitmq
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
@@ -264,6 +264,7 @@ services:
     command: >
       /bin/sh -c '
       set -e;
+      ulimit -c 0;
       LOCK_HASH="$$(sha256sum package-lock.json | awk "{print \$$1}")";
       if [ ! -f node_modules/.lockhash ] || [ "$$(cat node_modules/.lockhash)" != "$$LOCK_HASH" ]; then
         echo "Installing frontend deps (lockfile changed or first run)...";
@@ -279,6 +280,10 @@ services:
       - "frontend-node-modules:/app/frontend/node_modules"
     ports:
       - "3000:3000"
+    ulimits:
+      core:
+        soft: 0
+        hard: 0
     environment:
       MASTER_ENDPOINT: http://avsp-server:9002
       MASTER_PROXY_TIMEOUT_MS: 10000
@@ -287,7 +292,8 @@ services:
       STORAGE_WRITE_TOKEN: change-me-storage-write-token
       MINIO_PUBLIC_ENDPOINT: http://localhost:9000
       MINIO_BUCKET: avsp
-      NODE_OPTIONS: --max-old-space-size=1024
+      NODE_OPTIONS: --max-old-space-size=16384
+      STORAGE_TRANSFER_IMPORT_MAX_BYTES: "17179869184"
       WATCHPACK_POLLING: "true"
       WATCHPACK_POLLING_INTERVAL: "1000"
       CHOKIDAR_USEPOLLING: "true"

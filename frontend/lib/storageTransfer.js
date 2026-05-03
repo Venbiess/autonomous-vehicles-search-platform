@@ -70,22 +70,60 @@ export async function cleanupTempDir(dirPath) {
   await rm(dirPath, { recursive: true, force: true });
 }
 
-function runCommand(command, args) {
+export function createTransferCancelledError(message = "Transfer cancelled") {
+  const error = new Error(message);
+  error.status = 499;
+  error.code = "TRANSFER_CANCELLED";
+  return error;
+}
+
+function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stderr = "";
+    let finished = false;
+    let abortTimer = null;
+
+    const cleanupAbortTimer = () => {
+      if (abortTimer) {
+        clearInterval(abortTimer);
+        abortTimer = null;
+      }
+    };
+
+    const rejectCancelled = () => {
+      if (finished) return;
+      finished = true;
+      cleanupAbortTimer();
+      child.kill("SIGTERM");
+      reject(createTransferCancelledError());
+    };
+
+    if (typeof options.isAborted === "function") {
+      abortTimer = setInterval(() => {
+        if (options.isAborted()) {
+          rejectCancelled();
+        }
+      }, 200);
+    }
 
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString("utf8");
     });
 
     child.on("error", (error) => {
+      if (finished) return;
+      finished = true;
+      cleanupAbortTimer();
       reject(error);
     });
 
     child.on("close", (code) => {
+      if (finished) return;
+      finished = true;
+      cleanupAbortTimer();
       if (code === 0) {
         resolve();
         return;
@@ -96,21 +134,25 @@ function runCommand(command, args) {
   });
 }
 
-export async function packDirectoryToTarGz(sourceDir, archivePath) {
-  await runCommand("tar", ["-czf", archivePath, "-C", sourceDir, "."]);
+export async function packDirectoryToTarGz(sourceDir, archivePath, options = {}) {
+  await runCommand("tar", ["-czf", archivePath, "-C", sourceDir, "."], options);
 }
 
-export async function extractTarGzToDirectory(archivePath, targetDir) {
-  await runCommand("tar", ["-xzf", archivePath, "-C", targetDir]);
+export async function extractTarGzToDirectory(archivePath, targetDir, options = {}) {
+  await runCommand("tar", ["-xzf", archivePath, "-C", targetDir], options);
 }
 
-export async function writeRequestToFile(req, filePath, maxBytes) {
+export async function writeRequestToFile(req, filePath, maxBytes, options = {}) {
   const limit = Math.max(1, Number(maxBytes || 1));
   const output = createWriteStream(filePath, { flags: "w" });
   let total = 0;
 
   try {
     for await (const chunk of req) {
+      if (typeof options.isAborted === "function" && options.isAborted()) {
+        req.destroy();
+        throw createTransferCancelledError();
+      }
       const piece = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       total += piece.length;
       if (total > limit) {
@@ -121,6 +163,9 @@ export async function writeRequestToFile(req, filePath, maxBytes) {
       }
       if (!output.write(piece)) {
         await once(output, "drain");
+      }
+      if (typeof options.onChunk === "function") {
+        options.onChunk(piece.length, total);
       }
     }
     await new Promise((resolve, reject) => {

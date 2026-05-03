@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 
 interface SourceStats {
@@ -126,6 +126,45 @@ interface ConfirmDialogState {
 }
 
 type TransferKind = "full" | "vlm" | "embeddings";
+
+const SNAPSHOT_ACTION_IDS = [
+  "download-full",
+  "download-embeddings",
+  "download-vlm",
+  "import-snapshot",
+] as const;
+
+type SnapshotActionId = (typeof SNAPSHOT_ACTION_IDS)[number];
+
+interface SnapshotTransferSize {
+  loadedBytes: number;
+  totalBytes: number | null;
+}
+
+interface SnapshotProgressMeta {
+  phase: string;
+  status: string;
+  hint?: string;
+}
+
+function jobTypeToSnapshotActionId(jobType: string): SnapshotActionId | null {
+  if (jobType === "snapshot_import") return "import-snapshot";
+  if (jobType === "snapshot_export_full") return "download-full";
+  if (jobType === "snapshot_export_embeddings") return "download-embeddings";
+  if (jobType === "snapshot_export_vlm") return "download-vlm";
+  return null;
+}
+
+function snapshotActionIdToJobType(actionId: SnapshotActionId): string {
+  if (actionId === "download-full") return "snapshot_export_full";
+  if (actionId === "download-embeddings") return "snapshot_export_embeddings";
+  if (actionId === "download-vlm") return "snapshot_export_vlm";
+  return "snapshot_import";
+}
+
+function isSnapshotActionId(value: string): value is SnapshotActionId {
+  return (SNAPSHOT_ACTION_IDS as readonly string[]).includes(value);
+}
 
 function toErrorMessage(value: unknown): string {
   if (typeof value === "string" && value.trim()) {
@@ -456,7 +495,27 @@ export default function StoragePanel({
   const [datasetDeleteProgress, setDatasetDeleteProgress] = useState<
     Record<string, number>
   >({});
+  const [snapshotActionProgress, setSnapshotActionProgress] = useState<
+    Partial<Record<SnapshotActionId, number>>
+  >({});
+  const [snapshotTransferSize, setSnapshotTransferSize] = useState<
+    Partial<Record<SnapshotActionId, SnapshotTransferSize>>
+  >({});
+  const [snapshotProgressMeta, setSnapshotProgressMeta] = useState<
+    Partial<Record<SnapshotActionId, SnapshotProgressMeta>>
+  >({});
+  const [snapshotExportInlineMessage, setSnapshotExportInlineMessage] = useState<string | null>(null);
+  const [snapshotImportInlineMessage, setSnapshotImportInlineMessage] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [confirmDialogBusy, setConfirmDialogBusy] = useState(false);
+  const snapshotProgressTimersRef = useRef<
+    Partial<Record<SnapshotActionId, ReturnType<typeof setInterval>>>
+  >({});
+  const snapshotAbortControllersRef = useRef<
+    Partial<Record<SnapshotActionId, AbortController>>
+  >({});
+  const snapshotExportPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const snapshotExportPollTokenRef = useRef(0);
 
   const extractAxiosErrorMessage = (
     error: unknown,
@@ -478,6 +537,322 @@ export default function StoragePanel({
     }
     return fallback;
   };
+
+  const isCancelledActionError = (error: unknown): boolean => {
+    if (axios.isAxiosError(error) && error.code === "ERR_CANCELED") {
+      return true;
+    }
+    if (error && typeof error === "object") {
+      const record = error as Record<string, unknown>;
+      const code = String(record.code || "").toUpperCase();
+      const message = String(record.message || "").toLowerCase();
+      if (code === "TRANSFER_CANCELLED" || code === "ERR_CANCELED") {
+        return true;
+      }
+      if (
+        message.includes("canceled") ||
+        message.includes("cancelled") ||
+        message.includes("transfer cancelled")
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const clearSnapshotProgressTimer = (actionId: SnapshotActionId) => {
+    const timer = snapshotProgressTimersRef.current[actionId];
+    if (timer) {
+      clearInterval(timer);
+      delete snapshotProgressTimersRef.current[actionId];
+    }
+  };
+
+  const clearSnapshotProgress = (actionId: SnapshotActionId) => {
+    clearSnapshotProgressTimer(actionId);
+    setSnapshotActionProgress((prev) => {
+      const next = { ...prev };
+      delete next[actionId];
+      return next;
+    });
+    setSnapshotTransferSize((prev) => {
+      const next = { ...prev };
+      delete next[actionId];
+      return next;
+    });
+    setSnapshotProgressMeta((prev) => {
+      const next = { ...prev };
+      delete next[actionId];
+      return next;
+    });
+  };
+
+  const updateSnapshotTransferSize = (
+    actionId: SnapshotActionId,
+    loadedBytes: number,
+    totalBytes: number | null = null,
+    options?: { monotonic?: boolean }
+  ) => {
+    const monotonic = options?.monotonic ?? true;
+    setSnapshotTransferSize((prev) => ({
+      ...prev,
+      [actionId]: (() => {
+        const current = prev[actionId];
+        const nextLoaded = Math.max(0, Number(loadedBytes || 0));
+        const normalizedTotal =
+          totalBytes === null || !Number.isFinite(Number(totalBytes))
+            ? null
+            : Math.max(0, Number(totalBytes));
+        const loaded = monotonic && current
+          ? Math.max(Number(current.loadedBytes || 0), nextLoaded)
+          : nextLoaded;
+        const total = monotonic
+          ? normalizedTotal === null
+            ? current?.totalBytes ?? null
+            : Math.max(Number(current?.totalBytes || 0), normalizedTotal)
+          : normalizedTotal;
+        const clampedLoaded =
+          total !== null && total > 0 ? Math.min(loaded, total) : loaded;
+        return {
+          loadedBytes: clampedLoaded,
+          totalBytes: total,
+        };
+      })(),
+    }));
+  };
+
+  const updateSnapshotProgressMeta = (
+    actionId: SnapshotActionId,
+    patch: Partial<SnapshotProgressMeta>
+  ) => {
+    setSnapshotProgressMeta((prev) => ({
+      ...prev,
+      [actionId]: {
+        phase: patch.phase ?? prev[actionId]?.phase ?? "",
+        status: patch.status ?? prev[actionId]?.status ?? "",
+        hint: patch.hint ?? prev[actionId]?.hint ?? "",
+      },
+    }));
+  };
+
+  const setSnapshotAbortController = (
+    actionId: SnapshotActionId,
+    controller: AbortController | null
+  ) => {
+    if (!controller) {
+      delete snapshotAbortControllersRef.current[actionId];
+      return;
+    }
+    snapshotAbortControllersRef.current[actionId] = controller;
+  };
+
+  const stopSnapshotExportProgressPoll = () => {
+    snapshotExportPollTokenRef.current += 1;
+    const timer = snapshotExportPollTimerRef.current;
+    if (timer) {
+      clearTimeout(timer);
+      snapshotExportPollTimerRef.current = null;
+    }
+  };
+
+  const startSnapshotExportProgressPoll = (
+    exportId: string,
+    actionId: SnapshotActionId
+  ) => {
+    stopSnapshotExportProgressPoll();
+    const token = snapshotExportPollTokenRef.current;
+
+    const scheduleNext = (delayMs: number) => {
+      snapshotExportPollTimerRef.current = setTimeout(async () => {
+        if (token !== snapshotExportPollTokenRef.current) {
+          return;
+        }
+        try {
+          const response = await axios.get("/api/storage/transfer/export-progress", {
+            params: { export_id: exportId },
+          });
+          const payload =
+            response.data && typeof response.data === "object"
+              ? (response.data as Record<string, unknown>)
+              : {};
+          const phase = String(payload.phase || "").trim().toLowerCase();
+          const status = String(payload.status || "").trim().toLowerCase();
+          const bytesWritten = Math.max(0, Number(payload.bytes_written || 0));
+          const preparedBytes = Math.max(0, Number(payload.prepared_bytes || 0));
+          const preparedObjects = Math.max(0, Number(payload.prepared_objects || 0));
+          const archiveBytesRaw = Number(payload.archive_bytes || 0);
+          const archiveBytes = Number.isFinite(archiveBytesRaw) && archiveBytesRaw > 0
+            ? archiveBytesRaw
+            : null;
+          let shownBytes = bytesWritten;
+          let shownTotal: number | null = archiveBytes;
+          if (phase === "preparing") {
+            shownBytes = Math.max(bytesWritten, preparedBytes);
+            shownTotal = null;
+          } else if (phase === "archiving") {
+            shownBytes = Math.max(0, bytesWritten);
+            shownTotal = archiveBytes ?? (preparedBytes > 0 ? preparedBytes : null);
+          } else if (phase === "streaming" || phase === "done") {
+            shownBytes = Math.max(0, bytesWritten);
+            shownTotal = archiveBytes ?? (shownBytes > 0 ? shownBytes : null);
+          }
+          updateSnapshotTransferSize(actionId, shownBytes, shownTotal, { monotonic: false });
+
+          let hint = "";
+          if (shownBytes <= 0) {
+            if (phase === "preparing") {
+              hint =
+                preparedObjects > 0
+                  ? `Preparing: ${formatNumber(preparedObjects)} objects`
+                  : "Preparing snapshot...";
+            } else if (phase === "archiving") {
+              hint = "Archiving snapshot...";
+            } else if (phase === "streaming") {
+              hint = "Streaming snapshot...";
+            }
+          }
+          updateSnapshotProgressMeta(actionId, { phase, status, hint });
+
+          if (shownTotal && shownTotal > 0) {
+            const ratio = Math.min(1, Math.max(0, shownBytes / shownTotal));
+            updateSnapshotProgress(actionId, ratio * 100, "max");
+          }
+
+          if (status === "error" || phase === "error") {
+            setSnapshotExportInlineMessage("Ошибка при создании архива выгрузки.");
+            setActionInProgress((current) => (current === actionId ? null : current));
+            return;
+          }
+          if (status === "cancelled" || phase === "cancelled") {
+            setSnapshotExportInlineMessage("Выгрузка и создание архива отменены.");
+            setActionInProgress((current) => (current === actionId ? null : current));
+            return;
+          }
+          if (status === "done" || phase === "done") {
+            setActionInProgress((current) => (current === actionId ? null : current));
+            return;
+          }
+        } catch {
+          // Best effort polling; ignore transient failures.
+        }
+        if (token === snapshotExportPollTokenRef.current) {
+          scheduleNext(350);
+        }
+      }, delayMs);
+    };
+
+    scheduleNext(0);
+  };
+
+  const cancelSnapshotAction = async (actionId: SnapshotActionId) => {
+    const controller = snapshotAbortControllersRef.current[actionId];
+    if (controller) {
+      controller.abort();
+    } else {
+      try {
+        const jobsResponse = await axios.get("/api/jobs");
+        const jobs = Array.isArray(jobsResponse.data?.jobs)
+          ? (jobsResponse.data.jobs as Array<Record<string, unknown>>)
+          : [];
+        const targetType = snapshotActionIdToJobType(actionId);
+        const runningJob = jobs.find((job) => {
+          const type = String(job?.job_type || "").trim();
+          const status = String(job?.status || "").toLowerCase();
+          return type === targetType && status === "running";
+        });
+        const jobID = String(runningJob?.job_id || "").trim();
+        if (jobID) {
+          await axios.post("/api/jobs/cancel", { job_id: jobID });
+        }
+      } catch {
+        // no-op
+      }
+    }
+    updateSnapshotProgressMeta(actionId, {
+      status: "cancelled",
+      hint: "Cancelling...",
+    });
+    if (actionId === "import-snapshot") {
+      setSnapshotImportInlineMessage("Импорт и распаковка архива отменены.");
+      return;
+    }
+    setSnapshotExportInlineMessage("Выгрузка и создание архива отменены.");
+  };
+
+  const askCancelSnapshotAction = (actionId: SnapshotActionId) => {
+    const title =
+      actionId === "import-snapshot" ? "Cancel snapshot import" : "Cancel snapshot export";
+    const description =
+      actionId === "import-snapshot"
+        ? "Остановить импорт и распаковку snapshot?"
+        : "Остановить создание и выгрузку snapshot?";
+    openConfirmDialog({
+      title,
+      description,
+      confirmLabel: "Остановить",
+      onConfirm: async () => {
+        await cancelSnapshotAction(actionId);
+      },
+    });
+  };
+
+  const updateSnapshotProgress = (
+    actionId: SnapshotActionId,
+    nextProgress: number,
+    strategy: "set" | "max" = "set"
+  ) => {
+    const clamped = Math.max(0, Math.min(100, nextProgress));
+    setSnapshotActionProgress((prev) => {
+      const current = Number(prev[actionId] || 0);
+      const value = strategy === "max" ? Math.max(current, clamped) : clamped;
+      return { ...prev, [actionId]: value };
+    });
+  };
+
+  const startSnapshotProgressAnimation = (
+    actionId: SnapshotActionId,
+    options?: {
+      from?: number;
+      cap?: number;
+      stepMin?: number;
+      stepMax?: number;
+      intervalMs?: number;
+    }
+  ) => {
+    clearSnapshotProgressTimer(actionId);
+    const from = Math.max(0, Math.min(100, Number(options?.from ?? 0)));
+    const cap = Math.max(from, Math.min(100, Number(options?.cap ?? 95)));
+    const stepMin = Math.max(0.1, Number(options?.stepMin ?? 0.5));
+    const stepMax = Math.max(stepMin, Number(options?.stepMax ?? 1.5));
+    const intervalMs = Math.max(80, Number(options?.intervalMs ?? 180));
+
+    updateSnapshotProgress(actionId, from, "max");
+    const timer = setInterval(() => {
+      setSnapshotActionProgress((prev) => {
+        const current = Number(prev[actionId] || 0);
+        if (current >= cap) {
+          return prev;
+        }
+        const step = stepMin + Math.random() * (stepMax - stepMin);
+        const next = Math.min(cap, current + step);
+        return { ...prev, [actionId]: next };
+      });
+    }, intervalMs);
+    snapshotProgressTimersRef.current[actionId] = timer;
+  };
+
+  useEffect(() => {
+    return () => {
+      for (const actionId of SNAPSHOT_ACTION_IDS) {
+        const timer = snapshotProgressTimersRef.current[actionId];
+        if (timer) {
+          clearInterval(timer);
+        }
+      }
+      snapshotProgressTimersRef.current = {};
+      stopSnapshotExportProgressPoll();
+    };
+  }, []);
 
   const loadStats = async (showLoader = false) => {
     if (showLoader) {
@@ -503,6 +878,79 @@ export default function StoragePanel({
 
   useEffect(() => {
     loadStats(true);
+  }, []);
+
+  // Run once on mount to restore snapshot progress after tab switch/remount.
+  useEffect(() => {
+    let cancelled = false;
+    const restoreSnapshotAction = async () => {
+      try {
+        const response = await axios.get("/api/jobs");
+        const jobs = Array.isArray(response.data?.jobs)
+          ? (response.data.jobs as Array<Record<string, unknown>>)
+          : [];
+        const runningSnapshotJob = jobs.find((job) => {
+          const status = String(job?.status || "").toLowerCase();
+          const actionId = jobTypeToSnapshotActionId(String(job?.job_type || ""));
+          return status === "running" && actionId !== null;
+        });
+        if (!runningSnapshotJob || cancelled) {
+          return;
+        }
+
+        const actionId = jobTypeToSnapshotActionId(String(runningSnapshotJob.job_type || ""));
+        if (!actionId) {
+          return;
+        }
+
+        const progress = Math.max(0, Math.min(100, Number(runningSnapshotJob.progress || 0)));
+        const totalSeen = Math.max(0, Number(runningSnapshotJob.total_seen || 0));
+        const totalPlannedRaw = Number(runningSnapshotJob.total_planned || runningSnapshotJob.total_limit || 0);
+        const totalPlanned =
+          Number.isFinite(totalPlannedRaw) && totalPlannedRaw > 0 ? totalPlannedRaw : null;
+
+        setActionInProgress(actionId);
+        updateSnapshotProgress(actionId, progress, "set");
+        updateSnapshotTransferSize(actionId, totalSeen, totalPlanned);
+
+        if (actionId === "import-snapshot") {
+          setSnapshotImportInlineMessage("Импорт снапшота продолжается...");
+          updateSnapshotProgressMeta(actionId, {
+            phase: "processing",
+            status: "running",
+            hint: "Processing snapshot...",
+          });
+          if (progress < 95) {
+            startSnapshotProgressAnimation(actionId, {
+              from: Math.max(progress, 70),
+              cap: 98,
+              stepMin: 0.2,
+              stepMax: 0.5,
+              intervalMs: 180,
+            });
+          }
+          return;
+        }
+
+        setSnapshotExportInlineMessage("Выгрузка снапшота продолжается...");
+        const jobConfig =
+          runningSnapshotJob.job_config && typeof runningSnapshotJob.job_config === "object"
+            ? (runningSnapshotJob.job_config as Record<string, unknown>)
+            : {};
+        const exportId = String(jobConfig.export_id || "").trim();
+        if (exportId) {
+          startSnapshotExportProgressPoll(exportId, actionId);
+        }
+      } catch {
+        // no-op
+      }
+    };
+
+    restoreSnapshotAction();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadObjectsPage = async (
@@ -631,6 +1079,22 @@ export default function StoragePanel({
     try {
       await fn();
     } catch (error) {
+      if (isCancelledActionError(error)) {
+        if (isSnapshotActionId(actionId)) {
+          updateSnapshotProgressMeta(actionId, {
+            status: "cancelled",
+            hint: "Operation cancelled",
+          });
+          if (actionId === "import-snapshot") {
+            setSnapshotImportInlineMessage("Импорт и распаковка архива отменены.");
+          } else {
+            setSnapshotExportInlineMessage("Выгрузка и создание архива отменены.");
+          }
+          return;
+        }
+        setWarningMessage("Operation cancelled.");
+        return;
+      }
       const message = extractAxiosErrorMessage(error, "Operation failed");
       setErrorMessage(message);
     } finally {
@@ -639,14 +1103,20 @@ export default function StoragePanel({
   };
 
   const openConfirmDialog = (dialog: ConfirmDialogState) => {
+    setConfirmDialogBusy(false);
     setConfirmDialog(dialog);
   };
 
   const executeConfirmDialog = async () => {
-    if (!confirmDialog) return;
+    if (!confirmDialog || confirmDialogBusy) return;
+    setConfirmDialogBusy(true);
     const action = confirmDialog.onConfirm;
-    setConfirmDialog(null);
-    await action();
+    try {
+      setConfirmDialog(null);
+      await action();
+    } finally {
+      setConfirmDialogBusy(false);
+    }
   };
 
   const goToNextObjectsPage = async () => {
@@ -807,6 +1277,9 @@ export default function StoragePanel({
       confirmLabel: "Удалить датасет",
       onConfirm: async () => {
         await runStorageAction(`delete-dataset-${dataset}`, async () => {
+          const datasetDeleteJobID = `${Date.now().toString(16)}${Math.random()
+            .toString(16)
+            .slice(2, 10)}`.slice(0, 16);
           let initialSelected = 0;
           let deletedTotal = 0;
           let failedTotal = 0;
@@ -823,6 +1296,7 @@ export default function StoragePanel({
                 confirm: true,
                 progressive: true,
                 batch_size: 200,
+                job_id: datasetDeleteJobID,
               });
               const selected = Number(response.data?.selected_images || 0);
               const deleted = Number(response.data?.deleted_images || 0);
@@ -870,25 +1344,53 @@ export default function StoragePanel({
   };
 
   const downloadSnapshot = async (kind: TransferKind) => {
-    await runStorageAction(`download-${kind}`, async () => {
-      const response = await fetch(
-        `/api/storage/transfer/export?kind=${encodeURIComponent(kind)}`
-      );
-      if (!response.ok) {
-        let message = response.statusText || "Failed to export snapshot";
-        const text = await response.text();
-        if (text) {
-          try {
-            const payload = JSON.parse(text);
-            message = toErrorMessage(payload) || message;
-          } catch {
-            message = text || message;
-          }
+    const actionId = `download-${kind}` as SnapshotActionId;
+    const exportId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    setSnapshotExportInlineMessage(null);
+    const controller = new AbortController();
+    setSnapshotAbortController(actionId, controller);
+    updateSnapshotProgressMeta(actionId, {
+      phase: "preparing",
+      status: "running",
+      hint: "Preparing snapshot...",
+    });
+    updateSnapshotTransferSize(actionId, 0, null);
+    updateSnapshotProgress(actionId, 0);
+    startSnapshotExportProgressPoll(exportId, actionId);
+
+    await runStorageAction(actionId, async () => {
+      const response = await axios.get(
+        `/api/storage/transfer/export?kind=${encodeURIComponent(kind)}&export_id=${encodeURIComponent(exportId)}`,
+        {
+          adapter: "xhr",
+          responseType: "blob",
+          signal: controller.signal,
+          onDownloadProgress: (event) => {
+            const total = Number(event.total || 0);
+            const loaded = Number(event.loaded || 0);
+            updateSnapshotTransferSize(actionId, loaded, total > 0 ? total : null);
+            if (total > 0) {
+              const ratio = Math.min(1, Math.max(0, loaded / total));
+              updateSnapshotProgress(actionId, ratio * 100, "max");
+            }
+          },
         }
-        throw new Error(message || "Failed to export snapshot");
+      );
+
+      const blob = response.data as Blob;
+      const finalSize = Number(blob.size || 0);
+      if (finalSize > 0) {
+        updateSnapshotTransferSize(actionId, finalSize, finalSize);
       }
-      const blob = await response.blob();
-      const disposition = response.headers.get("content-disposition");
+      updateSnapshotProgressMeta(actionId, {
+        phase: "done",
+        status: "done",
+        hint: "",
+      });
+      updateSnapshotProgress(actionId, 100);
+      await new Promise((resolve) => setTimeout(resolve, 160));
+
+      const disposition = String(response.headers?.["content-disposition"] || "");
       const fallbackName = `avsp-${kind}-snapshot-${new Date()
         .toISOString()
         .replace(/[:.]/g, "-")}.tar.gz`;
@@ -901,8 +1403,12 @@ export default function StoragePanel({
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(href);
-      setStatusMessage(`Файл '${filename}' выгружен.`);
+      setSnapshotExportInlineMessage(`Файл '${filename}' выгружен.`);
     });
+
+    stopSnapshotExportProgressPoll();
+    setSnapshotAbortController(actionId, null);
+    clearSnapshotProgress(actionId);
   };
 
   const askImportSnapshot = async () => {
@@ -916,34 +1422,100 @@ export default function StoragePanel({
         "Импорт может перезаписать существующие embeddings/VLM аннотации и добавить объекты в storage. Продолжить?",
       confirmLabel: "Импортировать",
       onConfirm: async () => {
-        await runStorageAction("import-snapshot", async () => {
-          const response = await fetch("/api/storage/transfer/import", {
-            method: "POST",
-            headers: {
-              "Content-Type": transferFile.type || "application/json",
-            },
-            body: transferFile,
-          });
-          let payload: unknown = {};
-          try {
-            payload = await response.json();
-          } catch {
-            payload = {};
-          }
-          if (!response.ok) {
-            const message = toErrorMessage(payload) || response.statusText;
-            throw new Error(message || "Failed to import snapshot");
+        const actionId: SnapshotActionId = "import-snapshot";
+        const importId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        setSnapshotImportInlineMessage(null);
+        const controller = new AbortController();
+        setSnapshotAbortController(actionId, controller);
+        updateSnapshotProgressMeta(actionId, {
+          phase: "uploading",
+          status: "running",
+          hint: "Uploading snapshot...",
+        });
+        updateSnapshotTransferSize(
+          actionId,
+          0,
+          transferFile ? Number(transferFile.size || 0) : null
+        );
+        startSnapshotProgressAnimation(actionId, {
+          from: 4,
+          cap: 70,
+          stepMin: 0.35,
+          stepMax: 0.9,
+          intervalMs: 140,
+        });
+
+        await runStorageAction(actionId, async () => {
+          let processingAnimationStarted = false;
+          const response = await axios.post(
+            `/api/storage/transfer/import?import_id=${encodeURIComponent(importId)}`,
+            transferFile,
+            {
+              adapter: "xhr",
+              headers: {
+                "Content-Type": transferFile.type || "application/octet-stream",
+              },
+              signal: controller.signal,
+              onUploadProgress: (event) => {
+                const total = Number(event.total || 0);
+                const loaded = Number(event.loaded || 0);
+                updateSnapshotTransferSize(
+                  actionId,
+                  loaded,
+                  total > 0 ? total : transferFile ? Number(transferFile.size || 0) : null
+                );
+                if (total > 0) {
+                  clearSnapshotProgressTimer(actionId);
+                  const uploadPercent = Math.min(1, Math.max(0, loaded / total));
+                  updateSnapshotProgress(actionId, 6 + uploadPercent * 69, "max");
+                }
+                if (!processingAnimationStarted && total > 0 && loaded >= total) {
+                  processingAnimationStarted = true;
+                  clearSnapshotProgressTimer(actionId);
+                  startSnapshotProgressAnimation(actionId, {
+                    from: 76,
+                    cap: 98,
+                    stepMin: 0.35,
+                    stepMax: 0.85,
+                    intervalMs: 130,
+                  });
+                  updateSnapshotProgressMeta(actionId, {
+                    phase: "processing",
+                    status: "running",
+                    hint: "Extracting and applying snapshot...",
+                  });
+                }
+              },
+            }
+          );
+
+          if (!processingAnimationStarted) {
+            clearSnapshotProgressTimer(actionId);
+            updateSnapshotProgress(actionId, 97, "max");
           }
 
+          clearSnapshotProgressTimer(actionId);
+          updateSnapshotProgress(actionId, 100);
+          updateSnapshotProgressMeta(actionId, {
+            phase: "done",
+            status: "done",
+            hint: "",
+          });
+          await new Promise((resolve) => setTimeout(resolve, 160));
+
+          const payload = response.data;
           const responsePayload =
             payload && typeof payload === "object"
               ? (payload as Record<string, unknown>)
               : {};
-          setStatusMessage(buildImportSummary(responsePayload.result));
+          setSnapshotImportInlineMessage(buildImportSummary(responsePayload.result));
           setTransferFile(null);
           setTransferFileInputKey((value) => value + 1);
           await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
         });
+
+        setSnapshotAbortController(actionId, null);
+        clearSnapshotProgress(actionId);
       },
     });
   };
@@ -1058,6 +1630,129 @@ export default function StoragePanel({
     allDatasetBuckets.every((dataset) => Boolean(stats.dataset_visibility?.[dataset] ?? true));
   const allVisibilityActionId = "toggle-visibility-all";
   const isTogglingAllVisibility = actionInProgress === allVisibilityActionId;
+  const transferFileInputId = `snapshot-file-input-${transferFileInputKey}`;
+
+  const renderSnapshotProgressButton = ({
+    actionId,
+    idleLabel,
+    activeLabel,
+    onClick,
+    disabled,
+    tone,
+    longProgress = false,
+    fixedWidthClass = "",
+    onCancel,
+  }: {
+    actionId: SnapshotActionId;
+    idleLabel: string;
+    activeLabel: string;
+    onClick: () => void;
+    disabled: boolean;
+    tone: "sky" | "indigo" | "violet" | "emerald";
+    longProgress?: boolean;
+    fixedWidthClass?: string;
+    onCancel?: (actionId: SnapshotActionId) => void;
+  }) => {
+    const isActive = actionInProgress === actionId;
+    const progress = Math.max(
+      0,
+      Math.min(100, Math.round(snapshotActionProgress[actionId] ?? 0))
+    );
+    const transferSize = snapshotTransferSize[actionId];
+    const transferMeta = snapshotProgressMeta[actionId];
+    let idleTone = "";
+    let activeTone = "";
+    let fillTone = "";
+    let textTone = "";
+
+    if (tone === "sky") {
+      idleTone = "border-sky-500 bg-sky-600 text-white hover:bg-sky-700";
+      activeTone = "border-sky-300 bg-sky-100 text-sky-700";
+      fillTone = "bg-sky-600";
+      textTone = "text-sky-700";
+    } else if (tone === "indigo") {
+      idleTone = "border-indigo-500 bg-indigo-600 text-white hover:bg-indigo-700";
+      activeTone = "border-indigo-300 bg-indigo-100 text-indigo-700";
+      fillTone = "bg-indigo-600";
+      textTone = "text-indigo-700";
+    } else if (tone === "violet") {
+      idleTone = "border-violet-500 bg-violet-600 text-white hover:bg-violet-700";
+      activeTone = "border-violet-300 bg-violet-100 text-violet-700";
+      fillTone = "bg-violet-600";
+      textTone = "text-violet-700";
+    } else {
+      idleTone = "border-emerald-500 bg-emerald-600 text-white hover:bg-emerald-700";
+      activeTone = "border-emerald-300 bg-emerald-100 text-emerald-700";
+      fillTone = "bg-emerald-600";
+      textTone = "text-emerald-700";
+    }
+
+    let sizeText = "";
+    const hasTotalSize = Number(transferSize?.totalBytes || 0) > 0;
+    if (transferSize && transferSize.loadedBytes > 0) {
+      if (hasTotalSize) {
+        sizeText = ` (${formatBytes(transferSize.loadedBytes)} / ${formatBytes(
+          Number(transferSize.totalBytes || 0)
+        )})`;
+      } else {
+        sizeText = ` (${formatBytes(transferSize.loadedBytes)})`;
+      }
+    } else if (transferMeta?.hint) {
+      sizeText = ` (${transferMeta.hint})`;
+    }
+    const activeText = hasTotalSize
+      ? `${activeLabel} ${progress}%${sizeText}`
+      : `${activeLabel}${sizeText}`;
+    const handleClick = () => {
+      if (isActive && onCancel) {
+        onCancel(actionId);
+        return;
+      }
+      onClick();
+    };
+    return (
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={disabled}
+        title={isActive ? "Click to cancel" : undefined}
+        className={`relative self-start overflow-hidden rounded-full border px-4 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+          fixedWidthClass || (longProgress ? "min-w-40" : "w-fit")
+        } ${
+          isActive ? activeTone : idleTone
+        } ${
+          isActive
+            ? "cursor-pointer hover:!border-rose-300 hover:!bg-rose-100 hover:!text-rose-700"
+            : ""
+        }`}
+      >
+        {isActive && (
+          <span
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-y-0 left-0 transition-[width] duration-200 ease-out ${fillTone}`}
+            style={{ width: `${progress}%` }}
+          />
+        )}
+        {isActive ? (
+          <span className={`relative z-10 inline-block whitespace-nowrap ${textTone}`}>
+            <span aria-hidden="true" className="invisible">
+              {activeText}
+            </span>
+            <span className="absolute inset-0">{activeText}</span>
+            <span
+              className="absolute inset-y-0 left-0 overflow-hidden whitespace-nowrap text-white transition-[width] duration-200 ease-out"
+              style={{ width: `${progress}%` }}
+            >
+              {activeText}
+            </span>
+          </span>
+        ) : (
+          <span className="relative z-10">{idleLabel}</span>
+        )}
+      </button>
+    );
+  };
+
   const snapshotSection = (
     <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
       <h3 className="text-lg font-semibold text-slate-900">Transfer Snapshot</h3>
@@ -1071,37 +1766,46 @@ export default function StoragePanel({
           <p className="mt-1 text-xs text-slate-500">
             Файл можно перенести на другую VM и загрузить обратно после разметки.
           </p>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => downloadSnapshot("full")}
-              disabled={actionInProgress !== null}
-              className="rounded-full bg-sky-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {actionInProgress === "download-full"
-                ? "Выгружаем..."
-                : "Скачать полный storage"}
-            </button>
-            <button
-              type="button"
-              onClick={() => downloadSnapshot("embeddings")}
-              disabled={actionInProgress !== null}
-              className="rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {actionInProgress === "download-embeddings"
-                ? "Выгружаем..."
-                : "Скачать Embedder"}
-            </button>
-            <button
-              type="button"
-              onClick={() => downloadSnapshot("vlm")}
-              disabled={actionInProgress !== null}
-              className="rounded-full bg-violet-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {actionInProgress === "download-vlm"
-                ? "Выгружаем..."
-                : "Скачать VLM"}
-            </button>
+          {snapshotExportInlineMessage && (
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+              {snapshotExportInlineMessage}
+            </div>
+          )}
+          <div className="mt-3 flex flex-col items-start gap-2">
+            {renderSnapshotProgressButton({
+              actionId: "download-full",
+              idleLabel: "Скачать полный storage",
+              activeLabel: "Archiving full snapshot...",
+              onClick: () => downloadSnapshot("full"),
+              disabled:
+                actionInProgress !== null && actionInProgress !== "download-full",
+              tone: "sky",
+              fixedWidthClass: "w-full max-w-[30rem]",
+              onCancel: askCancelSnapshotAction,
+            })}
+            {renderSnapshotProgressButton({
+              actionId: "download-embeddings",
+              idleLabel: "Скачать Embedder",
+              activeLabel: "Archiving embeddings...",
+              onClick: () => downloadSnapshot("embeddings"),
+              disabled:
+                actionInProgress !== null &&
+                actionInProgress !== "download-embeddings",
+              tone: "indigo",
+              fixedWidthClass: "w-full max-w-[30rem]",
+              onCancel: askCancelSnapshotAction,
+            })}
+            {renderSnapshotProgressButton({
+              actionId: "download-vlm",
+              idleLabel: "Скачать VLM",
+              activeLabel: "Archiving VLM...",
+              onClick: () => downloadSnapshot("vlm"),
+              disabled:
+                actionInProgress !== null && actionInProgress !== "download-vlm",
+              tone: "violet",
+              fixedWidthClass: "w-full max-w-[30rem]",
+              onCancel: askCancelSnapshotAction,
+            })}
           </div>
         </div>
 
@@ -1110,29 +1814,46 @@ export default function StoragePanel({
           <p className="mt-1 text-xs text-slate-500">
             Поддерживаются снапшоты: full storage, embeddings-only, VLM-only.
           </p>
-          <div className="mt-3 flex flex-col gap-2">
+          <div className="mt-3 flex flex-col items-start gap-2">
             <input
+              id={transferFileInputId}
               key={transferFileInputKey}
               type="file"
               accept=".tar.gz,.tgz,.tar,.gz,application/gzip,application/x-gzip,application/x-tar"
               onChange={(event) =>
                 setTransferFile(event.target.files?.[0] ?? null)
               }
-              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700"
+              className="sr-only"
             />
-            <div className="break-all text-xs text-slate-500">
-              {transferFile ? `Выбран файл: ${transferFile.name}` : "Файл не выбран"}
-            </div>
-            <button
-              type="button"
-              onClick={askImportSnapshot}
-              disabled={actionInProgress !== null || transferFile === null}
-              className="w-fit rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+            <label
+              htmlFor={transferFileInputId}
+              className="inline-flex w-full max-w-[30rem] cursor-pointer items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
             >
-              {actionInProgress === "import-snapshot"
-                ? "Импортируем..."
-                : "Загрузить снапшот"}
-            </button>
+              Choose file
+            </label>
+            <div className="w-full max-w-[30rem] break-all px-1 text-xs text-slate-500">
+              {transferFile
+                ? `Selected: ${transferFile.name} (${formatBytes(transferFile.size)})`
+                : "No file selected"}
+            </div>
+            {snapshotImportInlineMessage && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                {snapshotImportInlineMessage}
+              </div>
+            )}
+            {renderSnapshotProgressButton({
+              actionId: "import-snapshot",
+              idleLabel: "Upload",
+              activeLabel: "Import...",
+              onClick: askImportSnapshot,
+              disabled:
+                (actionInProgress !== null && actionInProgress !== "import-snapshot") ||
+                (transferFile === null && actionInProgress !== "import-snapshot"),
+              tone: "emerald",
+              longProgress: true,
+              fixedWidthClass: "w-full max-w-[30rem]",
+              onCancel: askCancelSnapshotAction,
+            })}
           </div>
         </div>
       </div>
@@ -1772,7 +2493,11 @@ export default function StoragePanel({
       {confirmDialog && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
-          onClick={() => setConfirmDialog(null)}
+          onClick={() => {
+            if (!confirmDialogBusy) {
+              setConfirmDialog(null);
+            }
+          }}
         >
           <div
             className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-2xl"
@@ -1784,7 +2509,7 @@ export default function StoragePanel({
               <button
                 type="button"
                 onClick={() => setConfirmDialog(null)}
-                disabled={actionInProgress !== null}
+                disabled={confirmDialogBusy}
                 className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Отмена
@@ -1792,7 +2517,7 @@ export default function StoragePanel({
               <button
                 type="button"
                 onClick={executeConfirmDialog}
-                disabled={actionInProgress !== null}
+                disabled={confirmDialogBusy}
                 className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {confirmDialog.confirmLabel}
