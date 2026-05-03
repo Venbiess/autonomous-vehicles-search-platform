@@ -59,6 +59,19 @@ class AnalyticsAPI:
             payload = response.json()
         return int(payload.get("upserted", 0))
 
+    def get_annotations(self, object_ids: List[str]) -> List[Dict[str, Any]]:
+        if not object_ids:
+            return []
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
+                f"{self.endpoint}/annotations/get",
+                json={"object_ids": object_ids},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        rows = payload.get("rows", [])
+        return rows if isinstance(rows, list) else []
+
     def delete_annotations(self, object_ids: List[str]) -> int:
         if not object_ids:
             return 0

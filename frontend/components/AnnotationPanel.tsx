@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 
 interface AnnotationPanelProps {
   onOpenJobsMonitor: () => void;
   onOpenStorage: () => void;
+  showSyntheticMethod?: boolean;
 }
 
 type ResponseType = "short_text" | "text" | "yes_no" | "number" | "category";
@@ -104,6 +105,7 @@ function normalizeFieldName(name: string): string {
 export default function AnnotationPanel({
   onOpenJobsMonitor,
   onOpenStorage,
+  showSyntheticMethod = true,
 }: AnnotationPanelProps) {
   const localUploadFileInputRef = useRef<HTMLInputElement | null>(null);
   const [limit, setLimit] = useState(1000);
@@ -176,6 +178,14 @@ export default function AnnotationPanel({
     sourceLink: "",
     objectKey: "",
   });
+
+  const visiblePreprocessorMethods = useMemo(
+    () =>
+      showSyntheticMethod
+        ? preprocessorMethods
+        : preprocessorMethods.filter((item) => !isSyntheticMethod(item)),
+    [preprocessorMethods, showSyntheticMethod]
+  );
 
   useEffect(() => {
     const loadSchema = async () => {
@@ -629,7 +639,7 @@ export default function AnnotationPanel({
   };
 
   const startDatasetInstall = async () => {
-    const selectedDatasets = preprocessorMethods
+    const selectedDatasets = visiblePreprocessorMethods
       .map((option) => option.key)
       .filter((datasetKey) => installDatasets[datasetKey]);
 
@@ -825,14 +835,14 @@ export default function AnnotationPanel({
             </div>
           )}
 
-          {!preprocessorMethodsError && preprocessorMethods.length === 0 && (
+          {!preprocessorMethodsError && visiblePreprocessorMethods.length === 0 && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
               No preprocessor methods were returned by storage API.
             </div>
           )}
 
           <div className="mt-5 grid gap-4 lg:grid-cols-3">
-            {preprocessorMethods.map((option) => (
+            {visiblePreprocessorMethods.map((option) => (
               <div
                 key={`${option.key}-config`}
                 className={`rounded-2xl border p-4 ${

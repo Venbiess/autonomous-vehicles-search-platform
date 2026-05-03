@@ -1,3 +1,8 @@
+import {
+  getSnapshotTransferJob,
+  requestSnapshotTransferJobCancel,
+} from "../../../lib/snapshotTransferJobs";
+
 const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
 const masterTimeoutMs = Number(process.env.MASTER_PROXY_TIMEOUT_MS || 10000);
 
@@ -7,6 +12,19 @@ export default async function handler(req, res) {
   }
 
   try {
+    const localJobId = String(req.body?.job_id || "").trim();
+    if (localJobId) {
+      const localJob = getSnapshotTransferJob(localJobId);
+      if (localJob) {
+        const updated = requestSnapshotTransferJobCancel(localJobId);
+        return res.status(200).json({
+          status: "ok",
+          local: true,
+          job: updated || localJob,
+        });
+      }
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), masterTimeoutMs);
     const response = await fetch(`${masterEndpoint}/jobs/cancel`, {

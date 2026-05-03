@@ -1,6 +1,9 @@
 import io
 import logging
+import os
+import resource
 import threading
+import time
 from typing import Optional
 
 import torch
@@ -38,30 +41,101 @@ def _resolve_device() -> str:
 DEVICE = _resolve_device()
 TORCH_DTYPE = torch.bfloat16 if DEVICE == "cuda" else torch.float32
 
+model_name = str(VLM_CONFIG.MODEL_NAME)
+init_started_at = time.time()
+logger.info("VLM init: loading processor for model=%s", model_name)
 processor = AutoProcessor.from_pretrained(VLM_CONFIG.MODEL_NAME)
+logger.info("VLM init: processor loaded in %.1fs", max(time.time() - init_started_at, 0.0))
 model_kwargs = {
     "torch_dtype": TORCH_DTYPE,
 }
 if DEVICE == "cuda":
     model_kwargs["_attn_implementation"] = "eager"
 
+model_load_started_at = time.time()
+logger.info("VLM init: loading model weights for model=%s (device=%s, dtype=%s)", model_name, DEVICE, TORCH_DTYPE)
 model = AutoModelForVision2Seq.from_pretrained(
     VLM_CONFIG.MODEL_NAME,
     **model_kwargs,
 ).to(DEVICE)
 model.eval()
+logger.info("VLM init: model weights loaded in %.1fs", max(time.time() - model_load_started_at, 0.0))
+logger.info("VLM init: total startup time %.1fs", max(time.time() - init_started_at, 0.0))
 
 cfg_device = VLM_CONFIG.DEVICE.lower()
 print(
-    f"Embedder has been successfully initialized.",
+    f"VLM has been successfully initialized.",
     f"Device: {DEVICE}.",
     f"Port: {VLM_CONFIG.PORT}"
 )
 if cfg_device != DEVICE:
     print(
-        f"Your config device was: {DEVICE}, but currently is used {DEVICE}.",
+        f"Your config device was: {cfg_device}, but currently is used {DEVICE}.",
         f"Check your {cfg_device} availability"
     )
+
+
+def _process_rss_mb() -> float:
+    try:
+        with open("/proc/self/statm", "r", encoding="utf-8") as fp:
+            parts = fp.read().strip().split()
+        if len(parts) >= 2:
+            resident_pages = int(parts[1])
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            return round((resident_pages * page_size) / (1024 ** 2), 2)
+    except Exception:
+        pass
+
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        rss = float(usage.ru_maxrss)
+        if rss > 10 ** 8:
+            return round(rss / (1024 ** 2), 2)
+        return round(rss / 1024.0, 2)
+    except Exception:
+        return 0.0
+
+
+def _runtime_payload() -> dict:
+    runtime = {
+        "configured_device": cfg_device,
+        "selected_device": DEVICE,
+        "torch_cuda_available": bool(torch.cuda.is_available()),
+        "torch_mps_available": bool(torch.backends.mps.is_available()),
+        "cuda_device_count": int(torch.cuda.device_count() if torch.cuda.is_available() else 0),
+        "cuda_device_name": None,
+        "dtype": str(TORCH_DTYPE).replace("torch.", ""),
+    }
+    memory = {
+        "process_rss_mb": _process_rss_mb(),
+        "gpu_allocated_mb": 0.0,
+        "gpu_reserved_mb": 0.0,
+        "gpu_total_mb": 0.0,
+        "gpu_free_mb": 0.0,
+    }
+
+    if DEVICE == "cuda" and torch.cuda.is_available():
+        try:
+            current = torch.cuda.current_device()
+            runtime["cuda_device_name"] = torch.cuda.get_device_name(current)
+            memory["gpu_allocated_mb"] = round(
+                torch.cuda.memory_allocated(current) / (1024 ** 2), 2
+            )
+            memory["gpu_reserved_mb"] = round(
+                torch.cuda.memory_reserved(current) / (1024 ** 2), 2
+            )
+            free_bytes, total_bytes = torch.cuda.mem_get_info(current)
+            memory["gpu_total_mb"] = round(total_bytes / (1024 ** 2), 2)
+            memory["gpu_free_mb"] = round(free_bytes / (1024 ** 2), 2)
+        except Exception:
+            pass
+
+    counters = {
+        "received": requests_received,
+        "completed": requests_completed,
+        "in_progress": requests_in_progress,
+    }
+    return {"runtime": runtime, "memory": memory, "counters": counters}
 
 
 def _generate_text(image: Image.Image, prompt_text: str, max_new_tokens: int) -> str:
@@ -92,10 +166,13 @@ def _generate_text(image: Image.Image, prompt_text: str, max_new_tokens: int) ->
 
 @app.get("/health")
 def healthcheck():
+    runtime = _runtime_payload()
     return {
         "status": "ok",
+        "service": "vlm",
         "model": VLM_CONFIG.MODEL_NAME,
         "device": DEVICE,
+        **runtime,
     }
 
 

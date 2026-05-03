@@ -79,6 +79,7 @@ class DrivingDojoPreprocessor(Preprocessor):
         self.max_workers = max(1, int(max_workers or 1))
         self.limit_videos = int(limit_videos) if limit_videos is not None else None
         self._hf_sizes_cache: Optional[Dict[str, int]] = None
+        self._hf_file_size_cache: Dict[str, int] = {}
 
         self.install_log_callback = install_log_callback
         self.download_progress_callback = download_progress_callback
@@ -213,14 +214,14 @@ class DrivingDojoPreprocessor(Preprocessor):
             self._log("[DrivingDojo] Skip remote archive validation: download_from_hf=false")
             return
 
+        expected_sizes: Dict[str, int] = {}
         try:
             expected_sizes = self._hf_archive_size_map()
         except Exception as exc:  # noqa: BLE001
             self._log(f"[DrivingDojo] Skip pre-validation: failed to fetch remote sizes ({exc})")
-            return
+            expected_sizes = {}
         if not expected_sizes:
-            self._log("[DrivingDojo] Remote archive size map is empty; skip pre-validation")
-            return
+            self._log("[DrivingDojo] Remote archive size map is empty; will query sizes per archive")
 
         checked = 0
         mismatched = 0
@@ -232,6 +233,11 @@ class DrivingDojoPreprocessor(Preprocessor):
             filename = str(rel).replace("\\", "/")
             expected_size = int(expected_sizes.get(filename, 0) or 0)
             if expected_size <= 0:
+                expected_size = self._hf_head_size(filename)
+                if expected_size > 0:
+                    expected_sizes[filename] = expected_size
+            if expected_size <= 0:
+                self._log(f"[DrivingDojo] Skip size check for {filename}: remote size unknown")
                 continue
 
             checked += 1
@@ -389,9 +395,9 @@ class DrivingDojoPreprocessor(Preprocessor):
                 response = requests.get(url, headers=request_headers, stream=True, timeout=60)
 
             response.raise_for_status()
-            content_len = int(response.headers.get("Content-Length", "0") or 0)
-            if expected_size <= 0 and content_len > 0:
-                expected_size = resume_from + content_len
+            if expected_size <= 0:
+                expected_size = self._response_total_size(response, resume_from=resume_from)
+            if expected_size > 0 and int(item["size"] or 0) <= 0:
                 total_bytes += expected_size
 
             file_downloaded = resume_from
@@ -779,18 +785,71 @@ class DrivingDojoPreprocessor(Preprocessor):
         return headers
 
     def _hf_head_size(self, filename: str) -> int:
+        cached = int(self._hf_file_size_cache.get(filename, 0) or 0)
+        if cached > 0:
+            return cached
+
+        url = self._hf_hub_file_url(filename)
+        headers = self._hf_headers()
+        range_headers = dict(headers)
+        range_headers["Range"] = "bytes=0-0"
+
+        try:
+            with requests.get(url, headers=range_headers, stream=True, timeout=30) as response:
+                if response.status_code < 400:
+                    size = self._response_total_size(response, resume_from=0)
+                    if size > 0:
+                        self._hf_file_size_cache[filename] = size
+                        return size
+        except Exception:  # noqa: BLE001
+            pass
+
         try:
             response = requests.head(
-                self._hf_hub_file_url(filename),
-                headers=self._hf_headers(),
+                url,
+                headers=headers,
                 timeout=30,
                 allow_redirects=True,
             )
             if response.status_code >= 400:
                 return 0
-            return max(int(response.headers.get("Content-Length", "0") or 0), 0)
+            size = self._response_total_size(response, resume_from=0)
+            if size > 0:
+                self._hf_file_size_cache[filename] = size
+            return size
         except Exception:  # noqa: BLE001
             return 0
+
+    def _response_total_size(self, response: requests.Response, resume_from: int = 0) -> int:
+        content_encoding = str(response.headers.get("Content-Encoding", "identity") or "identity").lower()
+        if content_encoding != "identity":
+            return 0
+
+        content_range = str(response.headers.get("Content-Range", "") or "").strip()
+        if "/" in content_range:
+            total_raw = content_range.rsplit("/", 1)[-1].strip()
+            if total_raw and total_raw != "*":
+                try:
+                    parsed = int(total_raw)
+                    if parsed > 0:
+                        return parsed
+                except Exception:  # noqa: BLE001
+                    pass
+
+        content_length_raw = str(response.headers.get("Content-Length", "") or "").strip()
+        if not content_length_raw:
+            return 0
+        try:
+            content_length = int(content_length_raw)
+        except Exception:  # noqa: BLE001
+            return 0
+        if content_length <= 0:
+            return 0
+        if int(response.status_code) == 206:
+            if resume_from > 0:
+                return resume_from + content_length
+            return 0
+        return content_length
 
     def _recover_corrupted_archive(self, archive_path: Path, expected_size: Optional[int] = None) -> None:
         if not self.download_from_hf:
@@ -814,27 +873,77 @@ class DrivingDojoPreprocessor(Preprocessor):
             f"(expected={self._format_bytes(expected_size)})"
         )
         recovery_label = "Recovery Download"
-        archive_path.unlink(missing_ok=True)
         part_path = Path(str(archive_path) + ".part")
-        part_path.unlink(missing_ok=True)
+        if archive_path.exists() and not part_path.exists():
+            current_size = int(archive_path.stat().st_size)
+            if current_size > 0:
+                os.replace(archive_path, part_path)
+                self._log(
+                    f"[DrivingDojo] Recovery found partial archive, continue as .part: {archive_path.name} "
+                    f"({self._format_bytes(current_size)})"
+                )
         archive_path.parent.mkdir(parents=True, exist_ok=True)
 
         url = self._hf_hub_file_url(filename)
-        downloaded = 0
         headers = self._hf_headers()
+        resume_from = int(part_path.stat().st_size) if part_path.exists() else 0
+        if expected_size > 0 and resume_from > expected_size:
+            part_path.unlink(missing_ok=True)
+            resume_from = 0
+        if expected_size > 0 and resume_from == expected_size:
+            os.replace(part_path, archive_path)
+            self._report_download_progress(
+                file_index=1,
+                total_files=1,
+                downloaded_bytes=expected_size,
+                total_bytes=expected_size,
+                file_name=archive_path.name,
+                download_label=recovery_label,
+                done=True,
+            )
+            self._log(
+                f"[DrivingDojo] Recovery download skipped: {archive_path.name} already complete "
+                f"({self._format_bytes(expected_size)})"
+            )
+            return
+
+        request_headers = dict(headers)
+        if resume_from > 0:
+            request_headers["Range"] = f"bytes={resume_from}-"
+
+        response = requests.get(url, headers=request_headers, stream=True, timeout=60)
+        if resume_from > 0 and response.status_code == 200:
+            response.close()
+            self._log(
+                f"[DrivingDojo] Recovery server did not honor Range for {archive_path.name}, restart from zero"
+            )
+            part_path.unlink(missing_ok=True)
+            resume_from = 0
+            request_headers = dict(headers)
+            response = requests.get(url, headers=request_headers, stream=True, timeout=60)
+
+        response.raise_for_status()
+        remote_total_size = self._response_total_size(response, resume_from=resume_from)
+        if remote_total_size > 0 and remote_total_size != expected_size:
+            self._log(
+                f"[DrivingDojo] Recovery remote size differs from expected for {archive_path.name}: "
+                f"expected={self._format_bytes(expected_size)}, remote={self._format_bytes(remote_total_size)}"
+            )
+            expected_size = remote_total_size
+
+        downloaded = resume_from
         log_last_at = 0.0
         self._report_download_progress(
             file_index=1,
             total_files=1,
-            downloaded_bytes=0,
+            downloaded_bytes=downloaded,
             total_bytes=expected_size,
             file_name=archive_path.name,
             download_label=recovery_label,
             done=False,
         )
-        with requests.get(url, headers=headers, stream=True, timeout=60) as response:
-            response.raise_for_status()
-            with open(archive_path, "wb") as fp:
+        with response:
+            with open(part_path, "ab" if resume_from > 0 else "wb") as fp:
                 for chunk in response.iter_content(chunk_size=self.CHUNK_SIZE):
                     if self._should_stop():
                         raise InterruptedError("Dataset installation cancelled by user")
@@ -859,11 +968,12 @@ class DrivingDojoPreprocessor(Preprocessor):
                             f"({self._format_bytes(downloaded)} / {self._format_bytes(expected_size)})"
                         )
                         log_last_at = now
-        final_size = int(archive_path.stat().st_size) if archive_path.exists() else 0
+        final_size = int(part_path.stat().st_size) if part_path.exists() else downloaded
         if final_size != expected_size:
             raise RuntimeError(
                 f"Failed to recover archive {archive_path.name}: got {final_size} bytes, expected {expected_size}"
             )
+        os.replace(part_path, archive_path)
         self._report_download_progress(
             file_index=1,
             total_files=1,

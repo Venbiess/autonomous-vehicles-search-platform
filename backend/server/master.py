@@ -123,6 +123,15 @@ class ObjectIDsRequest(BaseModel):
     object_ids: List[str] = Field(default_factory=list)
 
 
+class AnnotationRowRequest(BaseModel):
+    object_id: str = Field(..., min_length=1)
+    values: Dict[str, str] = Field(default_factory=dict)
+
+
+class AnnotationRowsRequest(BaseModel):
+    rows: List[AnnotationRowRequest] = Field(default_factory=list)
+
+
 class DatasetInstallRequest(BaseModel):
     datasets: List[str] = Field(..., min_length=1)
     configs: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -288,8 +297,22 @@ def _normalize_response_type(response_type: str) -> str:
 
 def _normalize_match_mode(match_mode: str) -> str:
     normalized = match_mode.strip().lower()
-    if normalized not in {"exact", "contains"}:
-        raise ValueError("match_mode must be 'exact' or 'contains'")
+    allowed = {
+        "contains",
+        "exact",
+        "equal",
+        "not_equal",
+        "greater",
+        "greater_or_equal",
+        "less",
+        "less_or_equal",
+    }
+    if normalized not in allowed:
+        raise ValueError(
+            "match_mode must be one of: "
+            "'contains', 'exact', 'equal', 'not_equal', "
+            "'greater', 'greater_or_equal', 'less', 'less_or_equal'"
+        )
     return normalized
 
 
@@ -1803,6 +1826,153 @@ def get_jobs():
     return {"jobs": jobs}
 
 
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _collect_nvidia_info() -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "available": False,
+        "driver_version": "",
+        "cuda_version": "",
+        "gpus": [],
+        "error": "",
+    }
+
+    try:
+        version_cmd = [
+            "nvidia-smi",
+            "--query-gpu=driver_version",
+            "--format=csv,noheader",
+        ]
+        version_run = subprocess.run(
+            version_cmd,
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        if version_run.returncode == 0:
+            first_line = version_run.stdout.strip().splitlines()
+            if first_line:
+                out["driver_version"] = first_line[0].strip()
+
+        cmd = [
+            "nvidia-smi",
+            "--query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu",
+            "--format=csv,noheader,nounits",
+        ]
+        run = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if run.returncode != 0:
+            stderr = (run.stderr or "").strip()
+            out["error"] = stderr or "nvidia-smi returned non-zero status"
+            return out
+
+        lines = [line.strip() for line in run.stdout.splitlines() if line.strip()]
+        gpus: List[Dict[str, Any]] = []
+        for line in lines:
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) < 7:
+                continue
+            used_mb = _to_float(parts[4], 0.0)
+            total_mb = _to_float(parts[5], 0.0)
+            gpus.append(
+                {
+                    "index": _to_int(parts[0], 0),
+                    "name": parts[1],
+                    "uuid": parts[2],
+                    "utilization_percent": _to_float(parts[3], 0.0),
+                    "memory_used_mb": round(used_mb, 2),
+                    "memory_total_mb": round(total_mb, 2),
+                    "memory_free_mb": round(max(total_mb - used_mb, 0.0), 2),
+                    "memory_used_percent": round((used_mb / total_mb) * 100, 2)
+                    if total_mb > 0
+                    else 0.0,
+                    "temperature_c": _to_float(parts[6], 0.0),
+                }
+            )
+
+        out["gpus"] = gpus
+        out["available"] = len(gpus) > 0
+        return out
+    except FileNotFoundError:
+        out["error"] = "nvidia-smi not found"
+        return out
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = str(exc)
+        return out
+
+
+def _fetch_model_runtime(name: str, endpoint: str, timeout_sec: int = 3) -> Dict[str, Any]:
+    normalized_endpoint = endpoint.rstrip("/")
+    result: Dict[str, Any] = {
+        "name": name,
+        "endpoint": normalized_endpoint,
+        "reachable": False,
+        "status": "unavailable",
+        "model": "",
+        "device": "",
+        "runtime": {},
+        "memory": {},
+        "counters": {},
+        "error": "",
+    }
+
+    if not normalized_endpoint:
+        result["error"] = "endpoint is empty"
+        return result
+
+    try:
+        timeout = httpx.Timeout(timeout_sec)
+        with httpx.Client(timeout=timeout) as client:
+            response = client.get(f"{normalized_endpoint}/health")
+        if not response.is_success:
+            result["error"] = f"health status={response.status_code}"
+            return result
+
+        payload = response.json()
+        runtime = payload.get("runtime", {}) if isinstance(payload, dict) else {}
+        memory = payload.get("memory", {}) if isinstance(payload, dict) else {}
+        counters = payload.get("counters", {}) if isinstance(payload, dict) else {}
+        device = ""
+        if isinstance(runtime, dict):
+            device = str(runtime.get("selected_device", "")).strip()
+        if not device and isinstance(payload, dict):
+            device = str(payload.get("device", "")).strip()
+
+        result.update(
+            {
+                "reachable": True,
+                "status": str(payload.get("status", "ok")) if isinstance(payload, dict) else "ok",
+                "model": str(payload.get("model", "")) if isinstance(payload, dict) else "",
+                "device": device,
+                "runtime": runtime if isinstance(runtime, dict) else {},
+                "memory": memory if isinstance(memory, dict) else {},
+                "counters": counters if isinstance(counters, dict) else {},
+            }
+        )
+        return result
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = str(exc)
+        return result
+
+
 @app.get("/system-info")
 def get_system_info():
     try:
@@ -1811,6 +1981,9 @@ def get_system_info():
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
         uptime_seconds = int(time.time() - psutil.boot_time())
+        embedder_runtime = _fetch_model_runtime("embedder", EMBEDDER_ENDPOINT)
+        vlm_runtime = _fetch_model_runtime("vlm", VLM_ENDPOINT)
+        gpu_info = _collect_nvidia_info()
 
         return {
             "cpu": {
@@ -1828,6 +2001,11 @@ def get_system_info():
                 "used_gb": round(disk.used / (1024 ** 3), 2),
                 "available_gb": round((disk.total - disk.used) / (1024 ** 3), 2),
                 "usage_percent": round((disk.used / disk.total) * 100, 2),
+            },
+            "gpu": gpu_info,
+            "services": {
+                "embedder": embedder_runtime,
+                "vlm": vlm_runtime,
             },
             "uptime_seconds": uptime_seconds,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1848,6 +2026,17 @@ def get_system_info():
                 "used_gb": 0,
                 "available_gb": 0,
                 "usage_percent": 0,
+            },
+            "gpu": {
+                "available": False,
+                "driver_version": "",
+                "cuda_version": "",
+                "gpus": [],
+                "error": str(exc),
+            },
+            "services": {
+                "embedder": _fetch_model_runtime("embedder", EMBEDDER_ENDPOINT),
+                "vlm": _fetch_model_runtime("vlm", VLM_ENDPOINT),
             },
             "uptime_seconds": 0,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -2166,6 +2355,30 @@ def backfill_vlm(payload: VLMBackfillRequest):
 @app.post("/vlm/annotations/clear")
 def clear_vlm_annotations():
     return analytics_api.clear_annotations()
+
+
+@app.post("/vlm/annotations/upsert")
+def upsert_vlm_annotations(payload: AnnotationRowsRequest):
+    normalized_rows: List[Dict[str, Any]] = []
+    for row in payload.rows:
+        object_id = str(row.object_id or "").strip()
+        if not object_id:
+            continue
+        normalized_values = {
+            str(key).strip(): str(value).strip()
+            for key, value in row.values.items()
+            if str(key).strip() and str(value).strip()
+        }
+        if not normalized_values:
+            continue
+        normalized_rows.append({"object_id": object_id, "values": normalized_values})
+    return {"upserted": analytics_api.upsert_annotations(normalized_rows)}
+
+
+@app.post("/vlm/annotations/get")
+def get_vlm_annotations(payload: ObjectIDsRequest):
+    normalized = sorted({str(item).strip() for item in payload.object_ids if str(item).strip()})
+    return {"rows": analytics_api.get_annotations(normalized)}
 
 
 @app.post("/vlm/annotations/delete")
