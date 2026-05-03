@@ -27,6 +27,8 @@ interface SystemInfo {
 interface Job {
   job_id: string;
   job_type: string;
+  dataset?: string;
+  job_config?: Record<string, unknown>;
   status: "running" | "success" | "error" | "cancelled";
   cancel_requested?: boolean;
   progress: number;
@@ -64,6 +66,11 @@ interface LogViewerState {
   source?: "job" | "error";
 }
 
+interface ConfigViewerState {
+  title: string;
+  content: string;
+}
+
 interface WaymoAuthStartResponse {
   session_id?: string;
   auth_url?: string;
@@ -80,6 +87,7 @@ export default function SystemMonitor() {
   const [cancellingJobId, setCancellingJobId] = useState<string | null>(null);
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
   const [logViewer, setLogViewer] = useState<LogViewerState | null>(null);
+  const [configViewer, setConfigViewer] = useState<ConfigViewerState | null>(null);
   const [cancelDialogJob, setCancelDialogJob] = useState<Job | null>(null);
   const [waymoAuthModalOpen, setWaymoAuthModalOpen] = useState(false);
   const [waymoAuthSessionId, setWaymoAuthSessionId] = useState<string | null>(null);
@@ -215,6 +223,7 @@ export default function SystemMonitor() {
     if (jobType === "install_waymo") return "Install Waymo";
     if (jobType === "install_argoverse") return "Install Argoverse";
     if (jobType === "install_nuimages") return "Install NuImages (nuScenes)";
+    if (jobType === "install_once") return "Install ONCE";
     if (jobType === "install_nuscenes") return "Install NuScenes";
     if (jobType.startsWith("install_")) {
       const suffix = jobType.slice("install_".length);
@@ -515,7 +524,7 @@ export default function SystemMonitor() {
   ]);
 
   useEffect(() => {
-    if (!logViewer && !cancelDialogJob) {
+    if (!logViewer && !configViewer && !cancelDialogJob) {
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
@@ -526,6 +535,10 @@ export default function SystemMonitor() {
         setLogViewer(null);
         return;
       }
+      if (configViewer) {
+        setConfigViewer(null);
+        return;
+      }
       if (cancelDialogJob) {
         setCancelDialogJob(null);
       }
@@ -534,7 +547,7 @@ export default function SystemMonitor() {
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [logViewer, cancelDialogJob]);
+  }, [logViewer, configViewer, cancelDialogJob]);
 
   if (isLoading && !systemInfo) {
     return (
@@ -767,13 +780,18 @@ export default function SystemMonitor() {
                   )} / ${formatDataSize(currentSceneTasksTotal)}`;
                   const isNuimagesInstallJob =
                     job.job_type === "install_nuimages" || job.job_type === "install_nuscenes";
+                  const isOnceInstallJob =
+                    job.job_type === "install_once" || String(job.dataset ?? "").toLowerCase() === "once";
                   const installArchiveLabel = `Archive: ${formatDataSize(
                     currentSceneTasksCompleted
                   )} / ${formatDataSize(currentSceneTasksTotal)}`;
                   const installUploadLabel = `Upload: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal} images`;
+                  const installSplitLabel = `Split: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
                   const installSecondaryLabel =
                     installPhase === "upload"
                       ? installUploadLabel
+                      : installPhase === "download" && isOnceInstallJob
+                        ? installSplitLabel
                       : isNuimagesInstallJob
                         ? installArchiveLabel
                         : installFileLabel;
@@ -786,7 +804,9 @@ export default function SystemMonitor() {
                       : 0;
                   const extractFileName = String(job.extract_file_name ?? "").trim();
                   const extractFilesDone = job.extract_files_done ?? 0;
-                  const extractLabelBase = `Extract: ${formatDataSize(
+                  const extractLabelPrefix =
+                    isOnceInstallJob && installPhase === "download" ? "Download file" : "Extract";
+                  const extractLabelBase = `${extractLabelPrefix}: ${formatDataSize(
                     extractTasksCompleted
                   )} / ${formatDataSize(extractTasksTotal)}`;
                   const extractLabel = extractFileName
@@ -808,6 +828,13 @@ export default function SystemMonitor() {
                     job.status === "running" &&
                     isInstallDatasetJob &&
                     extractTasksTotal > 0;
+                  const extractRightLabel =
+                    isOnceInstallJob && installPhase === "download"
+                      ? `File ${Math.min(extractSceneIndex, plannedTotal || extractSceneIndex)}`
+                      : `Part ${Math.min(
+                          extractSceneIndex,
+                          plannedTotal || extractSceneIndex
+                        )} · files ${extractFilesDone}`;
                   const hasErrorDetails = job.status === "error" && (job.errors?.length ?? 0) > 0;
                   const hasJobLogData =
                     Array.isArray(job.job_log) && job.job_log.length > 0;
@@ -817,7 +844,21 @@ export default function SystemMonitor() {
                   return (
                     <tr key={job.job_id} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                        {job.job_id.substring(0, 8)}...
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const config = job.job_config && typeof job.job_config === "object"
+                              ? job.job_config
+                              : {};
+                            setConfigViewer({
+                              title: `Job config for ${formatJobTypeLabel(job.job_type)}`,
+                              content: JSON.stringify(config, null, 2),
+                            });
+                          }}
+                          className="font-semibold text-sky-700 underline decoration-sky-600 underline-offset-2 hover:text-sky-800"
+                        >
+                          {job.job_id.substring(0, 8)}...
+                        </button>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {formatJobTypeLabel(job.job_type)}
@@ -912,10 +953,7 @@ export default function SystemMonitor() {
                               <div className="flex justify-between gap-2 text-xs mb-1">
                                 <span className="text-gray-600">{extractLabel}</span>
                                 <span className="font-medium pl-2 whitespace-nowrap">
-                                  {`Part ${Math.min(
-                                    extractSceneIndex,
-                                    plannedTotal || extractSceneIndex
-                                  )} · files ${extractFilesDone}`}
+                                  {extractRightLabel}
                                 </span>
                               </div>
                               <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
@@ -1067,6 +1105,35 @@ export default function SystemMonitor() {
             <div className="max-h-[calc(80vh-72px)] overflow-auto p-5">
               <pre className="whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100">
                 {logViewer.content}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {configViewer && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setConfigViewer(null);
+            }
+          }}
+        >
+          <div className="max-h-[80vh] w-full max-w-4xl overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+              <div className="text-sm font-semibold text-slate-900">{configViewer.title}</div>
+              <button
+                type="button"
+                onClick={() => setConfigViewer(null)}
+                className="rounded-lg border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="max-h-[calc(80vh-72px)] overflow-auto p-5">
+              <pre className="whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100">
+                {configViewer.content}
               </pre>
             </div>
           </div>

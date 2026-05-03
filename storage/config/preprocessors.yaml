@@ -63,3 +63,36 @@ preprocessors:
       extract_with_progress: false
       keep_local_images: false
       embed_on_install: false
+
+  - key: once
+    label: ONCE
+    description: Read local ONCE archives, preprocess, and upload camera frames to storage.
+    runner:
+      entrypoint: python -m backend.processors.once_preprocessor
+      module: backend.processors.once_preprocessor
+    default_config:
+      bucket: once
+      tar_dir: /app/data/once/tars
+      extract_dir: /app/data/once/extracted
+      out_dir: /app/data/once/filtered
+      use_local_archives: true
+      download_from_gdrive: false
+      download_splits:
+        - train
+        - val
+        - test
+        - unlabeled_1
+        - unlabeled_2
+        - unlabeled_3
+        - unlabeled_4
+        - unlabeled_5
+        - unlabeled_6
+        - unlabeled_7
+        - unlabeled_8
+        - unlabeled_9
+      cameras:
+        - FRONT
+      resample_seconds: 5.0
+      fps: 10
+      keep_local_images: false
+      embed_on_install: false

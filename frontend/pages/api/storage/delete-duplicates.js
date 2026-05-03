@@ -1,4 +1,5 @@
 import { listStorageObjects } from "../../../lib/storageServer";
+import { isDatasetVisible } from "../../../lib/datasetVisibility";
 
 const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
 
@@ -11,9 +12,17 @@ export default async function handler(req, res) {
     if (!req.body?.confirm) {
       return res.status(400).json({ error: "confirm=true is required" });
     }
+    const dataset = String(req.body?.dataset || "").trim();
     const objects = await listStorageObjects();
+    if (dataset && !isDatasetVisible(dataset)) {
+      return res.status(400).json({ error: `dataset '${dataset}' is hidden` });
+    }
+    const scoped = (dataset
+      ? objects.filter((item) => String(item?.bucket || "").trim() === dataset)
+      : objects
+    ).filter((item) => isDatasetVisible(String(item?.bucket || "").trim()));
     const byStoragePath = new Map();
-    for (const item of objects) {
+    for (const item of scoped) {
       const path = String(item.storage_path || "").trim();
       if (!path) continue;
       if (!byStoragePath.has(path)) {

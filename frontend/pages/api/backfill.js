@@ -1,3 +1,4 @@
+import { isDatasetVisible } from "../../lib/datasetVisibility";
 const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
 
 export default async function handler(req, res) {
@@ -6,6 +7,10 @@ export default async function handler(req, res) {
   }
 
   try {
+    const dataset = String(req.body?.dataset || "").trim();
+    if (dataset && !isDatasetVisible(dataset)) {
+      return res.status(400).json({ error: `dataset '${dataset}' is hidden` });
+    }
     const response = await fetch(`${masterEndpoint}/embeddings/backfill`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

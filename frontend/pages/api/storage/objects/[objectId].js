@@ -2,6 +2,7 @@ import {
   readStorageJson,
   storageWriteHeaders,
 } from "../../../../lib/storageServer";
+import { isDatasetVisible } from "../../../../lib/datasetVisibility";
 
 export default async function handler(req, res) {
   const { objectId } = req.query;
@@ -18,6 +19,15 @@ export default async function handler(req, res) {
     }
 
     if (req.method === "DELETE") {
+      const objectPayload = await readStorageJson(
+        `/objects/${encodeURIComponent(objectId)}`
+      );
+      const bucket = String(objectPayload?.bucket || "").trim();
+      if (bucket && !isDatasetVisible(bucket)) {
+        return res.status(400).json({
+          error: `dataset '${bucket}' is hidden; delete is blocked`,
+        });
+      }
       const payload = await readStorageJson(
         `/objects/${encodeURIComponent(objectId)}`,
         {

@@ -13,5 +13,6 @@ fastapi
 uvicorn
 httpx
 psutil
+gdown
 
 pika

@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .argoverse_preprocessor import ArgoversePreprocessor
 from .nuimages_preprocessor import NuImagesPreprocessor
+from .once_preprocessor import OncePreprocessor
 from .synthetic_preprocessor import SyntheticRoadPreprocessor
 from .waymo_preprocessor import WaymoPreprocessor
 
@@ -78,6 +79,7 @@ def _build_preprocessor(
     cfg: Dict[str, Any],
     early_log_callback: Optional[Callable[[str], None]] = None,
     cancel_requested_callback: Optional[Callable[[], bool]] = None,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> Tuple[Any, str, int]:
     key = method_key.strip().lower()
     if key == "synthetic":
@@ -139,6 +141,70 @@ def _build_preprocessor(
         planned_total = len(preprocessor)
         return preprocessor, bucket, planned_total
 
+    if key == "once":
+        keep_local_images = _to_bool(cfg.get("keep_local_images", False), False)
+        download_splits = _to_str_list(cfg.get("download_splits"))
+        def _once_download_progress(payload: Dict[str, Any]) -> None:
+            if not progress_callback:
+                return
+            progress_callback(
+                {
+                    "event": "download",
+                    "current_scene_index": int(payload.get("file_index", 0) or 0),
+                    "total_planned": int(payload.get("total_files", 1) or 1),
+                    "current_scene_tasks_completed": int(payload.get("downloaded_bytes", 0) or 0),
+                    "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                }
+            )
+
+        def _once_extract_progress(payload: Dict[str, Any]) -> None:
+            if not progress_callback:
+                return
+            progress_callback(
+                {
+                    "event": "extract",
+                    "current_scene_index": int(payload.get("file_index", 0) or 0),
+                    "total_planned": int(payload.get("total_files", 1) or 1),
+                    "file_name": str(payload.get("file_name", "") or ""),
+                    "current_scene_tasks_completed": int(payload.get("extracted_bytes", 0) or 0),
+                    "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                    "extracted_files": int(payload.get("extracted_files", 0) or 0),
+                }
+            )
+        def _once_download_detail_progress(payload: Dict[str, Any]) -> None:
+            if not progress_callback:
+                return
+            progress_callback(
+                {
+                    "event": "download_detail",
+                    "current_scene_index": int(payload.get("file_index", 0) or 0),
+                    "total_planned": int(payload.get("total_files", 1) or 1),
+                    "file_name": str(payload.get("file_name", "") or ""),
+                    "current_scene_tasks_completed": int(payload.get("downloaded_bytes", 0) or 0),
+                    "current_scene_tasks_total": int(payload.get("total_bytes", 0) or 0),
+                }
+            )
+        preprocessor = OncePreprocessor(
+            cameras=_to_str_list(cfg.get("cameras"), ["FRONT"]),
+            resample_seconds=_to_float(cfg.get("resample_seconds", cfg.get("step_sec", 5.0)), 5.0),
+            fps=max(1, _to_int(cfg.get("fps", 10), 10)),
+            tar_dir=str(cfg.get("tar_dir", "")).strip() or None,
+            extract_dir=str(cfg.get("extract_dir", "")).strip() or None,
+            out_dir=str(cfg.get("out_dir", "")).strip() or None,
+            download_splits=download_splits or None,
+            use_local_archives=bool(cfg.get("use_local_archives", False)),
+            download_from_gdrive=bool(cfg.get("download_from_gdrive", True)),
+            remove_local_images=not keep_local_images,
+            install_log_callback=early_log_callback,
+            download_progress_callback=_once_download_progress,
+            download_detail_progress_callback=_once_download_detail_progress,
+            extract_progress_callback=_once_extract_progress,
+            cancel_requested_callback=cancel_requested_callback,
+        )
+        bucket = str(cfg.get("bucket", "once")).strip() or "once"
+        planned_total = len(preprocessor)
+        return preprocessor, bucket, planned_total
+
     raise ValueError(f"Unsupported preprocessor method: {method_key}")
 
 
@@ -164,6 +230,7 @@ def run_preprocessor_method(
         cfg,
         early_log_callback=_emit_early_log,
         cancel_requested_callback=cancel_requested_callback,
+        progress_callback=progress_callback,
     )
 
     if progress_callback:

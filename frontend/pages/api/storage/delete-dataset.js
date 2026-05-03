@@ -1,4 +1,5 @@
 import { listStorageObjects } from "../../../lib/storageServer";
+import { isDatasetVisible } from "../../../lib/datasetVisibility";
 
 const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
 
@@ -38,6 +39,9 @@ export default async function handler(req, res) {
     const dataset = String(req.body?.dataset || "").trim();
     if (!dataset) {
       return res.status(400).json({ error: "dataset is required" });
+    }
+    if (!isDatasetVisible(dataset)) {
+      return res.status(400).json({ error: `dataset '${dataset}' is hidden` });
     }
     const progressive = Boolean(req.body?.progressive);
     const batchSize = Math.min(

@@ -1,3 +1,4 @@
+import { loadDatasetVisibility } from "../../lib/datasetVisibility";
 const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
 
 function buildImageUrl(storagePath, defaultBucket) {
@@ -27,6 +28,7 @@ export default async function handler(req, res) {
   }
 
   try {
+    const hiddenDatasets = new Set(loadDatasetVisibility().hidden_datasets || []);
     const defaultBucket = process.env.MINIO_BUCKET || "avsp";
     const response = await fetch(`${masterEndpoint}/search/vlm`, {
       method: "POST",
@@ -42,6 +44,13 @@ export default async function handler(req, res) {
       .map((item, index) => {
         const objectId = item.object_id || "";
         const storagePath = item.storage_path || "";
+        const normalized = String(storagePath || "")
+          .replace(/^s3:\/\//, "")
+          .replace(/^\/+/, "");
+        const storageBucket = normalized.split("/")[0] || "";
+        if (storageBucket && hiddenDatasets.has(storageBucket)) {
+          return null;
+        }
         const directUrl = item.url || item.image_url || item.imageUrl || null;
         const url =
           (objectId && `/api/objects/${encodeURIComponent(objectId)}`) ||

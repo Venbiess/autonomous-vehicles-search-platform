@@ -32,6 +32,7 @@ interface BucketStats {
 interface StorageStats {
   tracked_buckets: string[];
   bucket_stats: BucketStats[];
+  all_bucket_stats?: BucketStats[];
   total_objects: number;
   total_bytes: number;
   total_gigabytes: number;
@@ -86,6 +87,8 @@ interface StorageStatsResponse {
   datasets: DatasetStats;
   disk: DiskStats;
   timestamp: string;
+  dataset_visibility?: Record<string, boolean>;
+  hidden_datasets?: string[];
 }
 
 interface ObjectListItem {
@@ -366,6 +369,11 @@ export default function StoragePanel() {
   const [objectsPrevCursors, setObjectsPrevCursors] = useState<string[]>([]);
   const [objectsNextCursor, setObjectsNextCursor] = useState("");
   const [objectsPage, setObjectsPage] = useState(1);
+  const [objectsSearchQuery, setObjectsSearchQuery] = useState("");
+  const [objectsDatasetFilter, setObjectsDatasetFilter] = useState("");
+  const [filteredObjects, setFilteredObjects] = useState<ObjectListItem[] | null>(null);
+  const [filteredObjectsLoading, setFilteredObjectsLoading] = useState(false);
+  const [filteredObjectsPage, setFilteredObjectsPage] = useState(1);
   const [previewObjectId, setPreviewObjectId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [warningMessage, setWarningMessage] = useState<string | null>(null);
@@ -373,6 +381,7 @@ export default function StoragePanel() {
   const [randomEmbeddingsCount, setRandomEmbeddingsCount] = useState(100);
   const [randomVlmCount, setRandomVlmCount] = useState(100);
   const [randomHardDeleteCount, setRandomHardDeleteCount] = useState(10);
+  const [cleanupDatasetFilter, setCleanupDatasetFilter] = useState("all");
   const [datasetDeleteProgress, setDatasetDeleteProgress] = useState<
     Record<string, number>
   >({});
@@ -456,6 +465,93 @@ export default function StoragePanel() {
     loadObjectsPage("", [], 1);
   }, [objectsPageSize]);
 
+  useEffect(() => {
+    const query = objectsSearchQuery.trim().toLowerCase();
+    const dataset = objectsDatasetFilter.trim();
+    const hasFilter = Boolean(query || dataset);
+    let cancelled = false;
+
+    const run = async () => {
+      if (!hasFilter) {
+        setFilteredObjects(null);
+        setFilteredObjectsLoading(false);
+        return;
+      }
+      setFilteredObjectsLoading(true);
+      try {
+        const all: ObjectListItem[] = [];
+        let cursor = "";
+        let safety = 0;
+        const maxPages = 200;
+        const pageLimit = 256;
+
+        while (!cancelled && safety < maxPages) {
+          safety += 1;
+          const response = await axios.get<ObjectListResponse>("/api/storage/objects", {
+            params: {
+              limit: pageLimit,
+              ...(cursor ? { cursor } : {}),
+            },
+          });
+          const items = Array.isArray(response.data?.items) ? response.data.items : [];
+          all.push(...items);
+          const nextCursor = String(response.data?.next_cursor || "").trim();
+          if (!nextCursor) break;
+          cursor = nextCursor;
+        }
+
+        if (cancelled) return;
+        const next = all.filter((item) => {
+          if (dataset && item.bucket !== dataset) {
+            return false;
+          }
+          if (!query) {
+            return true;
+          }
+          const haystack = [
+            item.object_id,
+            item.storage_path,
+            item.bucket,
+            item.key,
+            item.content_type,
+          ]
+            .join(" ")
+            .toLowerCase();
+          return haystack.includes(query);
+        });
+        setFilteredObjects(next);
+      } catch (error) {
+        if (cancelled) return;
+        const message = extractAxiosErrorMessage(error, "Failed to search objects");
+        setErrorMessage(message);
+        setFilteredObjects([]);
+      } finally {
+        if (!cancelled) {
+          setFilteredObjectsLoading(false);
+        }
+      }
+    };
+
+    const timer = setTimeout(run, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [objectsSearchQuery, objectsDatasetFilter]);
+
+  useEffect(() => {
+    setFilteredObjectsPage(1);
+  }, [objectsSearchQuery, objectsDatasetFilter, objectsPageSize]);
+
+  useEffect(() => {
+    if (!stats) return;
+    if (cleanupDatasetFilter === "all") return;
+    const isVisible = Boolean(stats.dataset_visibility?.[cleanupDatasetFilter] ?? true);
+    if (!isVisible) {
+      setCleanupDatasetFilter("all");
+    }
+  }, [stats, cleanupDatasetFilter]);
+
   const runStorageAction = async (actionId: string, fn: () => Promise<void>) => {
     setActionInProgress(actionId);
     setStatusMessage(null);
@@ -529,14 +625,16 @@ export default function StoragePanel() {
 
   const deleteRandomEmbeddings = async () => {
     const count = Math.max(1, Number(randomEmbeddingsCount || 1));
+    const dataset = cleanupDatasetFilter === "all" ? "" : cleanupDatasetFilter;
     openConfirmDialog({
       title: "Delete random embeddings",
-      description: `Удалить векторы для ${count} случайных сцен? Это потребует повторной разметки embeddings.`,
+      description: `Delete embeddings for ${count} random scenes${dataset ? ` in dataset '${dataset}'` : ""}?`,
       confirmLabel: "Удалить embeddings",
       onConfirm: async () => {
         await runStorageAction("delete-random-embeddings", async () => {
           const response = await axios.post("/api/storage/delete-random-embeddings", {
             count,
+            dataset,
             confirm: true,
           });
           const selected = Number(response.data?.selected_images || 0);
@@ -550,14 +648,16 @@ export default function StoragePanel() {
 
   const deleteRandomVlm = async () => {
     const count = Math.max(1, Number(randomVlmCount || 1));
+    const dataset = cleanupDatasetFilter === "all" ? "" : cleanupDatasetFilter;
     openConfirmDialog({
       title: "Delete random VLM",
-      description: `Удалить VLM-аннотации для ${count} случайных сцен?`,
+      description: `Delete VLM annotations for ${count} random scenes${dataset ? ` in dataset '${dataset}'` : ""}?`,
       confirmLabel: "Удалить VLM",
       onConfirm: async () => {
         await runStorageAction("delete-random-vlm", async () => {
           const response = await axios.post("/api/storage/delete-random-vlm", {
             count,
+            dataset,
             confirm: true,
           });
           const selected = Number(response.data?.selected_images || 0);
@@ -570,14 +670,16 @@ export default function StoragePanel() {
   };
 
   const deleteDuplicates = async () => {
+    const dataset = cleanupDatasetFilter === "all" ? "" : cleanupDatasetFilter;
     openConfirmDialog({
       title: "Delete duplicates",
       description:
-        "Удалить дублирующиеся сцены по одинаковому storage_path, оставив по одной записи?",
+        `Delete duplicate scenes by identical storage_path${dataset ? ` in dataset '${dataset}'` : ""}, keeping one row each?`,
       confirmLabel: "Удалить дубли",
       onConfirm: async () => {
         await runStorageAction("delete-duplicates", async () => {
           const response = await axios.post("/api/storage/delete-duplicates", {
+            dataset,
             confirm: true,
           });
           const candidates = Number(response.data?.duplicate_candidates || 0);
@@ -597,14 +699,16 @@ export default function StoragePanel() {
 
   const deleteRandomImagesHard = async () => {
     const count = Math.max(1, Number(randomHardDeleteCount || 1));
+    const dataset = cleanupDatasetFilter === "all" ? "" : cleanupDatasetFilter;
     openConfirmDialog({
       title: "Hard delete random scenes",
-      description: `Полностью удалить ${count} случайных сцен (изображение, векторы, VLM-аннотации)?`,
+      description: `Hard delete ${count} random scenes${dataset ? ` in dataset '${dataset}'` : ""} (image, vectors, VLM annotations)?`,
       confirmLabel: "Удалить сцены",
       onConfirm: async () => {
         await runStorageAction("delete-random-images", async () => {
           const response = await axios.post("/api/storage/delete-random-images", {
             count,
+            dataset,
             confirm: true,
           });
           const selected = Number(response.data?.selected_images || 0);
@@ -784,6 +888,19 @@ export default function StoragePanel() {
     }
   );
 
+  const normalizedObjectsQuery = objectsSearchQuery.trim().toLowerCase();
+  const hasObjectsFilter = Boolean(objectsDatasetFilter || normalizedObjectsQuery);
+  const filteredTotalPages = Math.max(
+    1,
+    Math.ceil((filteredObjects?.length ?? 0) / Math.max(1, objectsPageSize))
+  );
+  const safeFilteredPage = Math.min(filteredObjectsPage, filteredTotalPages);
+  const filteredStart = (safeFilteredPage - 1) * Math.max(1, objectsPageSize);
+  const filteredEnd = filteredStart + Math.max(1, objectsPageSize);
+  const objectsToRender = hasObjectsFilter
+    ? (filteredObjects ?? []).slice(filteredStart, filteredEnd)
+    : objects;
+
   return (
     <section className="px-6 pt-10 pb-16">
       <div className="mx-auto flex max-w-6xl flex-col gap-6">
@@ -828,8 +945,34 @@ export default function StoragePanel() {
               <p className="mt-1 text-sm text-slate-600">
                 Листинг объектов с постраничным просмотром, превью и удалением конкретного объекта.
               </p>
+              {hasObjectsFilter && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Поиск выполняется по всем объектам storage.
+                </p>
+              )}
             </div>
-            <div className="ml-auto flex items-center gap-2 text-sm text-slate-700">
+            <div className="ml-auto flex flex-wrap items-center gap-2 text-sm text-slate-700">
+              <input
+                type="text"
+                value={objectsSearchQuery}
+                onChange={(event) => setObjectsSearchQuery(event.target.value)}
+                placeholder="Поиск: object_id / key / path..."
+                className="w-72 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
+              />
+              <select
+                value={objectsDatasetFilter}
+                onChange={(event) => setObjectsDatasetFilter(event.target.value)}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
+              >
+                <option value="">Все датасеты</option>
+                {(stats.storage.all_bucket_stats || stats.storage.bucket_stats).map((bucket) => (
+                  <option key={bucket.bucket} value={bucket.bucket}>
+                    {bucket.bucket}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-2 text-sm text-slate-700">
               <span>На странице:</span>
               <select
                 value={objectsPageSize}
@@ -857,14 +1000,21 @@ export default function StoragePanel() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
-                {objects.length === 0 && !objectsLoading && (
+                {objectsToRender.length === 0 && !objectsLoading && !filteredObjectsLoading && (
                   <tr>
                     <td colSpan={5} className="px-4 py-6 text-center text-sm text-slate-500">
-                      Объекты не найдены.
+                      {hasObjectsFilter ? "По заданному фильтру объектов нет." : "Объекты не найдены."}
                     </td>
                   </tr>
                 )}
-                {objects.map((item) => (
+                {filteredObjectsLoading && (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-6 text-center text-sm text-slate-500">
+                      Поиск по объектам...
+                    </td>
+                  </tr>
+                )}
+                {objectsToRender.map((item) => (
                   <tr key={item.object_id}>
                     <td className="px-4 py-3 text-xs text-slate-800">{item.object_id}</td>
                     <td className="px-4 py-3 text-sm text-slate-700">
@@ -910,21 +1060,45 @@ export default function StoragePanel() {
 
           <div className="mt-4 flex items-center justify-between">
             <div className="text-sm text-slate-600">
-              Страница {objectsPage} {objectsLoading ? "• loading..." : ""}
+              {hasObjectsFilter
+                ? `Найдено: ${objectsToRender.length} ${filteredObjectsLoading ? "• loading..." : ""}`
+                : `Страница ${objectsPage} ${objectsLoading ? "• loading..." : ""}`}
             </div>
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={goToPrevObjectsPage}
-                disabled={objectsPrevCursors.length === 0 || objectsLoading}
+                onClick={() => {
+                  if (hasObjectsFilter) {
+                    setFilteredObjectsPage((current) => Math.max(1, current - 1));
+                    return;
+                  }
+                  goToPrevObjectsPage();
+                }}
+                disabled={
+                  hasObjectsFilter
+                    ? filteredObjectsLoading || safeFilteredPage <= 1
+                    : objectsPrevCursors.length === 0 || objectsLoading
+                }
                 className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 ← Назад
               </button>
               <button
                 type="button"
-                onClick={goToNextObjectsPage}
-                disabled={!objectsNextCursor || objectsLoading}
+                onClick={() => {
+                  if (hasObjectsFilter) {
+                    setFilteredObjectsPage((current) =>
+                      Math.min(filteredTotalPages, current + 1)
+                    );
+                    return;
+                  }
+                  goToNextObjectsPage();
+                }}
+                disabled={
+                  hasObjectsFilter
+                    ? filteredObjectsLoading || safeFilteredPage >= filteredTotalPages
+                    : !objectsNextCursor || objectsLoading
+                }
                 className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Вперёд →
@@ -1006,8 +1180,29 @@ export default function StoragePanel() {
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h3 className="text-lg font-semibold text-slate-900">Cleanup & Re-Annotation</h3>
           <p className="mt-1 text-sm text-slate-600">
-            Сброс части разметки, удаление дублей и полное удаление случайных сцен.
+            Partial annotation reset, duplicate cleanup, and full random scene deletion.
           </p>
+          <div className="mt-3">
+            <label className="text-sm font-medium text-slate-700">
+              Dataset scope
+            </label>
+            <div className="mt-2">
+              <select
+                value={cleanupDatasetFilter}
+                onChange={(event) => setCleanupDatasetFilter(event.target.value)}
+                className="w-56 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+              >
+                <option value="all">All datasets</option>
+                {(stats.storage.all_bucket_stats || stats.storage.bucket_stats)
+                  .filter((bucket) => Boolean(stats.dataset_visibility?.[bucket.bucket] ?? true))
+                  .map((bucket) => (
+                    <option key={`cleanup-${bucket.bucket}`} value={bucket.bucket}>
+                      {bucket.bucket}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          </div>
 
           <div className="mt-4 grid gap-4 xl:grid-cols-2">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -1065,7 +1260,10 @@ export default function StoragePanel() {
             </div>
 
             <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-              <div className="flex flex-wrap items-center justify-center gap-3 text-center">
+              <label className="text-sm font-medium text-amber-800">
+                Duplicate rows cleanup
+              </label>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span className="text-sm text-amber-800">
                   Drop duplicate rows by identical `storage_path`
                 </span>
@@ -1155,12 +1353,20 @@ export default function StoragePanel() {
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
                     Actions
                   </th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Visibility
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
-                {stats.storage.bucket_stats.map((bucket) => {
+                {(stats.storage.all_bucket_stats || stats.storage.bucket_stats).map((bucket) => {
                   const deleteActionId = `delete-dataset-${bucket.bucket}`;
                   const isDeleting = actionInProgress === deleteActionId;
+                  const visibilityActionId = `toggle-visibility-${bucket.bucket}`;
+                  const isTogglingVisibility = actionInProgress === visibilityActionId;
+                  const isVisible = Boolean(
+                    stats.dataset_visibility?.[bucket.bucket] ?? true
+                  );
                   const progress = Math.max(
                     0,
                     Math.min(100, datasetDeleteProgress[bucket.bucket] ?? 0)
@@ -1183,7 +1389,7 @@ export default function StoragePanel() {
                         <button
                           type="button"
                           onClick={() => deleteDataset(bucket.bucket)}
-                          disabled={actionInProgress !== null}
+                          disabled={actionInProgress !== null || !isVisible}
                           className={`relative overflow-hidden rounded-lg border px-3 py-1.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
                             isDeleting
                               ? "border-rose-400 bg-rose-100"
@@ -1211,6 +1417,69 @@ export default function StoragePanel() {
                             </span>
                           ) : (
                             <span className="relative z-10">Delete dataset</span>
+                          )}
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        <button
+                          type="button"
+                          title={isVisible ? "Dataset is visible" : "Dataset is hidden"}
+                          onClick={() => {
+                            openConfirmDialog({
+                              title: isVisible ? "Hide dataset" : "Show dataset",
+                              description: isVisible
+                                ? `Hide dataset '${bucket.bucket}' from Browser, VLM, annotation, cleanup/deletion and Storage analytics?`
+                                : `Show dataset '${bucket.bucket}' again across Browser, VLM, annotation, cleanup/deletion and Storage analytics?`,
+                              confirmLabel: isVisible ? "Hide dataset" : "Show dataset",
+                              onConfirm: async () => {
+                                await runStorageAction(visibilityActionId, async () => {
+                                  await axios.post("/api/storage/dataset-visibility", {
+                                    dataset: bucket.bucket,
+                                    visible: !isVisible,
+                                  });
+                                  await Promise.all([
+                                    loadStats(false),
+                                    loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
+                                  ]);
+                                });
+                              },
+                            });
+                          }}
+                          disabled={isTogglingVisibility || actionInProgress !== null}
+                          className={`inline-flex items-center justify-center text-slate-700 transition hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-60 ${
+                            isVisible ? "" : "text-slate-400"
+                          }`}
+                        >
+                          {isVisible ? (
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              className="h-4 w-4"
+                            >
+                              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+                              <circle cx="12" cy="12" r="3" />
+                            </svg>
+                          ) : (
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              className="h-4 w-4"
+                            >
+                              <path d="M3 3l18 18" />
+                              <path d="M10.58 10.58A2 2 0 0 0 12 14a2 2 0 0 0 1.42-.58" />
+                              <path d="M9.88 5.09A9.78 9.78 0 0 1 12 5c6.5 0 10 7 10 7a17.1 17.1 0 0 1-3.07 4.22" />
+                              <path d="M6.61 6.61C3.62 8.39 2 12 2 12s3.5 7 10 7a9.77 9.77 0 0 0 5.19-1.51" />
+                            </svg>
                           )}
                         </button>
                       </td>
