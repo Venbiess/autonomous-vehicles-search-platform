@@ -35,14 +35,19 @@ class Preprocessor:
 
         try:
             with open(local_path, "rb") as fp:
+                params = {
+                    "bucket": bucket,
+                    "key": object_name,
+                    "filename": os.path.basename(local_path),
+                    "content_type": "image/jpeg",
+                }
+                req_headers = dict(headers)
+                req_headers["Content-Type"] = "image/jpeg"
                 response = requests.post(
                     f"{OBJECT_SERVER_ENDPOINT}/objects/upload",
-                    data={
-                        "bucket": bucket,
-                        "key": object_name,
-                    },
-                    files={"file": (os.path.basename(local_path), fp, "image/jpeg")},
-                    headers=headers,
+                    params=params,
+                    data=fp,
+                    headers=req_headers,
                     timeout=60,
                 )
             response.raise_for_status()

@@ -19,3 +19,5 @@ jupyterlab
 ipykernel
 
 pika
+prometheus-client
+nvidia-ml-py

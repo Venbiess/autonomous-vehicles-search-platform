@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -87,8 +88,8 @@ func (s *StorageServer) Analytics() *AnalyticsStore {
 	return s.analytics
 }
 
-func (s *StorageServer) UploadObject(ctx context.Context, bucket, key, filename, contentType string, data []byte) (ObjectMetadata, error) {
-	if len(data) == 0 {
+func (s *StorageServer) UploadObject(ctx context.Context, bucket, key, filename, contentType string, reader io.Reader, size int64) (ObjectMetadata, error) {
+	if reader == nil || size <= 0 {
 		return ObjectMetadata{}, invalidArgument("file payload is required")
 	}
 
@@ -113,7 +114,7 @@ func (s *StorageServer) UploadObject(ctx context.Context, bucket, key, filename,
 	canonicalPath := fmt.Sprintf("s3://%s/%s", bucket, key)
 	objectID := objectIDFromStoragePath(canonicalPath)
 
-	res, err := s.objectAdapter.PutBytes(ctx, bucket, key, data, strings.TrimSpace(contentType))
+	res, err := s.objectAdapter.PutStream(ctx, bucket, key, reader, size, strings.TrimSpace(contentType))
 	if err != nil {
 		return ObjectMetadata{}, err
 	}

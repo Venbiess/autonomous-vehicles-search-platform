@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -29,17 +30,20 @@ class StorageAPI:
         key: Optional[str] = None,
         content_type: str = "application/octet-stream",
     ) -> Dict[str, Any]:
-        form_data: Dict[str, str] = {}
+        params: Dict[str, str] = {"filename": os.path.basename(filename) or "object.bin"}
         if bucket and bucket.strip():
-            form_data["bucket"] = bucket.strip()
+            params["bucket"] = bucket.strip()
         if key and key.strip():
-            form_data["key"] = key.strip()
-        files = {"file": (filename, data, content_type)}
+            params["key"] = key.strip()
+        if content_type.strip():
+            params["content_type"] = content_type.strip()
+        headers = dict(self.write_headers)
+        headers["Content-Type"] = content_type
         response = self._client.post(
             f"{self.endpoint}/objects/upload",
-            data=form_data,
-            files=files,
-            headers=self.write_headers,
+            params=params,
+            content=data,
+            headers=headers,
         )
         response.raise_for_status()
         return response.json()
@@ -56,7 +60,7 @@ class StorageAPI:
             return []
         response = self._client.post(
             f"{self.endpoint}/objects/get-batch",
-            json={"object_ids": object_ids},
+            json={"object_ids": object_ids, "include_content": True},
         )
         response.raise_for_status()
         payload = response.json()

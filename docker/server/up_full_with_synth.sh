@@ -17,13 +17,14 @@ build_services=(
 )
 
 runtime_services=(
+  prometheus
+  grafana
+  cadvisor
   clickhouse
   postgres
   minio
   minio-init
   rabbitmq
-  embedder
-  vlm
   embedder-worker
   vlm-worker
   storage-server

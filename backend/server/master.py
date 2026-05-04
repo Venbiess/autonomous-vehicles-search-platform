@@ -26,7 +26,6 @@ from configs.common import (
     STORAGE_SERVER_ENDPOINT,
     STORAGE_SERVER_TIMEOUT_SEC,
     STORAGE_WRITE_TOKEN,
-    VLM_ENDPOINT,
     VLM_TIMEOUT_SEC,
 )
 from backend.server.analytics_api import AnalyticsAPI
@@ -594,7 +593,6 @@ def _run_vlm(
 ) -> str:
     return model_gateway.run_vlm(
         client,
-        VLM_ENDPOINT,
         image_bytes=image_bytes,
         prompt=prompt,
         max_new_tokens=max_new_tokens,
@@ -1996,6 +1994,21 @@ def _fetch_model_runtime(name: str, endpoint: str, timeout_sec: int = 3) -> Dict
         return result
 
 
+def _queue_only_runtime(name: str, reason: str) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "endpoint": "",
+        "reachable": False,
+        "status": "queue_only",
+        "model": "",
+        "device": "",
+        "runtime": {},
+        "memory": {},
+        "counters": {},
+        "error": reason,
+    }
+
+
 @app.get("/system-info")
 def get_system_info():
     try:
@@ -2005,7 +2018,10 @@ def get_system_info():
         disk = psutil.disk_usage("/")
         uptime_seconds = int(time.time() - psutil.boot_time())
         embedder_runtime = _fetch_model_runtime("embedder", EMBEDDER_ENDPOINT)
-        vlm_runtime = _fetch_model_runtime("vlm", VLM_ENDPOINT)
+        vlm_runtime = _queue_only_runtime(
+            "vlm",
+            "vlm worker is queue-only and does not expose an HTTP runtime endpoint",
+        )
         gpu_info = _collect_nvidia_info()
 
         return {
@@ -2059,7 +2075,10 @@ def get_system_info():
             },
             "services": {
                 "embedder": _fetch_model_runtime("embedder", EMBEDDER_ENDPOINT),
-                "vlm": _fetch_model_runtime("vlm", VLM_ENDPOINT),
+                "vlm": _queue_only_runtime(
+                    "vlm",
+                    "vlm worker is queue-only and does not expose an HTTP runtime endpoint",
+                ),
             },
             "uptime_seconds": 0,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),

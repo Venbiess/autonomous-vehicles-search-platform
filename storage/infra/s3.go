@@ -113,10 +113,14 @@ func (m *S3Adapter) HeadObject(ctx context.Context, bucket, key string) (ObjectI
 }
 
 func (m *S3Adapter) PutBytes(ctx context.Context, bucket, key string, data []byte, contentType string) (PutResult, error) {
+	return m.PutStream(ctx, bucket, key, bytes.NewReader(data), int64(len(data)), contentType)
+}
+
+func (m *S3Adapter) PutStream(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) (PutResult, error) {
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	res, err := m.client.PutObject(ctx, bucket, key, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{ContentType: contentType})
+	res, err := m.client.PutObject(ctx, bucket, key, reader, size, minio.PutObjectOptions{ContentType: contentType})
 	if err != nil {
 		if isMinioNoSuchBucket(err) {
 			if mkErr := m.client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{}); mkErr != nil {

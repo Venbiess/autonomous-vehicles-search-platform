@@ -14,6 +14,8 @@ import pika
 import uvicorn
 from PIL import Image
 
+from backend.observability.worker_metrics import observe_job, start_metrics_server
+
 logger = logging.getLogger("avsp.model-worker")
 logging.basicConfig(level=logging.INFO)
 
@@ -41,22 +43,12 @@ def _connect_with_retry(params: pika.URLParameters) -> pika.BlockingConnection:
 
 
 def _start_http_server(worker_type: str) -> threading.Thread | None:
-    if str(os.getenv("WORKER_HTTP_ENABLED", "1")).strip().lower() not in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
+    if worker_type != "embedder":
         return None
 
-    if worker_type == "embedder":
-        from backend.models.embedder.embedder import app as model_app
+    from backend.models.embedder.embedder import app as model_app
 
-        port = int(os.getenv("EMBEDDER_PORT", "8000"))
-    else:
-        from backend.models.vlm.vlm import app as model_app
-
-        port = int(os.getenv("VLM_PORT", "8001"))
+    port = int(os.getenv("EMBEDDER_PORT", "8000"))
 
     log_level = str(os.getenv("WORKER_HTTP_LOG_LEVEL", "info")).strip().lower() or "info"
 
@@ -96,43 +88,85 @@ def _reply(ch, props, response: Dict[str, Any]) -> None:
     )
 
 
-def run_embedder_worker(ch, queue_name: str) -> None:
-    from backend.models.embedder.embedder import get_embedding
+def _consume_with_http_priority(
+    ch,
+    queue_name: str,
+    handler,
+    has_active_http_requests,
+    worker_name: str,
+) -> None:
+    prefetch = int(os.getenv("RABBITMQ_PREFETCH", "1"))
+    poll_interval_sec = float(os.getenv("RABBITMQ_POLL_INTERVAL_SEC", "0.1"))
+    http_grace_sec = float(os.getenv("WORKER_HTTP_PRIORITY_GRACE_SEC", "0.5"))
+    ch.basic_qos(prefetch_count=max(1, prefetch))
+    logger.info(
+        "%s worker consuming queue=%s with HTTP-aware polling grace=%.3fs",
+        worker_name,
+        queue_name,
+        http_grace_sec,
+    )
+    while True:
+        if has_active_http_requests(http_grace_sec):
+            time.sleep(poll_interval_sec)
+            continue
+        method, props, body = ch.basic_get(queue=queue_name, auto_ack=False)
+        if method is None:
+            time.sleep(poll_interval_sec)
+            continue
+        handler(ch, method, props, body)
 
-    def _on_message(channel, method, props, body):
+
+def run_embedder_worker(ch, queue_name: str) -> None:
+    from backend.models.embedder.embedder import get_embedding, has_active_http_requests
+
+    def _handle_message(channel, method, props, body):
+        started_at = time.monotonic()
+        task_name = "unknown"
+        status = "error"
         try:
             payload = json.loads(body.decode("utf-8"))
             task = str(payload.get("task", "")).strip()
+            task_name = task or "unknown"
             if task == "embed_text":
                 text = str(payload.get("text", ""))
                 embedding = get_embedding(text, type="text")
                 response = {"ok": True, "embedding": embedding, "dim": len(embedding)}
+                status = "ok"
             elif task == "embed_image":
                 encoded = str(payload.get("image_base64", "")).strip()
                 image_bytes = base64.b64decode(encoded)
                 image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
                 embedding = get_embedding(image, type="image")
                 response = {"ok": True, "embedding": embedding, "dim": len(embedding)}
+                status = "ok"
             else:
                 response = {"ok": False, "error": f"unknown embedder task: {task}"}
         except Exception as exc:  # noqa: BLE001
             response = {"ok": False, "error": str(exc)}
         _reply(channel, props, response)
         channel.basic_ack(delivery_tag=method.delivery_tag)
+        observe_job("embedder", task_name, status, time.monotonic() - started_at)
 
-    ch.basic_qos(prefetch_count=int(os.getenv("RABBITMQ_PREFETCH", "1")))
-    ch.basic_consume(queue=queue_name, on_message_callback=_on_message)
-    logger.info("embedder worker consuming queue=%s", queue_name)
-    ch.start_consuming()
-
+    _consume_with_http_priority(
+        ch,
+        queue_name,
+        _handle_message,
+        has_active_http_requests,
+        "embedder",
+    )
+    return
 
 def run_vlm_worker(ch, queue_name: str) -> None:
     from backend.models.vlm.vlm import _generate_text
 
-    def _on_message(channel, method, props, body):
+    def _handle_message(channel, method, props, body):
+        started_at = time.monotonic()
+        task_name = "unknown"
+        status = "error"
         try:
             payload = json.loads(body.decode("utf-8"))
             task = str(payload.get("task", "")).strip()
+            task_name = task or "unknown"
             if task != "generate_vlm":
                 raise ValueError(f"unknown vlm task: {task}")
             encoded = str(payload.get("image_base64", "")).strip()
@@ -142,13 +176,15 @@ def run_vlm_worker(ch, queue_name: str) -> None:
             max_new_tokens = int(payload.get("max_new_tokens", 64))
             generated = _generate_text(image, prompt, max_new_tokens)
             response = {"ok": True, "response": generated}
+            status = "ok"
         except Exception as exc:  # noqa: BLE001
             response = {"ok": False, "error": str(exc)}
         _reply(channel, props, response)
         channel.basic_ack(delivery_tag=method.delivery_tag)
+        observe_job("vlm", task_name, status, time.monotonic() - started_at)
 
     ch.basic_qos(prefetch_count=int(os.getenv("RABBITMQ_PREFETCH", "1")))
-    ch.basic_consume(queue=queue_name, on_message_callback=_on_message)
+    ch.basic_consume(queue=queue_name, on_message_callback=_handle_message)
     logger.info("vlm worker consuming queue=%s", queue_name)
     ch.start_consuming()
 
@@ -162,6 +198,7 @@ def main() -> None:
     embedder_queue = os.getenv("RABBITMQ_EMBEDDER_QUEUE", "avsp.embedder.tasks")
     vlm_queue = os.getenv("RABBITMQ_VLM_QUEUE", "avsp.vlm.tasks")
 
+    start_metrics_server(args.worker)
     _start_http_server(args.worker)
 
     params = pika.URLParameters(rabbit_url)

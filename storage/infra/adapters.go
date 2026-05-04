@@ -3,6 +3,7 @@ package infra
 import (
 	"context"
 	"errors"
+	"io"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -21,6 +22,7 @@ type ObjectAdapter interface {
 	GetBytes(ctx context.Context, bucket, key string) ([]byte, string, error)
 	HeadObject(ctx context.Context, bucket, key string) (ObjectInfo, error)
 	PutBytes(ctx context.Context, bucket, key string, data []byte, contentType string) (PutResult, error)
+	PutStream(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) (PutResult, error)
 	Delete(ctx context.Context, bucket, key string) error
 	Health(ctx context.Context) error
 }

@@ -134,24 +134,39 @@ class RabbitRPCClient:
 class ModelGateway:
     def __init__(self):
         self.mode = os.getenv("MODEL_EXECUTION_MODE", "rabbitmq").strip().lower()
+        raw_embedder_endpoints = os.getenv("EMBEDDER_ENDPOINTS", "").strip()
+        self._embedder_endpoints = [
+            item.strip().rstrip("/")
+            for item in raw_embedder_endpoints.split(",")
+            if item.strip()
+        ]
+        self._embedder_rr_lock = threading.Lock()
+        self._embedder_rr_index = 0
         rabbit_url = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/%2f")
         embedder_queue = os.getenv("RABBITMQ_EMBEDDER_QUEUE", "avsp.embedder.tasks")
         vlm_queue = os.getenv("RABBITMQ_VLM_QUEUE", "avsp.vlm.tasks")
         timeout_sec = int(os.getenv("RABBITMQ_RPC_TIMEOUT_SEC", "120"))
         self._rpc: Optional[RabbitRPCClient] = None
-        if self.mode == "rabbitmq":
-            self._rpc = RabbitRPCClient(
-                RabbitConfig(
-                    url=rabbit_url,
-                    embedder_queue=embedder_queue,
-                    vlm_queue=vlm_queue,
-                    timeout_sec=max(1, timeout_sec),
-                )
+        self._rpc = RabbitRPCClient(
+            RabbitConfig(
+                url=rabbit_url,
+                embedder_queue=embedder_queue,
+                vlm_queue=vlm_queue,
+                timeout_sec=max(1, timeout_sec),
             )
+        )
+
+    def _pick_embedder_endpoint(self, fallback_endpoint: str) -> str:
+        endpoints = self._embedder_endpoints or [fallback_endpoint.strip().rstrip("/")]
+        endpoints = [endpoint for endpoint in endpoints if endpoint]
+        if not endpoints:
+            raise RuntimeError("no embedder endpoints configured")
+        with self._embedder_rr_lock:
+            endpoint = endpoints[self._embedder_rr_index % len(endpoints)]
+            self._embedder_rr_index += 1
+        return endpoint
 
     def health(self) -> Dict[str, Any]:
-        if self.mode != "rabbitmq":
-            return {"status": "ok", "mode": self.mode}
         if self._rpc is None:
             return {
                 "status": "error",
@@ -172,8 +187,14 @@ class ModelGateway:
                     "error": "no active consumers for one or more queues",
                     "missing_consumers": missing_consumers,
                     "rabbitmq": snapshot,
+                    "embedder_endpoints": self._embedder_endpoints,
                 }
-            return {"status": "ok", "mode": self.mode, "rabbitmq": snapshot}
+            return {
+                "status": "ok",
+                "mode": self.mode,
+                "rabbitmq": snapshot,
+                "embedder_endpoints": self._embedder_endpoints,
+            }
         except Exception as exc:  # noqa: BLE001
             return {
                 "status": "error",
@@ -182,37 +203,22 @@ class ModelGateway:
             }
 
     def embed_image_http(self, http_client, embedder_endpoint: str, image_bytes: bytes):
-        response = http_client.post(f"{embedder_endpoint}/embedding/image_bytes", content=image_bytes)
+        endpoint = self._pick_embedder_endpoint(embedder_endpoint)
+        response = http_client.post(f"{endpoint}/embedding/image_bytes", content=image_bytes)
         response.raise_for_status()
         payload = response.json()
         return payload["embedding"], payload["dim"]
 
     def embed_text_http(self, http_client, embedder_endpoint: str, text: str):
-        response = http_client.post(f"{embedder_endpoint}/embedding/text", params={"text": text})
+        endpoint = self._pick_embedder_endpoint(embedder_endpoint)
+        response = http_client.post(f"{endpoint}/embedding/text", params={"text": text})
         response.raise_for_status()
         payload = response.json()
         return payload["embedding"], payload["dim"]
 
-    def run_vlm_http(self, http_client, vlm_endpoint: str, *, image_bytes: bytes, prompt: str, max_new_tokens: int, metadata: Dict[str, Any]) -> str:
-        response = http_client.post(
-            f"{vlm_endpoint}/generate",
-            data={
-                "prompt": prompt,
-                "max_new_tokens": str(max_new_tokens),
-                "job_id": str(metadata.get("job_id") or ""),
-                "task_index": str(metadata.get("task_index")) if metadata.get("task_index") is not None else "",
-                "task_total": str(metadata.get("task_total")) if metadata.get("task_total") is not None else "",
-                "field_name": str(metadata.get("field_name") or ""),
-                "object_id": str(metadata.get("object_id") or ""),
-            },
-            files={"file": ("image.jpg", image_bytes, "image/jpeg")},
-        )
-        response.raise_for_status()
-        return response.json()["response"].strip()
-
     def embed_image(self, http_client, embedder_endpoint: str, image_bytes: bytes):
-        if self.mode != "rabbitmq" or self._rpc is None:
-            return self.embed_image_http(http_client, embedder_endpoint, image_bytes)
+        if self._rpc is None:
+            raise RuntimeError("rabbitmq RPC client is not initialized")
         payload = {
             "task": "embed_image",
             "image_base64": base64.b64encode(image_bytes).decode("ascii"),
@@ -221,8 +227,8 @@ class ModelGateway:
         return result["embedding"], int(result["dim"])
 
     def embed_text(self, http_client, embedder_endpoint: str, text: str):
-        if self.mode != "rabbitmq" or self._rpc is None:
-            return self.embed_text_http(http_client, embedder_endpoint, text)
+        if self._rpc is None:
+            raise RuntimeError("rabbitmq RPC client is not initialized")
         payload = {
             "task": "embed_text",
             "text": text,
@@ -233,22 +239,14 @@ class ModelGateway:
     def run_vlm(
         self,
         http_client,
-        vlm_endpoint: str,
         *,
         image_bytes: bytes,
         prompt: str,
         max_new_tokens: int,
         metadata: Dict[str, Any],
     ) -> str:
-        if self.mode != "rabbitmq" or self._rpc is None:
-            return self.run_vlm_http(
-                http_client,
-                vlm_endpoint,
-                image_bytes=image_bytes,
-                prompt=prompt,
-                max_new_tokens=max_new_tokens,
-                metadata=metadata,
-            )
+        if self._rpc is None:
+            raise RuntimeError("rabbitmq RPC client is not initialized")
         payload = {
             "task": "generate_vlm",
             "image_base64": base64.b64encode(image_bytes).decode("ascii"),

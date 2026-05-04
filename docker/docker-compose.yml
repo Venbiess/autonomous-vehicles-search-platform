@@ -1,15 +1,57 @@
 services:
+  prometheus:
+    image: prom/prometheus:v2.53.3
+    container_name: "prometheus-${USER}"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./server/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - avsp-net
+
+  grafana:
+    image: grafana/grafana-oss:11.1.4
+    container_name: "grafana-${USER}"
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./server/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./server/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3004:3000"
+    networks:
+      - avsp-net
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: "cadvisor-${USER}"
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    ports:
+      - "8088:8080"
+    networks:
+      - avsp-net
+
   rabbitmq:
     image: rabbitmq:3.13-management
-    container_name: "avsp-rabbitmq-${USER}"
-    user: "0:0"
-    tmpfs:
-      - /var/lib/rabbitmq
-    entrypoint: >
-      /bin/sh -c "
-      chown -R rabbitmq:rabbitmq /var/lib/rabbitmq &&
-      exec docker-entrypoint.sh rabbitmq-server
-      "
+    container_name: "rabbitmq-${USER}"
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -91,45 +133,16 @@ services:
     networks:
       - avsp-net
 
-  embedder:
-    build:
-      context: ..
-      dockerfile: docker/models/models.Dockerfile
-    container_name: "embedder-${USER}"
-    profiles: ["model-http"]
-    volumes:
-      - ../:/app
-    ports:
-      - "8000:8000"
-    networks:
-      - avsp-net
-
-  vlm:
-    build:
-      context: ..
-      dockerfile: docker/models/models.Dockerfile
-    container_name: "vlm-${USER}"
-    profiles: ["model-http"]
-    volumes:
-      - ../:/app
-    command: >
-      /bin/sh -c "
-      uvicorn backend.models.vlm.vlm:app
-      --host 0.0.0.0
-      --port 8001
-      --log-level debug
-      "
-    ports:
-      - "8001:8001"
-    networks:
-      - avsp-net
-
   embedder-worker:
-    image: avsp-embedder-worker
-    container_name: "avsp-embedder-worker-${USER}"
+    image: avsp-models-cpu
     build:
       context: ..
-      dockerfile: docker/models/models.Dockerfile
+      dockerfile: docker/models/models-cpu.Dockerfile
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 30s
+      timeout: 5s
+      retries: 1
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -142,9 +155,10 @@ services:
       - ../:/app
     expose:
       - "8000"
+      - "9108"
     environment:
       EMBEDDER_PORT: 8000
-      WORKER_HTTP_ENABLED: 1
+      WORKER_METRICS_PORT: 9108
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
@@ -153,11 +167,15 @@ services:
       - avsp-net
 
   vlm-worker:
-    image: avsp-vlm-worker
-    container_name: "avsp-vlm-worker-${USER}"
+    image: avsp-models-cpu
     build:
       context: ..
-      dockerfile: docker/models/models.Dockerfile
+      dockerfile: docker/models/models-cpu.Dockerfile
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 30s
+      timeout: 5s
+      retries: 1
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -170,9 +188,10 @@ services:
       - ../:/app
     expose:
       - "8001"
+      - "9109"
     environment:
       VLM_PORT: 8001
-      WORKER_HTTP_ENABLED: 1
+      WORKER_METRICS_PORT: 9109
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
@@ -241,7 +260,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       EMBEDDER_ENDPOINT: http://embedder-worker:8000
-      VLM_ENDPOINT: http://vlm-worker:8001
+      EMBEDDER_ENDPOINTS: http://embedder-worker:8000
       MODEL_EXECUTION_MODE: rabbitmq
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
@@ -304,9 +323,10 @@ services:
 volumes:
   clickhouse-data:
   frontend-node-modules:
+  grafana-data:
   minio-data:
-  object-kv-data:
   postgres-data:
+  prometheus-data:
   vscode-server:
 
 networks:

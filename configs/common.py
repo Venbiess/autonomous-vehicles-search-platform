@@ -53,7 +53,6 @@ STORAGE_SERVER_TIMEOUT_SEC = int(
 STORAGE_WRITE_TOKEN = os.getenv("STORAGE_WRITE_TOKEN", "change-me-storage-write-token")
 
 # VLM configuration
-VLM_ENDPOINT = os.getenv("VLM_ENDPOINT", "http://vlm-worker:8001")
 VLM_TIMEOUT_SEC = int(os.getenv("VLM_TIMEOUT_SEC", "120"))
 
 # Analytics server configuration

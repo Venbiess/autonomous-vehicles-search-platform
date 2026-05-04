@@ -9,16 +9,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 ENV PYTHONPATH=/app
 
-COPY configs/ /app/configs
+COPY configs/__init__.py /app/configs/__init__.py
+COPY configs/hw_settings.py /app/configs/hw_settings.py
 
 RUN python - <<'PY' > /etc/app.env
-from configs.hw_settings import TORCH_CONFIG, EMBEDDER_CONFIG, VLM_CONFIG
+from configs.hw_settings import TORCH_CONFIG
 
 print(f"TORCH_VERSION={TORCH_CONFIG.TORCH_VERSION}")
 print(f"TORCH_CUDA_TAG={TORCH_CONFIG.TORCH_CUDA_TAG or 'cpu'}")
 print(f"HF_HOME={getattr(TORCH_CONFIG, 'HF_HOME', 'app/.cache/huggingface')}")
-print(f"EMBEDDER_PORT={EMBEDDER_CONFIG.PORT}")
-print(f"VLM_PORT={VLM_CONFIG.PORT}")
 PY
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

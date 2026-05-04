@@ -16,14 +16,16 @@ def _fake_jpeg() -> bytes:
 
 
 def _upload_object(settings, http_session, headers, payload: bytes, filename: str = "image.jpg", key: str | None = None):
-    data = {"bucket": settings.bucket}
+    params = {"bucket": settings.bucket, "filename": filename, "content_type": "image/jpeg"}
     if key:
-        data["key"] = key
+        params["key"] = key
+    req_headers = dict(headers)
+    req_headers["Content-Type"] = "image/jpeg"
     response = http_session.post(
         f"{settings.storage_base_url}/objects/upload",
-        data=data,
-        files={"file": (filename, payload, "image/jpeg")},
-        headers=headers,
+        params=params,
+        data=payload,
+        headers=req_headers,
         timeout=settings.request_timeout_sec,
     )
     assert response.status_code == 200, response.text
@@ -129,7 +131,10 @@ def test_user_flow_list_pagination_and_batch(settings, http_session):
 
     batch = http_session.post(
         f"{settings.storage_base_url}/objects/get-batch",
-        json={"object_ids": [up1["object_id"], up2["object_id"], uuid.uuid4().hex]},
+        json={
+            "object_ids": [up1["object_id"], up2["object_id"], uuid.uuid4().hex],
+            "include_content": True,
+        },
         timeout=settings.request_timeout_sec,
     )
     assert batch.status_code == 200, batch.text
@@ -273,8 +278,9 @@ def test_write_endpoints_require_token(settings, http_session):
     payload = _fake_jpeg()
     upload = http_session.post(
         f"{settings.storage_base_url}/objects/upload",
-        data={"bucket": settings.bucket},
-        files={"file": ("x.jpg", payload, "image/jpeg")},
+        params={"bucket": settings.bucket, "filename": "x.jpg", "content_type": "image/jpeg"},
+        data=payload,
+        headers={"Content-Type": "image/jpeg"},
         timeout=settings.request_timeout_sec,
     )
     assert upload.status_code == 403

@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -166,42 +165,29 @@ func (h *StorageHandler) handleUploadObject(w http.ResponseWriter, r *http.Reque
 		writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
 		return
 	}
-	if err := r.ParseMultipartForm(maxUploadObjectBytes); err != nil {
-		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadObjectBytes+(1<<20))
+	if r.ContentLength <= 0 {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", errors.New("content-length is required"))
 		return
 	}
-	file, fileHeader, err := r.FormFile("file")
-	if err != nil {
-		writeTypedError(w, r, http.StatusBadRequest, "bad_request", errors.New("file is required"))
-		return
-	}
-	defer file.Close()
-
-	body, err := io.ReadAll(io.LimitReader(file, maxUploadObjectBytes+1))
-	if err != nil {
-		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
-		return
-	}
-	if len(body) == 0 {
-		writeTypedError(w, r, http.StatusBadRequest, "bad_request", errors.New("file payload is required"))
-		return
-	}
-	if len(body) > maxUploadObjectBytes {
+	if r.ContentLength > maxUploadObjectBytes {
 		writeTypedError(w, r, http.StatusRequestEntityTooLarge, "payload_too_large", errors.New("file is too large"))
 		return
 	}
-
-	bucket := strings.TrimSpace(r.FormValue("bucket"))
-	key := strings.TrimSpace(r.FormValue("key"))
-	contentType := strings.TrimSpace(r.FormValue("content_type"))
+	bucket := strings.TrimSpace(r.URL.Query().Get("bucket"))
+	key := strings.TrimSpace(r.URL.Query().Get("key"))
+	filename := strings.TrimSpace(r.URL.Query().Get("filename"))
+	if filename == "" {
+		filename = strings.TrimSpace(r.Header.Get("X-Object-Filename"))
+	}
+	contentType := strings.TrimSpace(r.URL.Query().Get("content_type"))
 	if contentType == "" {
-		contentType = strings.TrimSpace(fileHeader.Header.Get("Content-Type"))
+		contentType = strings.TrimSpace(r.Header.Get("Content-Type"))
 	}
 	if contentType == "" {
-		contentType = http.DetectContentType(body)
+		contentType = "application/octet-stream"
 	}
-
-	m, err := h.svc.UploadObject(r.Context(), bucket, key, fileHeader.Filename, contentType, body)
+	m, err := h.svc.UploadObject(r.Context(), bucket, key, filename, contentType, r.Body, r.ContentLength)
 	if err != nil {
 		status, code := classifyError(err)
 		writeTypedError(w, r, status, code, err)
@@ -211,7 +197,8 @@ func (h *StorageHandler) handleUploadObject(w http.ResponseWriter, r *http.Reque
 }
 
 type storageGetBatchObjectsRequest struct {
-	ObjectIDs []string `json:"object_ids"`
+	ObjectIDs      []string `json:"object_ids"`
+	IncludeContent bool     `json:"include_content"`
 }
 
 type storageGetBatchObjectItem struct {
@@ -253,7 +240,7 @@ func (h *StorageHandler) handleGetBatch(w http.ResponseWriter, r *http.Request) 
 			SizeBytes:   item.SizeBytes,
 			Error:       item.Error,
 		}
-		if len(item.Content) > 0 {
+		if req.IncludeContent && len(item.Content) > 0 {
 			respItem.ContentBase64 = base64.StdEncoding.EncodeToString(item.Content)
 		}
 		out.Items = append(out.Items, respItem)

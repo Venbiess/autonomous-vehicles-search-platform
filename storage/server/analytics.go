@@ -18,6 +18,8 @@ import (
 
 var identRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+const analyticsScanBatchSize = 512
+
 type AnalyticsDBConfig struct {
 	Provider             string
 	DSN                  string
@@ -437,28 +439,41 @@ func (s *clickHouseAnalyticsShard) purgeDeletedFieldsFromAnnotations(ctx context
 	if len(removed) == 0 {
 		return nil
 	}
-	var payload struct {
-		Data []struct {
-			ObjectID   string `json:"object_id"`
-			ValuesJSON string `json:"values_json"`
-		} `json:"data"`
-	}
-	query := fmt.Sprintf("SELECT object_id, argMax(values_json, updated_at) AS values_json FROM %s GROUP BY object_id", chIdent(s.annotationsTable))
-	if err := s.queryJSON(ctx, query, &payload); err != nil {
-		return err
-	}
-	rows := make([]map[string]any, 0)
-	now := time.Now().UTC()
-	for _, row := range payload.Data {
-		values := decodeValues(row.ValuesJSON)
-		changed := false
-		for name := range removed {
-			if _, ok := values[name]; ok {
-				delete(values, name)
-				changed = true
-			}
+	lastObjectID := ""
+	for {
+		query := fmt.Sprintf(
+			"SELECT object_id, argMax(values_json, updated_at) AS values_json FROM %s WHERE object_id > %s GROUP BY object_id ORDER BY object_id LIMIT %d",
+			chIdent(s.annotationsTable),
+			chQuote(lastObjectID),
+			analyticsScanBatchSize,
+		)
+		var payload struct {
+			Data []struct {
+				ObjectID   string `json:"object_id"`
+				ValuesJSON string `json:"values_json"`
+			} `json:"data"`
 		}
-		if changed {
+		if err := s.queryJSON(ctx, query, &payload); err != nil {
+			return err
+		}
+		if len(payload.Data) == 0 {
+			return nil
+		}
+		rows := make([]map[string]any, 0, len(payload.Data))
+		now := time.Now().UTC()
+		for _, row := range payload.Data {
+			lastObjectID = row.ObjectID
+			values := decodeValues(row.ValuesJSON)
+			changed := false
+			for name := range removed {
+				if _, ok := values[name]; ok {
+					delete(values, name)
+					changed = true
+				}
+			}
+			if !changed {
+				continue
+			}
 			raw, _ := json.Marshal(values)
 			rows = append(rows, map[string]any{
 				"object_id":   row.ObjectID,
@@ -466,46 +481,78 @@ func (s *clickHouseAnalyticsShard) purgeDeletedFieldsFromAnnotations(ctx context
 				"updated_at":  formatClickHouseTime(now),
 			})
 		}
+		if err := s.insertJSONEachRow(ctx, s.annotationsTable, []string{"object_id", "values_json", "updated_at"}, rows); err != nil {
+			return err
+		}
+		if len(payload.Data) < analyticsScanBatchSize {
+			return nil
+		}
 	}
-	return s.insertJSONEachRow(ctx, s.annotationsTable, []string{"object_id", "values_json", "updated_at"}, rows)
 }
 
-func (s *clickHouseAnalyticsShard) getAnnotationValues(ctx context.Context, objectID string) (map[string]string, error) {
+func (s *clickHouseAnalyticsShard) getAnnotationValuesBatch(ctx context.Context, objectIDs []string) (map[string]map[string]string, error) {
+	normalized := dedupeTrimmed(objectIDs)
+	if len(normalized) == 0 {
+		return map[string]map[string]string{}, nil
+	}
 	query := fmt.Sprintf(
-		"SELECT argMax(values_json, updated_at) AS values_json FROM %s WHERE object_id = %s",
+		"SELECT object_id, argMax(values_json, updated_at) AS values_json FROM %s WHERE object_id IN (%s) GROUP BY object_id",
 		chIdent(s.annotationsTable),
-		chQuote(objectID),
+		quotedList(normalized),
 	)
 	var payload struct {
 		Data []struct {
+			ObjectID   string `json:"object_id"`
 			ValuesJSON string `json:"values_json"`
 		} `json:"data"`
 	}
 	if err := s.queryJSON(ctx, query, &payload); err != nil {
 		return nil, err
 	}
-	if len(payload.Data) == 0 {
-		return map[string]string{}, nil
+	valuesByObjectID := make(map[string]map[string]string, len(payload.Data))
+	for _, row := range payload.Data {
+		valuesByObjectID[row.ObjectID] = decodeValues(row.ValuesJSON)
 	}
-	return decodeValues(payload.Data[0].ValuesJSON), nil
+	return valuesByObjectID, nil
 }
 
 func (s *clickHouseAnalyticsShard) upsertAnnotations(ctx context.Context, rows []AnnotationRow) error {
-	insertRows := make([]map[string]any, 0, len(rows))
-	now := time.Now().UTC()
+	grouped := make(map[string]map[string]string, len(rows))
+	order := make([]string, 0, len(rows))
 	for _, row := range rows {
 		objectID := strings.TrimSpace(row.ObjectID)
 		if objectID == "" {
 			continue
 		}
-		merged, err := s.getAnnotationValues(ctx, objectID)
-		if err != nil {
-			return err
+		values, ok := grouped[objectID]
+		if !ok {
+			values = make(map[string]string, len(row.Values))
+			grouped[objectID] = values
+			order = append(order, objectID)
 		}
 		for key, value := range row.Values {
-			if strings.TrimSpace(key) == "" {
+			key = strings.TrimSpace(key)
+			if key == "" {
 				continue
 			}
+			values[key] = value
+		}
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	existingValues, err := s.getAnnotationValuesBatch(ctx, order)
+	if err != nil {
+		return err
+	}
+	insertRows := make([]map[string]any, 0, len(order))
+	now := time.Now().UTC()
+	for _, objectID := range order {
+		merged := existingValues[objectID]
+		if merged == nil {
+			merged = make(map[string]string, len(grouped[objectID]))
+		}
+		for key, value := range grouped[objectID] {
 			merged[key] = value
 		}
 		raw, _ := json.Marshal(merged)
@@ -689,15 +736,11 @@ func (s *clickHouseAnalyticsShard) search(ctx context.Context, filters []SearchF
 }
 
 func (s *clickHouseAnalyticsShard) queryJSON(ctx context.Context, query string, out any) error {
-	body, err := s.do(ctx, query+" FORMAT JSON")
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(body, out)
+	return s.doJSON(ctx, query+" FORMAT JSON", out)
 }
 
 func (s *clickHouseAnalyticsShard) exec(ctx context.Context, query string) error {
-	_, err := s.do(ctx, query)
+	_, err := s.do(ctx, query, nil)
 	return err
 }
 
@@ -722,7 +765,14 @@ func (s *clickHouseAnalyticsShard) insertJSONEachRow(ctx context.Context, table 
 	return s.exec(ctx, query)
 }
 
-func (s *clickHouseAnalyticsShard) do(ctx context.Context, query string) ([]byte, error) {
+func (s *clickHouseAnalyticsShard) doJSON(ctx context.Context, query string, out any) error {
+	_, err := s.do(ctx, query, func(res *http.Response) error {
+		return json.NewDecoder(res.Body).Decode(out)
+	})
+	return err
+}
+
+func (s *clickHouseAnalyticsShard) do(ctx context.Context, query string, consume func(*http.Response) error) ([]byte, error) {
 	u, err := url.Parse(s.endpoint)
 	if err != nil {
 		return nil, err
@@ -742,14 +792,18 @@ func (s *clickHouseAnalyticsShard) do(ctx context.Context, query string) ([]byte
 		return nil, err
 	}
 	defer res.Body.Close()
-	body, readErr := io.ReadAll(res.Body)
-	if readErr != nil {
-		return nil, readErr
-	}
 	if res.StatusCode >= 300 {
+		body, readErr := io.ReadAll(io.LimitReader(res.Body, 4096))
+		if readErr != nil {
+			return nil, readErr
+		}
 		return nil, fmt.Errorf("clickhouse query failed: %s: %s", res.Status, strings.TrimSpace(string(body)))
 	}
-	return body, nil
+	if consume != nil {
+		return nil, consume(res)
+	}
+	_, err = io.Copy(io.Discard, res.Body)
+	return nil, err
 }
 
 func chIdent(value string) string {

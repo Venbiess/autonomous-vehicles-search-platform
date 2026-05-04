@@ -1,9 +1,10 @@
 import io
+import time
 import threading
 import os
 import resource
 from fastapi import FastAPI
-from fastapi import UploadFile, File, Request
+from fastapi import Request
 from PIL import Image
 from transformers import AlignProcessor, AlignModel
 from configs.hw_settings import EMBEDDER_CONFIG
@@ -11,11 +12,13 @@ import torch
 from transformers import logging
 from typing import Literal
 
-from transformers import logging
 logging.disable_progress_bar()
 
 app = FastAPI(title="Align Text Embedding API")
 inference_lock = threading.Lock()
+request_lock = threading.Lock()
+requests_in_progress = 0
+last_request_finished_at = 0.0
 
 # --- Choose device ---
 cfg_device = EMBEDDER_CONFIG.DEVICE.lower()
@@ -101,9 +104,26 @@ def _runtime_payload() -> dict:
     return {"runtime": payload, "memory": memory}
 
 
-def extract_patches(image, patch: bool):
-    return [image]
+@app.middleware("http")
+async def track_request_activity(request: Request, call_next):
+    global requests_in_progress, last_request_finished_at
+    with request_lock:
+        requests_in_progress += 1
+    try:
+        return await call_next(request)
+    finally:
+        with request_lock:
+            requests_in_progress = max(0, requests_in_progress - 1)
+            last_request_finished_at = time.monotonic()
 
+
+def has_active_http_requests(grace_period_sec: float = 0.0) -> bool:
+    with request_lock:
+        if requests_in_progress > 0:
+            return True
+        if grace_period_sec <= 0:
+            return False
+        return (time.monotonic() - last_request_finished_at) < grace_period_sec
 
 def get_embedding(inputs, type: Literal["text", "image"] = "image") -> torch.Tensor:
     with inference_lock, torch.no_grad():
@@ -145,21 +165,6 @@ async def inference_text(text: str):
         "embedding": embedding,
         "dim": len(embedding)
     }
-
-
-@app.post("/embedding/image")
-async def inference_image(file: UploadFile = File(...)):
-    image_bytes = file.file.read()
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    embedding = get_embedding(image, type="image")
-
-    return {
-        "filename": file.filename,
-        "image_shape": image.size,
-        "embedding": embedding,
-        "dim": len(embedding)
-    }
-
 
 @app.post("/embedding/image_bytes")
 async def embedding_image_bytes(request: Request):

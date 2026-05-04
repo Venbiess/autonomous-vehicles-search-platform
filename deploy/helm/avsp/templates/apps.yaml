@@ -196,8 +196,6 @@ spec:
           env:
             - name: RABBITMQ_URL
               value: amqp://guest:guest@rabbitmq:5672/%2f
-            - name: WORKER_HTTP_ENABLED
-              value: "0"
             - name: RABBITMQ_EMBEDDER_QUEUE
               value: avsp.embedder.tasks
             - name: RABBITMQ_VLM_QUEUE
@@ -237,8 +235,6 @@ spec:
           env:
             - name: RABBITMQ_URL
               value: amqp://guest:guest@rabbitmq:5672/%2f
-            - name: WORKER_HTTP_ENABLED
-              value: "0"
             - name: RABBITMQ_EMBEDDER_QUEUE
               value: avsp.embedder.tasks
             - name: RABBITMQ_VLM_QUEUE
@@ -310,9 +306,9 @@ spec:
                   name: {{ include "avsp.fullname" . }}-secrets
                   key: POSTGRES_PASSWORD
             - name: EMBEDDER_ENDPOINT
-              value: http://embedder:8000
-            - name: VLM_ENDPOINT
-              value: http://vlm:8001
+              value: http://embedder-worker:8000
+            - name: EMBEDDER_ENDPOINTS
+              value: http://embedder-worker:8000
             - name: MODEL_EXECUTION_MODE
               value: {{ .Values.master.modelExecutionMode | quote }}
             {{- if eq .Values.master.modelExecutionMode "rabbitmq" }}

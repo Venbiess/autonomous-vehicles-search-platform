@@ -7,7 +7,7 @@ import time
 from typing import Optional
 
 import torch
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, Query, Request
 from PIL import Image
 from transformers import AutoModelForVision2Seq, AutoProcessor
 from transformers import logging as hf_logging
@@ -25,6 +25,7 @@ inference_lock = threading.Lock()
 requests_received = 0
 requests_completed = 0
 requests_in_progress = 0
+last_request_finished_at = 0.0
 
 
 def _resolve_device() -> str:
@@ -138,6 +139,28 @@ def _runtime_payload() -> dict:
     return {"runtime": runtime, "memory": memory, "counters": counters}
 
 
+@app.middleware("http")
+async def track_request_activity(request: Request, call_next):
+    global requests_in_progress, last_request_finished_at
+    with request_lock:
+        requests_in_progress += 1
+    try:
+        return await call_next(request)
+    finally:
+        with request_lock:
+            requests_in_progress = max(0, requests_in_progress - 1)
+            last_request_finished_at = time.monotonic()
+
+
+def has_active_http_requests(grace_period_sec: float = 0.0) -> bool:
+    with request_lock:
+        if requests_in_progress > 0:
+            return True
+        if grace_period_sec <= 0:
+            return False
+        return (time.monotonic() - last_request_finished_at) < grace_period_sec
+
+
 def _generate_text(image: Image.Image, prompt_text: str, max_new_tokens: int) -> str:
     messages = [
         {
@@ -178,14 +201,14 @@ def healthcheck():
 
 @app.post("/generate")
 async def generate(
-    prompt: str = Form(...),
-    file: UploadFile = File(...),
-    max_new_tokens: Optional[int] = Form(128),
-    job_id: Optional[str] = Form(None),
-    task_index: Optional[int] = Form(None),
-    task_total: Optional[int] = Form(None),
-    field_name: Optional[str] = Form(None),
-    storage_path: Optional[str] = Form(None),
+    request: Request,
+    prompt: str = Query(...),
+    max_new_tokens: Optional[int] = Query(128),
+    job_id: Optional[str] = Query(None),
+    task_index: Optional[int] = Query(None),
+    task_total: Optional[int] = Query(None),
+    field_name: Optional[str] = Query(None),
+    object_id: Optional[str] = Query(None),
 ):
     global requests_received, requests_completed, requests_in_progress
 
@@ -199,28 +222,30 @@ async def generate(
 
     if task_index is not None and task_total is not None:
         logger.info(
-            "VLM generate started: request=%s job=%s task=%s/%s in_progress=%s field=%s storage_path=%s filename=%s",
+            "VLM generate started: request=%s job=%s task=%s/%s in_progress=%s field=%s object_id=%s content_type=%s",
             request_id,
             job_id or "-",
             task_index,
             task_total,
             in_progress,
             field_name or "-",
-            storage_path or "-",
-            file.filename,
+            object_id or "-",
+            request.headers.get("content-type", "-"),
         )
     else:
         logger.info(
-            "VLM generate started: request=%s completed=%s received=%s in_progress=%s filename=%s",
+            "VLM generate started: request=%s completed=%s received=%s in_progress=%s content_type=%s",
             request_id,
             completed,
             received,
             in_progress,
-            file.filename,
+            request.headers.get("content-type", "-"),
         )
 
     try:
-        image_bytes = await file.read()
+        image_bytes = await request.body()
+        if not image_bytes:
+            raise ValueError("image payload is required")
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         generated_text = _generate_text(image, prompt, max_new_tokens or 64)
         return {
@@ -239,22 +264,22 @@ async def generate(
 
         if task_index is not None and task_total is not None:
             logger.info(
-                "VLM generate finished: request=%s job=%s task=%s/%s in_progress=%s field=%s storage_path=%s filename=%s",
+                "VLM generate finished: request=%s job=%s task=%s/%s in_progress=%s field=%s object_id=%s content_type=%s",
                 request_id,
                 job_id or "-",
                 task_index,
                 task_total,
                 in_progress,
                 field_name or "-",
-                storage_path or "-",
-                file.filename,
+                object_id or "-",
+                request.headers.get("content-type", "-"),
             )
         else:
             logger.info(
-                "VLM generate finished: request=%s completed=%s received=%s in_progress=%s filename=%s",
+                "VLM generate finished: request=%s completed=%s received=%s in_progress=%s content_type=%s",
                 request_id,
                 completed,
                 received,
                 in_progress,
-                file.filename,
+                request.headers.get("content-type", "-"),
             )
