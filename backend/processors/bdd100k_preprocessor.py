@@ -38,6 +38,7 @@ class BDD100KPreprocessor(Preprocessor):
         out_dir: Optional[str] = None,
         extract_archives: bool = True,
         remove_local_images: bool = True,
+        stream_upload_by_archive: bool = True,
         install_log_callback: Optional[Callable[[str], None]] = None,
         extract_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         cancel_requested_callback: Optional[Callable[[], bool]] = None,
@@ -55,30 +56,42 @@ class BDD100KPreprocessor(Preprocessor):
         self.install_log_callback = install_log_callback
         self.extract_progress_callback = extract_progress_callback
         self.cancel_requested_callback = cancel_requested_callback
+        self.stream_upload_by_archive = bool(stream_upload_by_archive)
 
         DATA_FOLDER.mkdir(parents=True, exist_ok=True)
         self.zip_dir.mkdir(parents=True, exist_ok=True)
         self.extract_dir.mkdir(parents=True, exist_ok=True)
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.local_source_root = self.extract_dir
+        self.local_output_root = self.out_dir
 
         self._log(
             "[BDD100K] Init: "
             f"splits={self.splits}, resample_seconds={self.resample_seconds}, "
-            f"fps={self.fps}, step_frames={self.step_frames}, extract_archives={extract_archives}"
+            f"fps={self.fps}, step_frames={self.step_frames}, extract_archives={extract_archives}, "
+            f"stream_upload_by_archive={self.stream_upload_by_archive}"
         )
 
-        if extract_archives:
-            self._extract_archives_if_needed()
+        self.archives = self._discover_archives() if extract_archives else []
+        self.streaming_mode = bool(self.stream_upload_by_archive and len(self.archives) > 0)
 
-        self.episodes = self._build_episodes()
-        self.episode_keys = sorted(self.episodes.keys())
-        if not self.episode_keys:
-            raise FileNotFoundError(
-                f"No BDD100K images found under {self.extract_dir}. "
-                "Expected images/{train,val,test} or bdd100k/images/100k/{train,val,test}."
-            )
+        self.episodes: Dict[str, List[Dict[str, Any]]] = {}
+        self.episode_keys: List[str] = []
+        if not self.streaming_mode:
+            if extract_archives:
+                self._extract_archives_if_needed()
+            self.episodes = self._build_episodes()
+            self.episode_keys = sorted(self.episodes.keys())
+            if not self.episode_keys:
+                raise FileNotFoundError(
+                    f"No BDD100K images found under {self.extract_dir}. "
+                    "Expected images/{train,val,test} or bdd100k/images/100k/{train,val,test}."
+                )
         self.iteration = 0
-        self._log(f"[BDD100K] Ready: episodes={len(self.episode_keys)}")
+        if self.streaming_mode:
+            self._log(f"[BDD100K] Ready: archives={len(self.archives)} (stream upload mode)")
+        else:
+            self._log(f"[BDD100K] Ready: episodes={len(self.episode_keys)}")
 
     def _log(self, message: str) -> None:
         print(message, flush=True)
@@ -203,6 +216,137 @@ class BDD100KPreprocessor(Preprocessor):
                 done=True,
             )
 
+    def _extract_single_archive_with_images(
+        self, archive_path: Path, file_index: int, total_archives: int
+    ) -> List[Path]:
+        marker_path = self.extract_dir / f".extracted_{archive_path.name}.ok"
+        archive_size = int(archive_path.stat().st_size) if archive_path.exists() else 0
+        image_paths: List[Path] = []
+
+        with zipfile.ZipFile(archive_path) as zf:
+            members = zf.infolist()
+            if marker_path.exists():
+                for member in members:
+                    member_path = self.extract_dir / member.filename
+                    if (
+                        not member.is_dir()
+                        and member_path.suffix.lower() in self.IMAGE_SUFFIXES
+                        and self._is_source_image(member_path)
+                        and member_path.exists()
+                    ):
+                        image_paths.append(member_path.resolve())
+                if not image_paths:
+                    marker_path.unlink(missing_ok=True)
+                    self._log(
+                        f"[BDD100K] Marker exists but no extracted files found; re-extract: {archive_path.name}"
+                    )
+                else:
+                    self._log(f"[BDD100K] Skip extract {archive_path.name}: marker exists")
+                    self._report_extract_progress(
+                        file_index=file_index,
+                        total_files=total_archives,
+                        file_name=archive_path.name,
+                        extracted_bytes=archive_size,
+                        total_bytes=archive_size,
+                        extracted_files=len(image_paths),
+                        done=True,
+                    )
+                    return image_paths
+
+            total_bytes = sum(max(m.file_size, 0) for m in members if not m.is_dir())
+            extracted_bytes = 0
+            extracted_files = 0
+            self._log(
+                f"[BDD100K] Extract {file_index}/{total_archives}: {archive_path.name} ({archive_size} bytes)"
+            )
+            self._report_extract_progress(
+                file_index=file_index,
+                total_files=total_archives,
+                file_name=archive_path.name,
+                extracted_bytes=0,
+                total_bytes=total_bytes,
+                extracted_files=0,
+                done=False,
+            )
+
+            for member in tqdm(members, desc=f"Extract {archive_path.name}", dynamic_ncols=True):
+                if self._should_stop():
+                    raise InterruptedError("Dataset installation cancelled by user")
+                self._safe_extract_member(zf, member)
+                if member.is_dir():
+                    continue
+                extracted_files += 1
+                extracted_bytes += max(member.file_size, 0)
+                member_path = (self.extract_dir / member.filename).resolve()
+                if member_path.suffix.lower() in self.IMAGE_SUFFIXES and self._is_source_image(member_path):
+                    image_paths.append(member_path)
+                self._report_extract_progress(
+                    file_index=file_index,
+                    total_files=total_archives,
+                    file_name=archive_path.name,
+                    extracted_bytes=extracted_bytes,
+                    total_bytes=total_bytes,
+                    extracted_files=extracted_files,
+                    done=False,
+                )
+
+        marker_path.write_text("ok\n")
+        self._report_extract_progress(
+            file_index=file_index,
+            total_files=total_archives,
+            file_name=archive_path.name,
+            extracted_bytes=archive_size,
+            total_bytes=archive_size,
+            extracted_files=len(image_paths),
+            done=True,
+        )
+        return image_paths
+
+    def _build_df_from_images(self, image_paths: List[Path]) -> pd.DataFrame:
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for idx, image_path in enumerate(sorted(image_paths), start=1):
+            if not image_path.exists():
+                continue
+            split = self._detect_split(image_path)
+            if not split:
+                continue
+            clip = self._clip_id(image_path)
+            key = f"{split}|{clip}"
+            grouped.setdefault(key, []).append(
+                {
+                    "timestamp": self._timestamp(image_path, fallback=idx),
+                    "image_path": image_path,
+                    "split": split,
+                    "clip": clip,
+                }
+            )
+
+        out_rows: List[Dict[str, Any]] = []
+        for rows in grouped.values():
+            rows.sort(key=lambda row: (int(row["timestamp"]), str(row["image_path"])))
+            selected_rows = rows[:: self.step_frames] if self.step_frames > 1 else rows
+            for row in selected_rows:
+                source_path = Path(str(row["image_path"]))
+                split = str(row["split"])
+                clip = str(row["clip"])
+                ts = int(row["timestamp"])
+                link_dir = self.out_dir / split / clip
+                link_dir.mkdir(parents=True, exist_ok=True)
+                link_name = f"{split}__{clip}__{source_path.name}"
+                dst_path = link_dir / link_name
+                if not dst_path.exists():
+                    os.symlink(source_path.resolve(), dst_path)
+                out_rows.append(
+                    {
+                        "timestamp": ts,
+                        "camera_name": "FRONT",
+                        "dataset_type": "bdd100k",
+                        "source_link": f"local://{source_path.relative_to(self.extract_dir)}",
+                        "image_path": str(dst_path),
+                    }
+                )
+        return pd.DataFrame(out_rows, columns=OUTPUT_COLUMNS)
+
     def _detect_split(self, image_path: Path) -> Optional[str]:
         parts = [part.lower() for part in image_path.parts]
         for split in self.splits:
@@ -301,6 +445,22 @@ class BDD100KPreprocessor(Preprocessor):
         return self
 
     def __next__(self):
+        if self.streaming_mode:
+            if self.iteration >= len(self.archives):
+                raise StopIteration
+            archive_index = self.iteration + 1
+            archive_path = self.archives[self.iteration]
+            self.iteration += 1
+            image_paths = self._extract_single_archive_with_images(
+                archive_path, file_index=archive_index, total_archives=len(self.archives)
+            )
+            df = self._build_df_from_images(image_paths)
+            self._log(
+                f"[BDD100K] Archive processed {archive_index}/{len(self.archives)}: "
+                f"{archive_path.name}, sampled_rows={len(df.index)}"
+            )
+            return df
+
         if self.iteration >= len(self.episode_keys):
             raise StopIteration
         key = self.episode_keys[self.iteration]
@@ -308,6 +468,8 @@ class BDD100KPreprocessor(Preprocessor):
         return self.process_episode(key)
 
     def __len__(self):
+        if self.streaming_mode:
+            return len(self.archives)
         return len(self.episode_keys)
 
 

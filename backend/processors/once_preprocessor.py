@@ -84,6 +84,7 @@ class OncePreprocessor(Preprocessor):
         use_local_archives: bool = False,
         download_from_gdrive: bool = True,
         remove_local_images: bool = True,
+        stream_upload_by_archive: bool = True,
         install_log_callback: Optional[Callable[[str], None]] = None,
         download_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         download_detail_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -101,6 +102,7 @@ class OncePreprocessor(Preprocessor):
         self.download_splits = self._normalize_download_splits(download_splits)
         self.use_local_archives = bool(use_local_archives)
         self.download_from_gdrive = bool(download_from_gdrive)
+        self.stream_upload_by_archive = bool(stream_upload_by_archive)
 
         self.install_log_callback = install_log_callback
         self.download_progress_callback = download_progress_callback
@@ -114,6 +116,8 @@ class OncePreprocessor(Preprocessor):
         self.tar_dir.mkdir(parents=True, exist_ok=True)
         self.extract_dir.mkdir(parents=True, exist_ok=True)
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.local_source_root = self.extract_dir
+        self.local_output_root = self.out_dir
 
         self._log(
             "[ONCE] Init: "
@@ -122,22 +126,30 @@ class OncePreprocessor(Preprocessor):
             f"download_splits={self.download_splits}, "
             f"use_local_archives={self.use_local_archives}, "
             f"download_from_gdrive={self.download_from_gdrive}, "
+            f"stream_upload_by_archive={self.stream_upload_by_archive}, "
             f"tar_dir={self.tar_dir}"
         )
 
         self._prepare_archives()
-        self._extract_archives_if_needed()
-
-        self.episodes = self._build_episodes()
-        self.episode_keys = sorted(self.episodes.keys())
-        if not self.episode_keys:
-            raise FileNotFoundError(
-                f"No ONCE jpg files found in {self.extract_dir}. "
-                "Check Google Drive folder access and archive contents."
-            )
+        self.archives = self._discover_archives()
+        self.streaming_mode = bool(self.stream_upload_by_archive and len(self.archives) > 0)
+        self.episodes: Dict[str, List[Dict[str, Any]]] = {}
+        self.episode_keys: List[str] = []
+        if not self.streaming_mode:
+            self._extract_archives_if_needed()
+            self.episodes = self._build_episodes()
+            self.episode_keys = sorted(self.episodes.keys())
+            if not self.episode_keys:
+                raise FileNotFoundError(
+                    f"No ONCE jpg files found in {self.extract_dir}. "
+                    "Check Google Drive folder access and archive contents."
+                )
 
         self.iteration = 0
-        self._log(f"[ONCE] Ready: episodes={len(self.episode_keys)}")
+        if self.streaming_mode:
+            self._log(f"[ONCE] Ready: archives={len(self.archives)} (stream upload mode)")
+        else:
+            self._log(f"[ONCE] Ready: episodes={len(self.episode_keys)}")
 
     def _log(self, message: str) -> None:
         print(message, flush=True)
@@ -556,6 +568,89 @@ class OncePreprocessor(Preprocessor):
                 done=True,
             )
 
+    def _extract_single_archive_with_images(
+        self, archive_path: Path, file_index: int, total_archives: int
+    ) -> List[Path]:
+        marker_path = self.extract_dir / f".extracted_{archive_path.name}.ok"
+        archive_size = int(archive_path.stat().st_size) if archive_path.exists() else 0
+        image_paths: List[Path] = []
+
+        with tarfile.open(archive_path) as tar:
+            members = tar.getmembers()
+            if marker_path.exists():
+                for member in members:
+                    if not member.isfile():
+                        continue
+                    member_path = (self.extract_dir / member.name).resolve()
+                    if member_path.suffix.lower() in self.IMAGE_SUFFIXES and member_path.exists():
+                        image_paths.append(member_path)
+                if not image_paths:
+                    marker_path.unlink(missing_ok=True)
+                    self._log(
+                        f"[ONCE] Marker exists but no extracted files found; re-extract: {archive_path.name}"
+                    )
+                else:
+                    self._log(f"[ONCE] Skip extract {archive_path.name}: marker exists")
+                    self._report_extract_progress(
+                        file_index=file_index,
+                        total_files=total_archives,
+                        file_name=archive_path.name,
+                        extracted_bytes=archive_size,
+                        total_bytes=archive_size,
+                        extracted_files=len(image_paths),
+                        done=True,
+                    )
+                    return image_paths
+
+            total_bytes = sum(max(member.size, 0) for member in members if member.isfile())
+            extracted_bytes = 0
+            extracted_files = 0
+            self._log(
+                f"[ONCE] Extract {file_index}/{total_archives}: {archive_path.name} ({archive_size} bytes)"
+            )
+            self._report_extract_progress(
+                file_index=file_index,
+                total_files=total_archives,
+                file_name=archive_path.name,
+                extracted_bytes=0,
+                total_bytes=total_bytes,
+                extracted_files=0,
+                done=False,
+            )
+
+            for member in tqdm(members, desc=f"Extract {archive_path.name}", dynamic_ncols=True):
+                if self._should_stop():
+                    raise InterruptedError("Dataset installation cancelled by user")
+                self._safe_extract_member(tar, member)
+                if not member.isfile():
+                    continue
+                extracted_files += 1
+                extracted_bytes += max(member.size, 0)
+                member_path = (self.extract_dir / member.name).resolve()
+                if member_path.suffix.lower() in self.IMAGE_SUFFIXES:
+                    image_paths.append(member_path)
+                self._report_extract_progress(
+                    file_index=file_index,
+                    total_files=total_archives,
+                    file_name=archive_path.name,
+                    extracted_bytes=extracted_bytes,
+                    total_bytes=total_bytes,
+                    extracted_files=extracted_files,
+                    done=False,
+                )
+
+        marker_path.write_text("ok\n")
+        self._report_extract_progress(
+            file_index=file_index,
+            total_files=total_archives,
+            file_name=archive_path.name,
+            extracted_bytes=archive_size,
+            total_bytes=archive_size,
+            extracted_files=len(image_paths),
+            done=True,
+        )
+        return image_paths
+
     def _detect_camera_raw(self, image_path: Path) -> Optional[str]:
         for candidate in [image_path.name, *image_path.parts]:
             match = self.CAMERA_RE.search(candidate)
@@ -672,10 +767,80 @@ class OncePreprocessor(Preprocessor):
 
         return pd.DataFrame(out_rows, columns=OUTPUT_COLUMNS)
 
+    def _build_df_from_images(self, image_paths: List[Path]) -> pd.DataFrame:
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        skipped_no_camera = 0
+        skipped_by_selection = 0
+
+        for idx, image_path in enumerate(sorted(image_paths), start=1):
+            if not image_path.exists():
+                continue
+            camera_raw = self._detect_camera_raw(image_path)
+            if not camera_raw:
+                skipped_no_camera += 1
+                continue
+            if self.selected_cameras and camera_raw not in self.selected_cameras:
+                skipped_by_selection += 1
+                continue
+            scene_id = self._scene_id_for_path(image_path, camera_raw)
+            episode_key = f"{scene_id}|{camera_raw}"
+            grouped.setdefault(episode_key, []).append(
+                {
+                    "timestamp": self._extract_timestamp(image_path, fallback=idx),
+                    "image_path": image_path,
+                    "camera_raw": camera_raw,
+                    "scene_id": scene_id,
+                }
+            )
+
+        out_rows: List[Dict[str, Any]] = []
+        for rows in grouped.values():
+            rows.sort(key=lambda row: (int(row["timestamp"]), str(row["image_path"])))
+            selected_rows = rows[:: self.step_frames] if self.step_frames > 1 else rows
+            for row in selected_rows:
+                source_path = Path(str(row["image_path"]))
+                camera_raw = str(row["camera_raw"])
+                scene_id = str(row["scene_id"])
+                timestamp = int(row["timestamp"])
+                scene_safe = scene_id.replace("/", "__")
+                link_dir = self.out_dir / scene_safe / camera_raw
+                link_dir.mkdir(parents=True, exist_ok=True)
+                dst_path = link_dir / source_path.name
+                if not dst_path.exists():
+                    os.symlink(source_path.resolve(), dst_path)
+                out_rows.append(
+                    {
+                        "timestamp": timestamp,
+                        "camera_name": self.REVERSE_CAMERA_TO_LABEL.get(camera_raw, camera_raw.upper()),
+                        "dataset_type": "once",
+                        "source_link": f"local://{source_path.relative_to(self.extract_dir)}",
+                        "image_path": str(dst_path),
+                    }
+                )
+
+        self._log(
+            "[ONCE] Archive sampling done: "
+            f"episodes={len(grouped)}, rows={len(out_rows)}, "
+            f"skipped_no_camera={skipped_no_camera}, skipped_by_selection={skipped_by_selection}"
+        )
+        return pd.DataFrame(out_rows, columns=OUTPUT_COLUMNS)
+
     def __iter__(self):
         return self
 
     def __next__(self):
+        if self.streaming_mode:
+            if self.iteration >= len(self.archives):
+                raise StopIteration
+            archive_index = self.iteration + 1
+            archive_path = self.archives[self.iteration]
+            self.iteration += 1
+            self._log(f"[ONCE] Process archive {archive_index}/{len(self.archives)}: {archive_path.name}")
+            image_paths = self._extract_single_archive_with_images(
+                archive_path, file_index=archive_index, total_archives=len(self.archives)
+            )
+            return self._build_df_from_images(image_paths)
+
         if self.iteration >= len(self.episode_keys):
             raise StopIteration
 
@@ -687,6 +852,8 @@ class OncePreprocessor(Preprocessor):
         return self.process_episode(episode_key)
 
     def __len__(self):
+        if self.streaming_mode:
+            return len(self.archives)
         return len(self.episode_keys)
 
 
