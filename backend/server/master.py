@@ -1519,6 +1519,17 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 job["extract_scene_tasks_total"] = 0
                 job["extract_file_name"] = ""
                 job["extract_files_done"] = 0
+                uploaded_now = int(
+                    event.get(
+                        "uploaded_objects_unique",
+                        event.get("uploaded_objects", job.get("total_inserted", 0)),
+                    )
+                    or 0
+                )
+                failed_now = int(event.get("failed_objects", 0) or 0)
+                job["total_inserted"] = uploaded_now
+                if failed_now > 0:
+                    job["errors"] = [{"error": f"failed objects: {failed_now}"}]
                 object_id = str(event.get("last_uploaded_object_id", "") or "").strip()
                 if object_id and object_id not in uploaded_object_ids_seen:
                     uploaded_object_ids_seen.add(object_id)
@@ -1555,7 +1566,13 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
 
             if ev == "episode":
                 seen = int(event.get("episodes_done", job.get("total_seen", 0)) or 0)
-                inserted = int(event.get("uploaded_objects", job.get("total_inserted", 0)) or 0)
+                inserted = int(
+                    event.get(
+                        "uploaded_objects_unique",
+                        event.get("uploaded_objects", job.get("total_inserted", 0)),
+                    )
+                    or 0
+                )
                 failed = int(event.get("failed_objects", 0) or 0)
                 total = int(job.get("total_planned", 0) or 0)
                 if total > 0:
@@ -1617,7 +1634,13 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                         else JobStatus.ERROR.value,
                         "progress": 100,
                         "total_seen": int(summary.get("episodes_done", 0) or 0),
-                        "total_inserted": int(summary.get("uploaded_objects", 0) or 0),
+                        "total_inserted": int(
+                            summary.get(
+                                "uploaded_objects_unique",
+                                summary.get("uploaded_objects", 0),
+                            )
+                            or 0
+                        ),
                         "total_embeddings_inserted": int(total_embeddings_inserted),
                         "total_limit": int(summary.get("total_planned", jobs_store[job_id].get("total_limit", 0)) or 0),
                         "total_planned": int(summary.get("total_planned", jobs_store[job_id].get("total_planned", 0)) or 0),

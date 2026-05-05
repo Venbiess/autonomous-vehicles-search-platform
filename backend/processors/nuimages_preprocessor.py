@@ -69,6 +69,7 @@ class NuImagesPreprocessor(Preprocessor):
         self.install_log_callback = install_log_callback
 
         DATA_FOLDER.mkdir(parents=True, exist_ok=True)
+        self.local_source_root = DATA_FOLDER
         self._log(
             "[NuImages] Init: "
             f"cameras={sorted(self.cameras) if self.cameras else 'all'}, "
