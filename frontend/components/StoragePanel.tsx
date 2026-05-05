@@ -516,6 +516,8 @@ export default function StoragePanel({
   >({});
   const snapshotExportPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const snapshotExportPollTokenRef = useRef(0);
+  const snapshotImportPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const snapshotImportPollTokenRef = useRef(0);
 
   const extractAxiosErrorMessage = (
     error: unknown,
@@ -655,6 +657,15 @@ export default function StoragePanel({
     }
   };
 
+  const stopSnapshotImportProgressPoll = () => {
+    snapshotImportPollTokenRef.current += 1;
+    const timer = snapshotImportPollTimerRef.current;
+    if (timer) {
+      clearTimeout(timer);
+      snapshotImportPollTimerRef.current = null;
+    }
+  };
+
   const startSnapshotExportProgressPoll = (
     exportId: string,
     actionId: SnapshotActionId
@@ -744,6 +755,82 @@ export default function StoragePanel({
     scheduleNext(0);
   };
 
+  const startSnapshotImportProgressPoll = (
+    importId: string,
+    actionId: SnapshotActionId
+  ) => {
+    stopSnapshotImportProgressPoll();
+    const token = snapshotImportPollTokenRef.current;
+
+    const scheduleNext = (delayMs: number) => {
+      snapshotImportPollTimerRef.current = setTimeout(async () => {
+        if (token !== snapshotImportPollTokenRef.current) {
+          return;
+        }
+        try {
+          const response = await axios.get("/api/jobs");
+          const jobs = Array.isArray(response.data?.jobs)
+            ? (response.data.jobs as Array<Record<string, unknown>>)
+            : [];
+          const targetJob = jobs.find((job) => {
+            const type = String(job?.job_type || "").trim();
+            if (type !== "snapshot_import") return false;
+            const config =
+              job?.job_config && typeof job.job_config === "object"
+                ? (job.job_config as Record<string, unknown>)
+                : {};
+            return String(config.import_id || "").trim() === importId;
+          });
+          if (!targetJob) {
+            if (token === snapshotImportPollTokenRef.current) {
+              scheduleNext(450);
+            }
+            return;
+          }
+
+          const status = String(targetJob.status || "").trim().toLowerCase();
+          const phase = String(targetJob.phase || "").trim().toLowerCase() || "processing";
+          const progress = Math.max(0, Math.min(100, Number(targetJob.progress || 0)));
+          const totalSeen = Math.max(0, Number(targetJob.total_seen || 0));
+          const totalPlannedRaw = Number(targetJob.total_planned || targetJob.total_limit || 0);
+          const totalPlanned =
+            Number.isFinite(totalPlannedRaw) && totalPlannedRaw > 0 ? totalPlannedRaw : null;
+
+          clearSnapshotProgressTimer(actionId);
+          updateSnapshotProgress(actionId, progress, "set");
+          updateSnapshotTransferSize(actionId, totalSeen, totalPlanned, { monotonic: true });
+          updateSnapshotProgressMeta(actionId, {
+            phase,
+            status,
+            hint: phase === "uploading" ? "Uploading snapshot..." : "Extracting and applying snapshot...",
+          });
+
+          if (status === "error") {
+            setSnapshotImportInlineMessage("Ошибка при импорте снапшота.");
+            setActionInProgress((current) => (current === actionId ? null : current));
+            return;
+          }
+          if (status === "cancelled") {
+            setSnapshotImportInlineMessage("Импорт и распаковка архива отменены.");
+            setActionInProgress((current) => (current === actionId ? null : current));
+            return;
+          }
+          if (status === "success") {
+            setActionInProgress((current) => (current === actionId ? null : current));
+            return;
+          }
+        } catch {
+          // Best effort polling; ignore transient failures.
+        }
+        if (token === snapshotImportPollTokenRef.current) {
+          scheduleNext(450);
+        }
+      }, delayMs);
+    };
+
+    scheduleNext(0);
+  };
+
   const cancelSnapshotAction = async (actionId: SnapshotActionId) => {
     const controller = snapshotAbortControllersRef.current[actionId];
     if (controller) {
@@ -773,6 +860,7 @@ export default function StoragePanel({
       hint: "Cancelling...",
     });
     if (actionId === "import-snapshot") {
+      stopSnapshotImportProgressPoll();
       setSnapshotImportInlineMessage("Импорт и распаковка архива отменены.");
       return;
     }
@@ -851,6 +939,7 @@ export default function StoragePanel({
       }
       snapshotProgressTimersRef.current = {};
       stopSnapshotExportProgressPoll();
+      stopSnapshotImportProgressPoll();
     };
   }, []);
 
@@ -915,19 +1004,18 @@ export default function StoragePanel({
 
         if (actionId === "import-snapshot") {
           setSnapshotImportInlineMessage("Импорт снапшота продолжается...");
+          const jobConfig =
+            runningSnapshotJob.job_config && typeof runningSnapshotJob.job_config === "object"
+              ? (runningSnapshotJob.job_config as Record<string, unknown>)
+              : {};
+          const importId = String(jobConfig.import_id || "").trim();
           updateSnapshotProgressMeta(actionId, {
-            phase: "processing",
+            phase: String(runningSnapshotJob.phase || "").trim().toLowerCase() || "processing",
             status: "running",
-            hint: "Processing snapshot...",
+            hint: "Extracting and applying snapshot...",
           });
-          if (progress < 95) {
-            startSnapshotProgressAnimation(actionId, {
-              from: Math.max(progress, 70),
-              cap: 98,
-              stepMin: 0.2,
-              stepMax: 0.5,
-              intervalMs: 180,
-            });
+          if (importId) {
+            startSnapshotImportProgressPoll(importId, actionId);
           }
           return;
         }
@@ -1437,6 +1525,7 @@ export default function StoragePanel({
           0,
           transferFile ? Number(transferFile.size || 0) : null
         );
+        startSnapshotImportProgressPoll(importId, actionId);
         startSnapshotProgressAnimation(actionId, {
           from: 4,
           cap: 70,
@@ -1514,6 +1603,7 @@ export default function StoragePanel({
           await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
         });
 
+        stopSnapshotImportProgressPoll();
         setSnapshotAbortController(actionId, null);
         clearSnapshotProgress(actionId);
       },
@@ -1654,7 +1744,7 @@ export default function StoragePanel({
     onCancel?: (actionId: SnapshotActionId) => void;
   }) => {
     const isActive = actionInProgress === actionId;
-    const progress = Math.max(
+    const rawProgress = Math.max(
       0,
       Math.min(100, Math.round(snapshotActionProgress[actionId] ?? 0))
     );
@@ -1689,6 +1779,32 @@ export default function StoragePanel({
 
     let sizeText = "";
     const hasTotalSize = Number(transferSize?.totalBytes || 0) > 0;
+    const transferRatioProgress = hasTotalSize
+      ? Math.max(
+          0,
+          Math.min(
+            100,
+            Math.round(
+              (Number(transferSize?.loadedBytes || 0) /
+                Math.max(1, Number(transferSize?.totalBytes || 0))) *
+                100
+            )
+          )
+        )
+      : null;
+    const isMidTransfer =
+      hasTotalSize &&
+      Number(transferSize?.loadedBytes || 0) > 0 &&
+      Number(transferSize?.loadedBytes || 0) < Number(transferSize?.totalBytes || 0);
+    const shouldPreferTransferRatio =
+      isMidTransfer &&
+      (transferMeta?.phase === "uploading" ||
+        transferMeta?.phase === "streaming" ||
+        rawProgress - (transferRatioProgress ?? rawProgress) > 20);
+    const progress = shouldPreferTransferRatio
+      ? Number(transferRatioProgress || 0)
+      : rawProgress;
+
     if (transferSize && transferSize.loadedBytes > 0) {
       if (hasTotalSize) {
         sizeText = ` (${formatBytes(transferSize.loadedBytes)} / ${formatBytes(

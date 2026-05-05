@@ -15,6 +15,7 @@ import SystemMonitor from "../components/SystemMonitor";
 import VlmPanel from "../components/VlmPanel";
 import AnnotationPanel from "../components/AnnotationPanel";
 import StoragePanel from "../components/StoragePanel";
+import TransferToast from "../components/TransferToast";
 
 interface ImageResult {
   id: string;
@@ -639,6 +640,7 @@ export default function HomePageClient({
           </section>
         </>
       )}
+      <TransferToast />
     </main>
   );
 }

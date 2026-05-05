@@ -63,7 +63,11 @@ function createAbortState(req, res) {
     state.aborted = true;
   };
   req.on("aborted", markAborted);
-  req.on("close", markAborted);
+  req.on("close", () => {
+    if (!req.complete || req.aborted) {
+      markAborted();
+    }
+  });
   res.on("close", () => {
     if (!res.writableEnded) {
       markAborted();
@@ -652,6 +656,15 @@ export default async function handler(req, res) {
         total_inserted: preparedObjects,
       });
       setTimeout(() => clearSnapshotExportProgress(exportId), 60_000);
+      if (!res.headersSent && !res.destroyed) {
+        return res.status(499).json({
+          error: "Transfer cancelled",
+          code: "TRANSFER_CANCELLED",
+        });
+      }
+      if (!res.writableEnded && !res.destroyed) {
+        res.end();
+      }
       return;
     }
     const message = error?.message || "Failed to export snapshot";

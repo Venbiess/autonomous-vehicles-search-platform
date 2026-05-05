@@ -83,7 +83,11 @@ function createAbortState(req, res) {
     state.aborted = true;
   };
   req.on("aborted", markAborted);
-  req.on("close", markAborted);
+  req.on("close", () => {
+    if (!req.complete || req.aborted) {
+      markAborted();
+    }
+  });
   res.on("close", () => {
     if (!res.writableEnded) {
       markAborted();
@@ -440,6 +444,7 @@ export default async function handler(req, res) {
     updateJob({
       status: "running",
       progress: 0,
+      phase: "uploading",
       total_seen: 0,
       total_limit: expectedBytes,
       total_planned: expectedBytes,
@@ -463,6 +468,7 @@ export default async function handler(req, res) {
           expectedBytes > 0 ? Math.min(55, Math.round((uploaded / expectedBytes) * 55)) : 0;
         updateJob({
           progress,
+          phase: "uploading",
           total_seen: uploaded,
           total_limit: expectedBytes,
           total_planned: expectedBytes,
@@ -471,6 +477,7 @@ export default async function handler(req, res) {
     });
     appendLog("Archive uploaded. Extracting...");
     updateJob({
+      phase: "processing",
       total_seen: uploadedBytes,
       total_limit: expectedBytes > 0 ? expectedBytes : uploadedBytes,
       total_planned: expectedBytes > 0 ? expectedBytes : uploadedBytes,
@@ -483,6 +490,7 @@ export default async function handler(req, res) {
     appendLog("Archive extracted.");
     updateJob({
       progress: 70,
+      phase: "processing",
       total_seen: expectedBytes > 0 ? expectedBytes : uploadedBytes,
       total_limit: expectedBytes > 0 ? expectedBytes : uploadedBytes,
       total_planned: expectedBytes > 0 ? expectedBytes : uploadedBytes,
@@ -506,6 +514,7 @@ export default async function handler(req, res) {
     updateJob({
       status: "success",
       progress: 100,
+      phase: "done",
       total_seen: expectedBytes > 0 ? expectedBytes : uploadedBytes,
       total_limit: expectedBytes > 0 ? expectedBytes : uploadedBytes,
       total_planned: expectedBytes > 0 ? expectedBytes : uploadedBytes,
@@ -521,7 +530,17 @@ export default async function handler(req, res) {
       appendLog("Snapshot import cancelled.");
       updateJob({
         status: "cancelled",
+        phase: "cancelled",
       });
+      if (!res.headersSent && !res.destroyed) {
+        return res.status(499).json({
+          error: "Transfer cancelled",
+          code: "TRANSFER_CANCELLED",
+        });
+      }
+      if (!res.writableEnded && !res.destroyed) {
+        res.end();
+      }
       return;
     }
     const message = error?.message || "Failed to import snapshot";
