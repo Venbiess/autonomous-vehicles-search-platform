@@ -1,4 +1,14 @@
 services:
+  avsp-server:
+    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   embedder-worker:
     gpus: all
     deploy:
