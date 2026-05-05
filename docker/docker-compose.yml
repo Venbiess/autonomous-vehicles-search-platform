@@ -94,7 +94,7 @@ services:
   embedder:
     build:
       context: ..
-      dockerfile: docker/models/models-cpu.Dockerfile
+      dockerfile: docker/models/models.Dockerfile
     container_name: "embedder-${USER}"
     profiles: ["model-http"]
     volumes:
@@ -107,7 +107,7 @@ services:
   vlm:
     build:
       context: ..
-      dockerfile: docker/models/models-cpu.Dockerfile
+      dockerfile: docker/models/models.Dockerfile
     container_name: "vlm-${USER}"
     profiles: ["model-http"]
     volumes:
@@ -129,7 +129,7 @@ services:
     container_name: "avsp-embedder-worker-${USER}"
     build:
       context: ..
-      dockerfile: docker/models/models-cpu.Dockerfile
+      dockerfile: docker/models/models.Dockerfile
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -157,7 +157,7 @@ services:
     container_name: "avsp-vlm-worker-${USER}"
     build:
       context: ..
-      dockerfile: docker/models/models-cpu.Dockerfile
+      dockerfile: docker/models/models.Dockerfile
     depends_on:
       rabbitmq:
         condition: service_healthy

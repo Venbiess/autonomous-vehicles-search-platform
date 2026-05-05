@@ -11,7 +11,7 @@ cd "$REPO_ROOT"
 echo "[1/4] Building local images"
 docker build -f docker/storage/storage-server.Dockerfile -t avsp/storage-server:local .
 docker build -f docker/server/server.k8s.Dockerfile -t avsp/master:local .
-docker build -f docker/models/models-cpu.k8s.Dockerfile -t avsp/models-cpu:local .
+docker build -f docker/models/models.k8s.Dockerfile -t avsp/models-cpu:local .
 docker build -f docker/frontend/frontend.k8s.Dockerfile -t avsp/frontend:local .
 
 echo "[2/4] Importing images into k3s containerd"
