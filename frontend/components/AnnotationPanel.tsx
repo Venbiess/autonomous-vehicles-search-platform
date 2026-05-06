@@ -324,6 +324,18 @@ export default function AnnotationPanel({
     loadSourceStatus();
   }, []);
 
+  useEffect(() => {
+    if (!waymoAuthModalOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setWaymoAuthModalOpen(false);
+        setWaymoAuthError(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [waymoAuthModalOpen]);
+
   const startBackfill = async () => {
     setIsStartingJob(true);
     setStatusMessage(null);
@@ -1443,8 +1455,17 @@ export default function AnnotationPanel({
         </div>
 
         {waymoAuthModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+            onClick={() => {
+              setWaymoAuthModalOpen(false);
+              setWaymoAuthError(null);
+            }}
+          >
+            <div
+              className="w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
               <div className="border-b border-slate-200 px-5 py-4">
                 <div className="text-base font-semibold text-slate-900">
                   Авторизация доступа к Waymo
