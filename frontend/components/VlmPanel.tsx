@@ -323,7 +323,7 @@ export default function VlmPanel() {
       .filter((filter) => filter.value.length > 0);
 
     if (activeFilters.length === 0) {
-      setAnalyzeStatusMessage(null);
+      setStatusMessage(null);
       setErrorMessage("Set at least one VLM filter value.");
       setImages([]);
       setCurrentPage(1);

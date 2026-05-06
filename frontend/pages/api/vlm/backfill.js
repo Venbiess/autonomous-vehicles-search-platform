@@ -1,4 +1,4 @@
-import { isDatasetVisible } from "../../lib/datasetVisibility";
+import { isDatasetVisible } from "../../../lib/datasetVisibility";
 const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
 
 export default async function handler(req, res) {

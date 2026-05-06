@@ -5,6 +5,7 @@ import { once } from "events";
 import { randomUUID } from "crypto";
 
 import { readStorageJson } from "../../../../lib/storageServer";
+import { loadDatasetVisibility } from "../../../../lib/datasetVisibility";
 import {
   SNAPSHOT_FORMAT_EMBEDDINGS,
   SNAPSHOT_FORMAT_FULL,
@@ -43,6 +44,19 @@ const OBJECT_CONTENT_BATCH_SIZE = 2;
 const VECTOR_BATCH_SIZE = 256;
 const VLM_BATCH_SIZE = 400;
 
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value || 0));
+  if (bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = bytes;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(unit === 0 ? 0 : 2)} ${units[unit]}`;
+}
+
 function normalizeKind(rawKind) {
   const kind = String(rawKind || "").trim().toLowerCase();
   if (kind === SNAPSHOT_KIND_VLM) return SNAPSHOT_KIND_VLM;
@@ -63,7 +77,11 @@ function createAbortState(req, res) {
     state.aborted = true;
   };
   req.on("aborted", markAborted);
-  req.on("close", markAborted);
+  req.on("close", () => {
+    if (!req.complete || req.aborted) {
+      markAborted();
+    }
+  });
   res.on("close", () => {
     if (!res.writableEnded) {
       markAborted();
@@ -118,7 +136,25 @@ function normalizeObjectMeta(item) {
   };
 }
 
-async function forEachObjectPage({ pageSize = OBJECTS_PAGE_SIZE, assertNotAborted, onPage }) {
+function normalizeDatasetName(value) {
+  return String(value || "").trim();
+}
+
+function createVisibilityPredicate(hiddenDatasets = []) {
+  const hidden = new Set(
+    (Array.isArray(hiddenDatasets) ? hiddenDatasets : [])
+      .map((name) => normalizeDatasetName(name))
+      .filter(Boolean)
+  );
+  return (item) => !hidden.has(normalizeDatasetName(item?.bucket));
+}
+
+async function forEachObjectPage({
+  pageSize = OBJECTS_PAGE_SIZE,
+  assertNotAborted,
+  onPage,
+  isVisibleObject,
+}) {
   let cursor = "";
   let guard = 0;
   while (guard < 10_000) {
@@ -129,9 +165,13 @@ async function forEachObjectPage({ pageSize = OBJECTS_PAGE_SIZE, assertNotAborte
       params.set("cursor", cursor);
     }
     const payload = await readStorageJson(`/objects?${params.toString()}`);
-    const items = Array.isArray(payload?.items) ? payload.items : [];
+    const rawItems = Array.isArray(payload?.items) ? payload.items : [];
+    const items =
+      typeof isVisibleObject === "function"
+        ? rawItems.filter((item) => isVisibleObject(item))
+        : rawItems;
     if (items.length > 0) {
-      await onPage(items);
+      await onPage(items, rawItems.length);
     }
     cursor = String(payload?.next_cursor || "").trim();
     if (!cursor) {
@@ -140,7 +180,10 @@ async function forEachObjectPage({ pageSize = OBJECTS_PAGE_SIZE, assertNotAborte
   }
 }
 
-async function exportEmbeddingsToNdjson(filePath, { assertNotAborted, onPreparedBytes }) {
+async function exportEmbeddingsToNdjson(
+  filePath,
+  { assertNotAborted, onPreparedBytes, isVisibleObject }
+) {
   const writer = createNdjsonWriter(filePath, {
     onBytesWritten: (bytes) => {
       if (typeof onPreparedBytes === "function") {
@@ -183,6 +226,7 @@ async function exportEmbeddingsToNdjson(filePath, { assertNotAborted, onPrepared
   try {
     await forEachObjectPage({
       assertNotAborted,
+      isVisibleObject,
       onPage: async (items) => {
         for (const raw of items) {
           const objectID = String(raw?.object_id || "").trim();
@@ -202,7 +246,10 @@ async function exportEmbeddingsToNdjson(filePath, { assertNotAborted, onPrepared
   return count;
 }
 
-async function exportVlmAnnotationsToNdjson(filePath, { assertNotAborted, onPreparedBytes }) {
+async function exportVlmAnnotationsToNdjson(
+  filePath,
+  { assertNotAborted, onPreparedBytes, isVisibleObject }
+) {
   const writer = createNdjsonWriter(filePath, {
     onBytesWritten: (bytes) => {
       if (typeof onPreparedBytes === "function") {
@@ -252,6 +299,7 @@ async function exportVlmAnnotationsToNdjson(filePath, { assertNotAborted, onPrep
   try {
     await forEachObjectPage({
       assertNotAborted,
+      isVisibleObject,
       onPage: async (items) => {
         for (const raw of items) {
           const objectID = String(raw?.object_id || "").trim();
@@ -273,7 +321,7 @@ async function exportVlmAnnotationsToNdjson(filePath, { assertNotAborted, onPrep
 
 async function exportObjectsToArchive(
   rootDir,
-  { assertNotAborted, onPreparedBytes, onPreparedObject }
+  { assertNotAborted, onPreparedBytes, onPreparedObject, isVisibleObject }
 ) {
   const objectsDir = path.join(rootDir, "objects");
   await mkdir(objectsDir, { recursive: true });
@@ -291,6 +339,7 @@ async function exportObjectsToArchive(
   try {
     await forEachObjectPage({
       assertNotAborted,
+      isVisibleObject,
       onPage: async (rawItems) => {
         const metas = rawItems.map(normalizeObjectMeta).filter((item) => item.object_id);
         for (const metaChunk of chunkArray(metas, OBJECT_CONTENT_BATCH_SIZE)) {
@@ -386,6 +435,8 @@ export default async function handler(req, res) {
   let preparedBytes = 0;
   let preparedObjects = 0;
   let nextPreparedLogAt = 64 * 1024 * 1024;
+  let manifestPayload = null;
+  let manifestBytesWritten = 0;
 
   const updateProgress = (patch) => {
     if (!exportId) return;
@@ -424,7 +475,9 @@ export default async function handler(req, res) {
     });
     updateJobByteProgress(preparedBytes, 0);
     if (preparedBytes >= nextPreparedLogAt) {
-      appendLog(`Preparing snapshot: ${preparedObjects} objects, ${preparedBytes} bytes staged.`);
+      appendLog(
+        `Preparing snapshot: ${preparedObjects} objects, ${formatBytes(preparedBytes)} staged.`
+      );
       nextPreparedLogAt += 64 * 1024 * 1024;
     }
   };
@@ -454,6 +507,16 @@ export default async function handler(req, res) {
 
   try {
     const createdAt = new Date().toISOString();
+    const visibilityPayload = loadDatasetVisibility();
+    const hiddenDatasets = Array.isArray(visibilityPayload?.hidden_datasets)
+      ? visibilityPayload.hidden_datasets
+      : [];
+    const isVisibleObject = createVisibilityPredicate(hiddenDatasets);
+    appendLog(
+      hiddenDatasets.length > 0
+        ? `Applying visibility filter: hidden datasets=${hiddenDatasets.join(", ")}.`
+        : "Applying visibility filter: all datasets visible."
+    );
     ensureSnapshotTransferJob(jobId, jobType, {
       export_id: exportId,
       kind,
@@ -483,16 +546,18 @@ export default async function handler(req, res) {
 
     if (kind === SNAPSHOT_KIND_EMBEDDINGS) {
       appendLog("Preparing embeddings snapshot files...");
-      const manifestBytes = await writeManifest(workDir, {
+      manifestPayload = {
         format: SNAPSHOT_FORMAT_EMBEDDINGS,
         kind,
         created_at: createdAt,
         archive_type: "tar.gz",
-      });
-      bumpPreparedBytes(manifestBytes);
+      };
+      manifestBytesWritten = await writeManifest(workDir, manifestPayload);
+      bumpPreparedBytes(manifestBytesWritten);
       await exportEmbeddingsToNdjson(path.join(workDir, "embeddings.ndjson"), {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
+        isVisibleObject,
       });
       appendLog("Embeddings snapshot data prepared.");
     } else if (kind === SNAPSHOT_KIND_VLM) {
@@ -500,19 +565,21 @@ export default async function handler(req, res) {
       const fieldsPayload = await readMasterJson("/vlm/fields");
       const fields = Array.isArray(fieldsPayload?.fields) ? fieldsPayload.fields : [];
 
-      const manifestBytes = await writeManifest(workDir, {
+      manifestPayload = {
         format: SNAPSHOT_FORMAT_VLM,
         kind,
         created_at: createdAt,
         archive_type: "tar.gz",
-      });
-      bumpPreparedBytes(manifestBytes);
+      };
+      manifestBytesWritten = await writeManifest(workDir, manifestPayload);
+      bumpPreparedBytes(manifestBytesWritten);
       const fieldsRaw = JSON.stringify(fields);
       await writeFile(path.join(workDir, "fields.json"), fieldsRaw, "utf8");
       bumpPreparedBytes(Buffer.byteLength(fieldsRaw, "utf8"));
       await exportVlmAnnotationsToNdjson(path.join(workDir, "vlm.ndjson"), {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
+        isVisibleObject,
       });
       appendLog("VLM snapshot data prepared.");
     } else {
@@ -520,13 +587,14 @@ export default async function handler(req, res) {
       const fieldsPayload = await readMasterJson("/vlm/fields");
       const fields = Array.isArray(fieldsPayload?.fields) ? fieldsPayload.fields : [];
 
-      const manifestBytes = await writeManifest(workDir, {
+      manifestPayload = {
         format: SNAPSHOT_FORMAT_FULL,
         kind: SNAPSHOT_KIND_FULL,
         created_at: createdAt,
         archive_type: "tar.gz",
-      });
-      bumpPreparedBytes(manifestBytes);
+      };
+      manifestBytesWritten = await writeManifest(workDir, manifestPayload);
+      bumpPreparedBytes(manifestBytesWritten);
       const fieldsRaw = JSON.stringify(fields);
       await writeFile(path.join(workDir, "fields.json"), fieldsRaw, "utf8");
       bumpPreparedBytes(Buffer.byteLength(fieldsRaw, "utf8"));
@@ -534,22 +602,40 @@ export default async function handler(req, res) {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
         onPreparedObject: bumpPreparedObjects,
+        isVisibleObject,
       });
       appendLog(`Objects prepared: ${fullObjectsCount}.`);
       await exportEmbeddingsToNdjson(path.join(workDir, "embeddings.ndjson"), {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
+        isVisibleObject,
       });
       await exportVlmAnnotationsToNdjson(path.join(workDir, "vlm.ndjson"), {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
+        isVisibleObject,
       });
       appendLog("Full snapshot data prepared.");
     }
 
+    if (manifestPayload && typeof manifestPayload === "object") {
+      const enrichedManifest = {
+        ...manifestPayload,
+        extract_total_bytes_estimate: preparedBytes,
+        prepared_bytes: preparedBytes,
+        prepared_objects: preparedObjects,
+      };
+      const updatedManifestBytes = await writeManifest(workDir, enrichedManifest);
+      const delta = updatedManifestBytes - manifestBytesWritten;
+      if (delta > 0) {
+        bumpPreparedBytes(delta);
+      }
+      manifestBytesWritten = updatedManifestBytes;
+    }
+
     assertNotAborted();
     const archivePath = path.join(archiveDir, "snapshot.tar.gz");
-    appendLog(`Archiving started (${preparedBytes} bytes staged).`);
+    appendLog(`Archiving started (${formatBytes(preparedBytes)} staged).`);
     updateProgress({
       phase: "archiving",
       status: "running",
@@ -592,7 +678,7 @@ export default async function handler(req, res) {
     assertNotAborted();
     const archiveStat = await stat(archivePath);
     const archiveBytes = Math.max(0, Number(archiveStat.size || 0));
-    appendLog(`Archive created: ${archiveBytes} bytes.`);
+    appendLog(`Archive created: ${formatBytes(archiveBytes)}.`);
     updateProgress({
       phase: "streaming",
       status: "running",
@@ -652,6 +738,15 @@ export default async function handler(req, res) {
         total_inserted: preparedObjects,
       });
       setTimeout(() => clearSnapshotExportProgress(exportId), 60_000);
+      if (!res.headersSent && !res.destroyed) {
+        return res.status(499).json({
+          error: "Transfer cancelled",
+          code: "TRANSFER_CANCELLED",
+        });
+      }
+      if (!res.writableEnded && !res.destroyed) {
+        res.end();
+      }
       return;
     }
     const message = error?.message || "Failed to export snapshot";

@@ -132,6 +132,13 @@ interface Job {
   embedding_tasks_completed?: number;
   embedding_tasks_total?: number;
   embedding_worker_running?: boolean;
+  phase?: string;
+  upload_bytes_seen?: number;
+  upload_bytes_total?: number;
+  upload_progress?: number;
+  extract_bytes_seen?: number;
+  extract_bytes_total?: number;
+  extract_progress?: number;
   job_log?: string[];
   job_log_path?: string;
   errors: Array<{ storage_path?: string; object_id?: string; error: string; log?: string }>;
@@ -320,6 +327,7 @@ export default function SystemMonitor({
   const formatJobTypeLabel = useCallback((jobType: string): string => {
     if (jobType === "dataset_delete") return "Dataset Delete";
     if (jobType === "snapshot_import") return "Snapshot Import";
+    if (jobType === "snapshot_transfer" || jobType === "snapshot_export") return "Snapshot Export";
     if (jobType === "snapshot_export_full") return "Snapshot Export (Full)";
     if (jobType === "snapshot_export_embeddings") return "Snapshot Export (Embeddings)";
     if (jobType === "snapshot_export_vlm") return "Snapshot Export (VLM)";
@@ -651,7 +659,7 @@ export default function SystemMonitor({
   ]);
 
   useEffect(() => {
-    if (!logViewer && !configViewer && !cancelDialogJob) {
+    if (!logViewer && !configViewer && !cancelDialogJob && !waymoAuthModalOpen) {
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
@@ -668,13 +676,18 @@ export default function SystemMonitor({
       }
       if (cancelDialogJob) {
         setCancelDialogJob(null);
+        return;
+      }
+      if (waymoAuthModalOpen) {
+        setWaymoAuthModalOpen(false);
+        setWaymoAuthError(null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [logViewer, configViewer, cancelDialogJob]);
+  }, [logViewer, configViewer, cancelDialogJob, waymoAuthModalOpen]);
 
   if (isLoading && !systemInfo) {
     return (
@@ -1000,12 +1013,13 @@ export default function SystemMonitor({
               <tbody className="bg-white divide-y divide-gray-200">
                 {jobs.map((job) => {
                   const statusColors = getJobStatusColor(job.status);
-                  const progress = job.progress;
                   const isCancellableJobType =
                     job.job_type === "backfill_vlm" ||
                     job.job_type === "backfill_embeddings" ||
                     job.job_type.startsWith("install_") ||
                     job.job_type === "snapshot_import" ||
+                    job.job_type === "snapshot_transfer" ||
+                    job.job_type === "snapshot_export" ||
                     job.job_type.startsWith("snapshot_export_") ||
                     job.job_type === "dataset_delete";
                   const canCancelJob =
@@ -1015,12 +1029,81 @@ export default function SystemMonitor({
                   const isInstallDatasetJob = isInstallJob;
                   const isSnapshotTransferJob =
                     job.job_type === "snapshot_import" ||
+                    job.job_type === "snapshot_transfer" ||
+                    job.job_type === "snapshot_export" ||
                     job.job_type.startsWith("snapshot_export_");
+                  const normalizeSnapshotProgress = () => {
+                    const totalSeen = Math.max(0, Number(job.total_seen ?? 0));
+                    const totalPlannedRaw = Number(job.total_planned ?? job.total_limit ?? 0);
+                    const totalPlanned =
+                      Number.isFinite(totalPlannedRaw) && totalPlannedRaw > 0 ? totalPlannedRaw : 0;
+                    if (totalPlanned > 0 && totalSeen > 0 && totalSeen < totalPlanned) {
+                      return Math.max(
+                        0,
+                        Math.min(100, Math.round((totalSeen / totalPlanned) * 100))
+                      );
+                    }
+                    return Math.max(0, Math.min(100, Math.round(Number(job.progress || 0))));
+                  };
+                  const progress = isSnapshotTransferJob
+                    ? normalizeSnapshotProgress()
+                    : Math.max(0, Math.min(100, Math.round(Number(job.progress || 0))));
                   const plannedTotal = job.total_planned ?? job.total_limit;
+                  const snapshotPhase = String(job.phase || "").trim().toLowerCase();
+                  const snapshotUploadSeen = Math.max(
+                    0,
+                    Number(job.upload_bytes_seen ?? job.total_seen ?? 0)
+                  );
+                  const snapshotUploadTotalRaw = Number(
+                    job.upload_bytes_total ?? job.total_planned ?? job.total_limit ?? 0
+                  );
+                  const snapshotUploadTotal =
+                    Number.isFinite(snapshotUploadTotalRaw) && snapshotUploadTotalRaw > 0
+                      ? snapshotUploadTotalRaw
+                      : 0;
+                  const snapshotUploadProgress =
+                    snapshotUploadTotal > 0
+                      ? Math.max(
+                          0,
+                          Math.min(100, Math.round((Math.min(snapshotUploadSeen, snapshotUploadTotal) / snapshotUploadTotal) * 100))
+                        )
+                      : Math.max(0, Math.min(100, Math.round(Number(job.upload_progress ?? 0))));
+                  const snapshotExtractSeen = Math.max(
+                    0,
+                    Number(job.extract_bytes_seen ?? 0)
+                  );
+                  const snapshotExtractTotalRaw = Number(job.extract_bytes_total ?? 0);
+                  const snapshotExtractTotal =
+                    Number.isFinite(snapshotExtractTotalRaw) && snapshotExtractTotalRaw > 0
+                      ? snapshotExtractTotalRaw
+                      : 0;
+                  const snapshotExtractProgress =
+                    snapshotExtractTotal > 0
+                      ? Math.max(
+                          0,
+                          Math.min(100, Math.round((Math.min(snapshotExtractSeen, snapshotExtractTotal) / snapshotExtractTotal) * 100))
+                        )
+                      : Math.max(0, Math.min(100, Math.round(Number(job.extract_progress ?? 0))));
+                  const showSnapshotImportDetails =
+                    job.job_type === "snapshot_import" && job.status === "running";
+                  const snapshotMainLabel = (() => {
+                    if (!isSnapshotTransferJob) return "";
+                    if (job.job_type === "snapshot_import") {
+                      if (snapshotPhase === "processing") {
+                        return `Extract: ${formatDataSize(snapshotExtractSeen)} / ${
+                          snapshotExtractTotal > 0 ? formatDataSize(snapshotExtractTotal) : "?"
+                        }`;
+                      }
+                      return `Upload: ${formatDataSize(snapshotUploadSeen)} / ${
+                        snapshotUploadTotal > 0 ? formatDataSize(snapshotUploadTotal) : "?"
+                      }`;
+                    }
+                    return `${formatDataSize(job.total_seen ?? 0)} / ${
+                      plannedTotal && plannedTotal > 0 ? formatDataSize(plannedTotal) : "?"
+                    }`;
+                  })();
                   const progressLabel = isSnapshotTransferJob
-                    ? `${formatDataSize(job.total_seen ?? 0)} / ${
-                        plannedTotal && plannedTotal > 0 ? formatDataSize(plannedTotal) : "?"
-                      }`
+                    ? snapshotMainLabel
                     : `${job.total_seen} / ${plannedTotal ?? "?"}`;
                   const processedLabel = progressLabel;
                   const scenesSavedLabel = `Сцен сохранено: ${job.total_inserted}`;
@@ -1176,6 +1259,45 @@ export default function SystemMonitor({
                                 ? installScenesSavedLabel
                                 : `Вставлено: ${job.total_inserted}`}
                           </div>
+                          {showSnapshotImportDetails && (
+                            <div className="mt-3 space-y-2">
+                              <div>
+                                <div className="mb-1 flex justify-between gap-2 text-xs">
+                                  <span className="text-gray-600">
+                                    Upload: {formatDataSize(snapshotUploadSeen)} /{" "}
+                                    {snapshotUploadTotal > 0
+                                      ? formatDataSize(snapshotUploadTotal)
+                                      : "?"}
+                                  </span>
+                                  <span className="font-medium">{snapshotUploadProgress}%</span>
+                                </div>
+                                <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
+                                  <div
+                                    className="h-1.5 rounded-full bg-sky-500 transition-all duration-300"
+                                    style={{ width: `${snapshotUploadProgress}%` }}
+                                  ></div>
+                                </div>
+                              </div>
+                              <div>
+                                <div className="mb-1 flex justify-between gap-2 text-xs">
+                                  <span className="text-gray-600">
+                                    Extract: {formatDataSize(snapshotExtractSeen)} /{" "}
+                                    {snapshotExtractTotal > 0
+                                      ? formatDataSize(snapshotExtractTotal)
+                                      : "?"}
+                                    {snapshotPhase === "processing" ? " (processing)" : ""}
+                                  </span>
+                                  <span className="font-medium">{snapshotExtractProgress}%</span>
+                                </div>
+                                <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
+                                  <div
+                                    className="h-1.5 rounded-full bg-emerald-500 transition-all duration-300"
+                                    style={{ width: `${snapshotExtractProgress}%` }}
+                                  ></div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                           {showEmbeddingProgress && (
                             <div className="text-xs text-gray-500 mt-1">
                               {`Эмбеддингов сохранено: ${job.total_embeddings_inserted ?? 0}`}
@@ -1483,7 +1605,15 @@ export default function SystemMonitor({
       )}
 
       {waymoAuthModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setWaymoAuthModalOpen(false);
+              setWaymoAuthError(null);
+            }
+          }}
+        >
           <div className="w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl">
             <div className="border-b border-slate-200 px-5 py-4">
               <div className="text-base font-semibold text-slate-900">

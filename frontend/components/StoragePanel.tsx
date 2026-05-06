@@ -123,9 +123,15 @@ interface ConfirmDialogState {
   description: string;
   confirmLabel: string;
   onConfirm: () => Promise<void>;
+  extraActions?: Array<{
+    label: string;
+    onAction: () => Promise<void>;
+  }>;
 }
 
 type TransferKind = "full" | "vlm" | "embeddings";
+type SnapshotImportMode = "replace" | "append";
+type ActionMessageScope = "cleanup" | "storage";
 
 const SNAPSHOT_ACTION_IDS = [
   "download-full",
@@ -240,8 +246,15 @@ function buildImportSummary(result: unknown): string {
       payload.vlm && typeof payload.vlm === "object"
         ? (payload.vlm as Record<string, unknown>)
         : {};
+    const skippedExisting = Number(objects.skipped_existing || 0);
+    const mode = String(payload.mode || "").trim();
+    const objectsPart =
+      skippedExisting > 0
+        ? `объектов ${formatNumber(Number(objects.uploaded || 0))} (пропущено существующих ${formatNumber(skippedExisting)})`
+        : `объектов ${formatNumber(Number(objects.uploaded || 0))}`;
+    const modePart = mode === "append" ? " (append)" : "";
     return (
-      `Импорт полного снапшота: объектов ${formatNumber(Number(objects.uploaded || 0))}` +
+      `Импорт полного снапшота${modePart}: ${objectsPart}` +
       `, embeddings ${formatNumber(Number(embeddings.upserted || 0))}` +
       `, VLM аннотаций ${formatNumber(Number(vlm.upserted_annotations || 0))}.`
     );
@@ -483,8 +496,10 @@ export default function StoragePanel({
   const [filteredObjectsLoading, setFilteredObjectsLoading] = useState(false);
   const [filteredObjectsPage, setFilteredObjectsPage] = useState(1);
   const [previewObjectId, setPreviewObjectId] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [warningMessage, setWarningMessage] = useState<string | null>(null);
+  const [cleanupStatusMessage, setCleanupStatusMessage] = useState<string | null>(null);
+  const [cleanupWarningMessage, setCleanupWarningMessage] = useState<string | null>(null);
+  const [storageStatusMessage, setStorageStatusMessage] = useState<string | null>(null);
+  const [storageWarningMessage, setStorageWarningMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [randomEmbeddingsCount, setRandomEmbeddingsCount] = useState(100);
   const [randomVlmCount, setRandomVlmCount] = useState(100);
@@ -516,6 +531,30 @@ export default function StoragePanel({
   >({});
   const snapshotExportPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const snapshotExportPollTokenRef = useRef(0);
+  const snapshotImportPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const snapshotImportPollTokenRef = useRef(0);
+
+  useEffect(() => {
+    if (!confirmDialog && !previewObjectId) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (confirmDialog && !confirmDialogBusy) {
+        setConfirmDialog(null);
+        return;
+      }
+      if (previewObjectId) {
+        setPreviewObjectId(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [confirmDialog, confirmDialogBusy, previewObjectId]);
 
   const extractAxiosErrorMessage = (
     error: unknown,
@@ -655,6 +694,15 @@ export default function StoragePanel({
     }
   };
 
+  const stopSnapshotImportProgressPoll = () => {
+    snapshotImportPollTokenRef.current += 1;
+    const timer = snapshotImportPollTimerRef.current;
+    if (timer) {
+      clearTimeout(timer);
+      snapshotImportPollTimerRef.current = null;
+    }
+  };
+
   const startSnapshotExportProgressPoll = (
     exportId: string,
     actionId: SnapshotActionId
@@ -744,6 +792,89 @@ export default function StoragePanel({
     scheduleNext(0);
   };
 
+  const startSnapshotImportProgressPoll = (
+    importId: string,
+    actionId: SnapshotActionId
+  ) => {
+    stopSnapshotImportProgressPoll();
+    const token = snapshotImportPollTokenRef.current;
+
+    const scheduleNext = (delayMs: number) => {
+      snapshotImportPollTimerRef.current = setTimeout(async () => {
+        if (token !== snapshotImportPollTokenRef.current) {
+          return;
+        }
+        try {
+          const response = await axios.get("/api/jobs");
+          const jobs = Array.isArray(response.data?.jobs)
+            ? (response.data.jobs as Array<Record<string, unknown>>)
+            : [];
+          const targetJob = jobs.find((job) => {
+            const type = String(job?.job_type || "").trim();
+            if (type !== "snapshot_import") return false;
+            const config =
+              job?.job_config && typeof job.job_config === "object"
+                ? (job.job_config as Record<string, unknown>)
+                : {};
+            return String(config.import_id || "").trim() === importId;
+          });
+          if (!targetJob) {
+            if (token === snapshotImportPollTokenRef.current) {
+              scheduleNext(450);
+            }
+            return;
+          }
+
+          const status = String(targetJob.status || "").trim().toLowerCase();
+          const phase = String(targetJob.phase || "").trim().toLowerCase() || "processing";
+          const progress = Math.max(0, Math.min(100, Number(targetJob.progress || 0)));
+          const totalSeen = Math.max(0, Number(targetJob.total_seen || 0));
+          const totalPlannedRaw = Number(targetJob.total_planned || targetJob.total_limit || 0);
+          const totalPlanned =
+            Number.isFinite(totalPlannedRaw) && totalPlannedRaw > 0 ? totalPlannedRaw : null;
+
+          clearSnapshotProgressTimer(actionId);
+          updateSnapshotProgress(actionId, progress, "set");
+          updateSnapshotTransferSize(actionId, totalSeen, totalPlanned, { monotonic: true });
+          updateSnapshotProgressMeta(actionId, {
+            phase,
+            status,
+            hint: phase === "uploading" ? "Uploading snapshot..." : "Extracting and applying snapshot...",
+          });
+          if (status === "running") {
+            if (phase === "processing") {
+              setSnapshotImportInlineMessage("Разархивация и импорт снапшота продолжаются...");
+            } else if (phase === "uploading") {
+              setSnapshotImportInlineMessage("Загрузка снапшота продолжается...");
+            }
+          }
+
+          if (status === "error") {
+            setSnapshotImportInlineMessage("Ошибка при импорте снапшота.");
+            setActionInProgress((current) => (current === actionId ? null : current));
+            return;
+          }
+          if (status === "cancelled") {
+            setSnapshotImportInlineMessage("Импорт и распаковка архива отменены.");
+            setActionInProgress((current) => (current === actionId ? null : current));
+            return;
+          }
+          if (status === "success") {
+            setActionInProgress((current) => (current === actionId ? null : current));
+            return;
+          }
+        } catch {
+          // Best effort polling; ignore transient failures.
+        }
+        if (token === snapshotImportPollTokenRef.current) {
+          scheduleNext(450);
+        }
+      }, delayMs);
+    };
+
+    scheduleNext(0);
+  };
+
   const cancelSnapshotAction = async (actionId: SnapshotActionId) => {
     const controller = snapshotAbortControllersRef.current[actionId];
     if (controller) {
@@ -773,6 +904,7 @@ export default function StoragePanel({
       hint: "Cancelling...",
     });
     if (actionId === "import-snapshot") {
+      stopSnapshotImportProgressPoll();
       setSnapshotImportInlineMessage("Импорт и распаковка архива отменены.");
       return;
     }
@@ -851,6 +983,7 @@ export default function StoragePanel({
       }
       snapshotProgressTimersRef.current = {};
       stopSnapshotExportProgressPoll();
+      stopSnapshotImportProgressPoll();
     };
   }, []);
 
@@ -914,20 +1047,26 @@ export default function StoragePanel({
         updateSnapshotTransferSize(actionId, totalSeen, totalPlanned);
 
         if (actionId === "import-snapshot") {
-          setSnapshotImportInlineMessage("Импорт снапшота продолжается...");
+          const restoredPhase = String(runningSnapshotJob.phase || "")
+            .trim()
+            .toLowerCase();
+          setSnapshotImportInlineMessage(
+            restoredPhase === "processing"
+              ? "Разархивация и импорт снапшота продолжаются..."
+              : "Загрузка снапшота продолжается..."
+          );
+          const jobConfig =
+            runningSnapshotJob.job_config && typeof runningSnapshotJob.job_config === "object"
+              ? (runningSnapshotJob.job_config as Record<string, unknown>)
+              : {};
+          const importId = String(jobConfig.import_id || "").trim();
           updateSnapshotProgressMeta(actionId, {
-            phase: "processing",
+            phase: restoredPhase || "processing",
             status: "running",
-            hint: "Processing snapshot...",
+            hint: "Extracting and applying snapshot...",
           });
-          if (progress < 95) {
-            startSnapshotProgressAnimation(actionId, {
-              from: Math.max(progress, 70),
-              cap: 98,
-              stepMin: 0.2,
-              stepMax: 0.5,
-              intervalMs: 180,
-            });
+          if (importId) {
+            startSnapshotImportProgressPoll(importId, actionId);
           }
           return;
         }
@@ -1071,10 +1210,23 @@ export default function StoragePanel({
     }
   }, [stats, cleanupDatasetFilter]);
 
-  const runStorageAction = async (actionId: string, fn: () => Promise<void>) => {
+  const clearScopedMessages = (scope: ActionMessageScope) => {
+    if (scope === "storage") {
+      setStorageStatusMessage(null);
+      setStorageWarningMessage(null);
+      return;
+    }
+    setCleanupStatusMessage(null);
+    setCleanupWarningMessage(null);
+  };
+
+  const runStorageAction = async (
+    actionId: string,
+    fn: () => Promise<void>,
+    scope: ActionMessageScope = "cleanup"
+  ) => {
     setActionInProgress(actionId);
-    setStatusMessage(null);
-    setWarningMessage(null);
+    clearScopedMessages(scope);
     setErrorMessage(null);
     try {
       await fn();
@@ -1092,11 +1244,19 @@ export default function StoragePanel({
           }
           return;
         }
-        setWarningMessage("Operation cancelled.");
+        if (scope === "storage") {
+          setStorageWarningMessage("Operation cancelled.");
+        } else {
+          setCleanupWarningMessage("Operation cancelled.");
+        }
         return;
       }
       const message = extractAxiosErrorMessage(error, "Operation failed");
-      setErrorMessage(message);
+      if (scope === "storage") {
+        setStorageWarningMessage(message);
+      } else {
+        setCleanupWarningMessage(message);
+      }
     } finally {
       setActionInProgress(null);
     }
@@ -1107,10 +1267,10 @@ export default function StoragePanel({
     setConfirmDialog(dialog);
   };
 
-  const executeConfirmDialog = async () => {
+  const executeConfirmDialog = async (actionOverride?: () => Promise<void>) => {
     if (!confirmDialog || confirmDialogBusy) return;
     setConfirmDialogBusy(true);
-    const action = confirmDialog.onConfirm;
+    const action = actionOverride || confirmDialog.onConfirm;
     try {
       setConfirmDialog(null);
       await action();
@@ -1143,7 +1303,7 @@ export default function StoragePanel({
       onConfirm: async () => {
         await runStorageAction(`delete-object-${objectId}`, async () => {
           await axios.delete(`/api/storage/objects/${encodeURIComponent(objectId)}`);
-          setStatusMessage(`Объект ${objectId} удален.`);
+          setStorageStatusMessage(`Объект ${objectId} удален.`);
           const shouldGoPrev = objects.length === 1 && objectsPrevCursors.length > 0;
           const cursor = shouldGoPrev
             ? objectsPrevCursors[objectsPrevCursors.length - 1] ?? ""
@@ -1159,7 +1319,7 @@ export default function StoragePanel({
           if (previewObjectId === objectId) {
             setPreviewObjectId(null);
           }
-        });
+        }, "storage");
       },
     });
   };
@@ -1180,7 +1340,7 @@ export default function StoragePanel({
           });
           const selected = Number(response.data?.selected_images || 0);
           const reset = Number(response.data?.reset_embeddings || 0);
-          setStatusMessage(`Сброшены embeddings: ${reset} из ${selected} выбранных сцен.`);
+          setCleanupStatusMessage(`Сброшены embeddings: ${reset} из ${selected} выбранных сцен.`);
           await loadStats(false);
         });
       },
@@ -1203,7 +1363,7 @@ export default function StoragePanel({
           });
           const selected = Number(response.data?.selected_images || 0);
           const reset = Number(response.data?.reset_vlm_annotations || 0);
-          setStatusMessage(`Сброшены VLM-аннотации: ${reset} из ${selected} выбранных сцен.`);
+          setCleanupStatusMessage(`Сброшены VLM-аннотации: ${reset} из ${selected} выбранных сцен.`);
           await loadStats(false);
         });
       },
@@ -1226,7 +1386,7 @@ export default function StoragePanel({
           const candidates = Number(response.data?.duplicate_candidates || 0);
           const deleted = Number(response.data?.deleted_duplicates || 0);
           const failed = Number(response.data?.failed_duplicates || 0);
-          setStatusMessage(
+          setCleanupStatusMessage(
             `Дубликаты обработаны: кандидатов ${candidates}, удалено ${deleted}, ошибок ${failed}.`
           );
           await Promise.all([
@@ -1255,7 +1415,7 @@ export default function StoragePanel({
           const selected = Number(response.data?.selected_images || 0);
           const deleted = Number(response.data?.deleted_images || 0);
           const failed = Number(response.data?.failed_images || 0);
-          setStatusMessage(
+          setCleanupStatusMessage(
             `Полное удаление сцен: выбранo ${selected}, удалено ${deleted}, ошибок ${failed}.`
           );
           await Promise.all([
@@ -1263,7 +1423,7 @@ export default function StoragePanel({
             loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
           ]);
           if (failed > 0) {
-            setWarningMessage("Часть сцен не удалена. Проверьте детали в ответе API/логах.");
+            setCleanupWarningMessage("Часть сцен не удалена. Проверьте детали в ответе API/логах.");
           }
         });
       },
@@ -1329,16 +1489,16 @@ export default function StoragePanel({
           }
 
           const selected = Math.max(initialSelected, deletedTotal + remaining);
-          setStatusMessage(
+          setStorageStatusMessage(
             `Датасет '${dataset}' обработан: выбрано ${selected}, удалено ${deletedTotal}, осталось ${remaining}, ошибок ${failedTotal}.`
           );
           await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
           if (failedTotal > 0 || remaining > 0) {
-            setWarningMessage(
+            setStorageWarningMessage(
               `При удалении датасета '${dataset}' остались проблемы: осталось ${remaining}, ошибок ${failedTotal}.`
             );
           }
-        });
+        }, "storage");
       },
     });
   };
@@ -1411,118 +1571,142 @@ export default function StoragePanel({
     clearSnapshotProgress(actionId);
   };
 
+  const startSnapshotImport = async (mode: SnapshotImportMode) => {
+    if (!transferFile) {
+      setStorageWarningMessage("Выберите файл снапшота перед импортом.");
+      return;
+    }
+    const snapshotFile = transferFile;
+    const modeQuery = mode === "append" ? "append" : "replace";
+    const uploadMessage =
+      mode === "append"
+        ? "Загрузка снапшота (append) продолжается..."
+        : "Загрузка снапшота продолжается...";
+    const processingMessage =
+      mode === "append"
+        ? "Разархивация и append-импорт снапшота продолжаются..."
+        : "Разархивация и импорт снапшота продолжаются...";
+    const actionId: SnapshotActionId = "import-snapshot";
+    const importId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    setSnapshotImportInlineMessage(uploadMessage);
+    const controller = new AbortController();
+    setSnapshotAbortController(actionId, controller);
+    updateSnapshotProgressMeta(actionId, {
+      phase: "uploading",
+      status: "running",
+      hint: "Uploading snapshot...",
+    });
+    updateSnapshotTransferSize(actionId, 0, Number(snapshotFile.size || 0));
+    startSnapshotImportProgressPoll(importId, actionId);
+    startSnapshotProgressAnimation(actionId, {
+      from: 4,
+      cap: 55,
+      stepMin: 0.2,
+      stepMax: 0.45,
+      intervalMs: 160,
+    });
+
+    await runStorageAction(actionId, async () => {
+      let processingAnimationStarted = false;
+      const response = await axios.post(
+        `/api/storage/transfer/import?import_id=${encodeURIComponent(importId)}&mode=${encodeURIComponent(modeQuery)}`,
+        snapshotFile,
+        {
+          adapter: "xhr",
+          headers: {
+            "Content-Type": snapshotFile.type || "application/octet-stream",
+          },
+          signal: controller.signal,
+          onUploadProgress: (event) => {
+            const total = Number(event.total || 0);
+            const loaded = Number(event.loaded || 0);
+            updateSnapshotTransferSize(
+              actionId,
+              loaded,
+              total > 0 ? total : Number(snapshotFile.size || 0)
+            );
+            if (total > 0) {
+              clearSnapshotProgressTimer(actionId);
+              const uploadPercent = Math.min(1, Math.max(0, loaded / total));
+              updateSnapshotProgress(actionId, 5 + uploadPercent * 50, "max");
+            }
+            if (!processingAnimationStarted && total > 0 && loaded >= total) {
+              processingAnimationStarted = true;
+              clearSnapshotProgressTimer(actionId);
+              updateSnapshotProgress(actionId, 70, "max");
+              startSnapshotProgressAnimation(actionId, {
+                from: 70,
+                cap: 98,
+                stepMin: 0.35,
+                stepMax: 0.85,
+                intervalMs: 130,
+              });
+              updateSnapshotProgressMeta(actionId, {
+                phase: "processing",
+                status: "running",
+                hint: "Extracting and applying snapshot...",
+              });
+              setSnapshotImportInlineMessage(processingMessage);
+            }
+          },
+        }
+      );
+
+      if (!processingAnimationStarted) {
+        clearSnapshotProgressTimer(actionId);
+        updateSnapshotProgress(actionId, 97, "max");
+      }
+
+      clearSnapshotProgressTimer(actionId);
+      updateSnapshotProgress(actionId, 100);
+      updateSnapshotProgressMeta(actionId, {
+        phase: "done",
+        status: "done",
+        hint: "",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 160));
+
+      const payload = response.data;
+      const responsePayload =
+        payload && typeof payload === "object"
+          ? (payload as Record<string, unknown>)
+          : {};
+      setSnapshotImportInlineMessage(buildImportSummary(responsePayload.result));
+      setTransferFile(null);
+      setTransferFileInputKey((value) => value + 1);
+      await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
+    });
+
+    stopSnapshotImportProgressPoll();
+    setSnapshotAbortController(actionId, null);
+    clearSnapshotProgress(actionId);
+  };
+
   const askImportSnapshot = async () => {
     if (!transferFile) {
-      setWarningMessage("Выберите файл снапшота перед импортом.");
+      setStorageWarningMessage("Выберите файл снапшота перед импортом.");
       return;
     }
     openConfirmDialog({
       title: "Import snapshot",
       description:
         "Импорт может перезаписать существующие embeddings/VLM аннотации и добавить объекты в storage. Продолжить?",
-      confirmLabel: "Импортировать",
-      onConfirm: async () => {
-        const actionId: SnapshotActionId = "import-snapshot";
-        const importId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        setSnapshotImportInlineMessage(null);
-        const controller = new AbortController();
-        setSnapshotAbortController(actionId, controller);
-        updateSnapshotProgressMeta(actionId, {
-          phase: "uploading",
-          status: "running",
-          hint: "Uploading snapshot...",
-        });
-        updateSnapshotTransferSize(
-          actionId,
-          0,
-          transferFile ? Number(transferFile.size || 0) : null
-        );
-        startSnapshotProgressAnimation(actionId, {
-          from: 4,
-          cap: 70,
-          stepMin: 0.35,
-          stepMax: 0.9,
-          intervalMs: 140,
-        });
-
-        await runStorageAction(actionId, async () => {
-          let processingAnimationStarted = false;
-          const response = await axios.post(
-            `/api/storage/transfer/import?import_id=${encodeURIComponent(importId)}`,
-            transferFile,
-            {
-              adapter: "xhr",
-              headers: {
-                "Content-Type": transferFile.type || "application/octet-stream",
-              },
-              signal: controller.signal,
-              onUploadProgress: (event) => {
-                const total = Number(event.total || 0);
-                const loaded = Number(event.loaded || 0);
-                updateSnapshotTransferSize(
-                  actionId,
-                  loaded,
-                  total > 0 ? total : transferFile ? Number(transferFile.size || 0) : null
-                );
-                if (total > 0) {
-                  clearSnapshotProgressTimer(actionId);
-                  const uploadPercent = Math.min(1, Math.max(0, loaded / total));
-                  updateSnapshotProgress(actionId, 6 + uploadPercent * 69, "max");
-                }
-                if (!processingAnimationStarted && total > 0 && loaded >= total) {
-                  processingAnimationStarted = true;
-                  clearSnapshotProgressTimer(actionId);
-                  startSnapshotProgressAnimation(actionId, {
-                    from: 76,
-                    cap: 98,
-                    stepMin: 0.35,
-                    stepMax: 0.85,
-                    intervalMs: 130,
-                  });
-                  updateSnapshotProgressMeta(actionId, {
-                    phase: "processing",
-                    status: "running",
-                    hint: "Extracting and applying snapshot...",
-                  });
-                }
-              },
-            }
-          );
-
-          if (!processingAnimationStarted) {
-            clearSnapshotProgressTimer(actionId);
-            updateSnapshotProgress(actionId, 97, "max");
-          }
-
-          clearSnapshotProgressTimer(actionId);
-          updateSnapshotProgress(actionId, 100);
-          updateSnapshotProgressMeta(actionId, {
-            phase: "done",
-            status: "done",
-            hint: "",
-          });
-          await new Promise((resolve) => setTimeout(resolve, 160));
-
-          const payload = response.data;
-          const responsePayload =
-            payload && typeof payload === "object"
-              ? (payload as Record<string, unknown>)
-              : {};
-          setSnapshotImportInlineMessage(buildImportSummary(responsePayload.result));
-          setTransferFile(null);
-          setTransferFileInputKey((value) => value + 1);
-          await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
-        });
-
-        setSnapshotAbortController(actionId, null);
-        clearSnapshotProgress(actionId);
-      },
+      confirmLabel: "Импортировать с перезаписью",
+      onConfirm: async () => startSnapshotImport("replace"),
+      extraActions: [
+        {
+          label: "Добавить",
+          onAction: async () => startSnapshotImport("append"),
+        },
+      ],
     });
   };
 
   const refreshAll = async () => {
-    setStatusMessage(null);
-    setWarningMessage(null);
+    setCleanupStatusMessage(null);
+    setCleanupWarningMessage(null);
+    setStorageStatusMessage(null);
+    setStorageWarningMessage(null);
     setErrorMessage(null);
     setIsRefreshing(true);
     try {
@@ -1654,7 +1838,7 @@ export default function StoragePanel({
     onCancel?: (actionId: SnapshotActionId) => void;
   }) => {
     const isActive = actionInProgress === actionId;
-    const progress = Math.max(
+    const rawProgress = Math.max(
       0,
       Math.min(100, Math.round(snapshotActionProgress[actionId] ?? 0))
     );
@@ -1689,6 +1873,41 @@ export default function StoragePanel({
 
     let sizeText = "";
     const hasTotalSize = Number(transferSize?.totalBytes || 0) > 0;
+    const transferRatioProgress = hasTotalSize
+      ? (() => {
+          const loaded = Number(transferSize?.loadedBytes || 0);
+          const total = Math.max(1, Number(transferSize?.totalBytes || 0));
+          const ratio = (loaded / total) * 100;
+          if (loaded > 0 && loaded < total) {
+            return Math.max(0, Math.min(99, Math.floor(ratio)));
+          }
+          return Math.max(0, Math.min(100, Math.round(ratio)));
+        })()
+      : null;
+    const isMidTransfer =
+      hasTotalSize &&
+      Number(transferSize?.loadedBytes || 0) > 0 &&
+      Number(transferSize?.loadedBytes || 0) < Number(transferSize?.totalBytes || 0);
+    const shouldPreferTransferRatio =
+      isMidTransfer &&
+      (transferMeta?.phase === "uploading" ||
+        transferMeta?.phase === "streaming" ||
+        rawProgress - (transferRatioProgress ?? rawProgress) > 20);
+    const progress = shouldPreferTransferRatio
+      ? Number(transferRatioProgress || 0)
+      : rawProgress;
+    let displayActiveLabel = activeLabel;
+    if (actionId === "import-snapshot") {
+      const phase = String(transferMeta?.phase || "").trim().toLowerCase();
+      if (phase === "uploading") {
+        displayActiveLabel = "Загрузка...";
+      } else if (phase === "processing") {
+        displayActiveLabel = "Разархивация...";
+      } else if (phase === "done") {
+        displayActiveLabel = "Импорт...";
+      }
+    }
+
     if (transferSize && transferSize.loadedBytes > 0) {
       if (hasTotalSize) {
         sizeText = ` (${formatBytes(transferSize.loadedBytes)} / ${formatBytes(
@@ -1701,8 +1920,8 @@ export default function StoragePanel({
       sizeText = ` (${transferMeta.hint})`;
     }
     const activeText = hasTotalSize
-      ? `${activeLabel} ${progress}%${sizeText}`
-      : `${activeLabel}${sizeText}`;
+      ? `${displayActiveLabel} ${progress}%${sizeText}`
+      : `${displayActiveLabel}${sizeText}`;
     const handleClick = () => {
       if (isActive && onCancel) {
         onCancel(actionId);
@@ -1734,18 +1953,24 @@ export default function StoragePanel({
           />
         )}
         {isActive ? (
-          <span className={`relative z-10 inline-block whitespace-nowrap ${textTone}`}>
-            <span aria-hidden="true" className="invisible">
-              {activeText}
+          <>
+            <span className={`relative z-10 inline-block whitespace-nowrap ${textTone}`}>
+              <span aria-hidden="true" className="opacity-0">
+                {activeText}
+              </span>
             </span>
-            <span className="absolute inset-0">{activeText}</span>
             <span
-              className="absolute inset-y-0 left-0 overflow-hidden whitespace-nowrap text-white transition-[width] duration-200 ease-out"
-              style={{ width: `${progress}%` }}
+              className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center whitespace-nowrap ${textTone}`}
             >
               {activeText}
             </span>
-          </span>
+            <span
+              className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center whitespace-nowrap text-white transition-[clip-path] duration-200 ease-out"
+              style={{ clipPath: `inset(0 ${100 - progress}% 0 0)` }}
+            >
+              {activeText}
+            </span>
+          </>
         ) : (
           <span className="relative z-10">{idleLabel}</span>
         )}
@@ -1754,7 +1979,10 @@ export default function StoragePanel({
   };
 
   const snapshotSection = (
-    <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+    <div
+      id="transfer-snapshot-section"
+      className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
+    >
       <h3 className="text-lg font-semibold text-slate-900">Transfer Snapshot</h3>
       <p className="mt-1 text-sm text-slate-600">
         Экспорт/импорт полного storage и отдельной разметки (VLM/Embedder) через файл.
@@ -2141,6 +2369,16 @@ export default function StoragePanel({
           <p className="mt-1 text-sm text-slate-600">
             Partial annotation reset, duplicate cleanup, and full random scene deletion.
           </p>
+          {cleanupStatusMessage && (
+            <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+              {cleanupStatusMessage}
+            </div>
+          )}
+          {cleanupWarningMessage && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+              {cleanupWarningMessage}
+            </div>
+          )}
           <div className="mt-3">
             <label className="text-sm font-medium text-slate-700">
               Dataset scope
@@ -2268,14 +2506,14 @@ export default function StoragePanel({
 
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <h3 className="text-lg font-semibold text-slate-900">Image Storage</h3>
-          {statusMessage && (
+          {storageStatusMessage && (
             <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
-              {statusMessage}
+              {storageStatusMessage}
             </div>
           )}
-          {warningMessage && (
+          {storageWarningMessage && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
-              {warningMessage}
+              {storageWarningMessage}
             </div>
           )}
           <div className="mt-4 grid gap-4 md:grid-cols-4">
@@ -2340,7 +2578,7 @@ export default function StoragePanel({
                                   loadStats(false),
                                   loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
                                 ]);
-                              });
+                              }, "storage");
                             },
                           });
                         }}
@@ -2399,18 +2637,22 @@ export default function StoragePanel({
                             />
                           )}
                           {isDeleting ? (
-                            <span className="relative z-10 inline-block whitespace-nowrap text-rose-700">
-                              <span aria-hidden="true" className="invisible">
+                            <>
+                              <span className="relative z-10 inline-block whitespace-nowrap text-rose-700">
+                                <span aria-hidden="true" className="opacity-0">
+                                  Deleting
+                                </span>
+                              </span>
+                              <span className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center whitespace-nowrap text-rose-700">
                                 Deleting
                               </span>
-                              <span className="absolute inset-0">Deleting</span>
                               <span
-                                className="absolute inset-y-0 left-0 overflow-hidden whitespace-nowrap text-white transition-[width] duration-300 ease-out"
-                                style={{ width: `${progress}%` }}
+                                className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center whitespace-nowrap text-white transition-[clip-path] duration-300 ease-out"
+                                style={{ clipPath: `inset(0 ${100 - progress}% 0 0)` }}
                               >
                                 Deleting
                               </span>
-                            </span>
+                            </>
                           ) : (
                             <span className="relative z-10">Delete dataset</span>
                           )}
@@ -2437,7 +2679,7 @@ export default function StoragePanel({
                                     loadStats(false),
                                     loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
                                   ]);
-                                });
+                                }, "storage");
                               },
                             });
                           }}
@@ -2510,15 +2752,26 @@ export default function StoragePanel({
                 type="button"
                 onClick={() => setConfirmDialog(null)}
                 disabled={confirmDialogBusy}
-                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex h-10 items-center justify-center rounded-lg border border-slate-300 px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Отмена
               </button>
+              {(confirmDialog.extraActions || []).map((action) => (
+                <button
+                  key={action.label}
+                  type="button"
+                  onClick={() => executeConfirmDialog(action.onAction)}
+                  disabled={confirmDialogBusy}
+                  className="inline-flex h-10 items-center justify-center rounded-lg border border-emerald-300 bg-emerald-50 px-4 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {action.label}
+                </button>
+              ))}
               <button
                 type="button"
-                onClick={executeConfirmDialog}
+                onClick={() => executeConfirmDialog()}
                 disabled={confirmDialogBusy}
-                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex h-10 items-center justify-center rounded-lg bg-rose-600 px-4 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {confirmDialog.confirmLabel}
               </button>
