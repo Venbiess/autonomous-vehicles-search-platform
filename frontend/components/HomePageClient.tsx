@@ -112,6 +112,8 @@ export default function HomePageClient({
   const [lastQuery, setLastQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [imagesPerPage, setImagesPerPage] = useState(9);
+  const [browserQueryDraft, setBrowserQueryDraft] = useState("");
+  const [browserImageDraft, setBrowserImageDraft] = useState<File | null>(null);
   const [minScoreInput, setMinScoreInput] = useState("0.1");
   const [maxScoreInput, setMaxScoreInput] = useState("");
   const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS);
@@ -526,7 +528,16 @@ export default function HomePageClient({
               </h1>
 
               {/* Компонент поиска */}
-              <SearchBar onSearch={handleSearch} loading={isLoading} />
+              <SearchBar
+                onSearch={handleSearch}
+                loading={isLoading}
+                initialQuery={browserQueryDraft}
+                initialImageFile={browserImageDraft}
+                onStateChange={({ query, imageFile }) => {
+                  setBrowserQueryDraft(query);
+                  setBrowserImageDraft(imageFile);
+                }}
+              />
 
               {sourceWarning && (
                 <div className="w-full rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 text-left">

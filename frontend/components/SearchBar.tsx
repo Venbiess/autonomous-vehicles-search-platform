@@ -1,27 +1,45 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 interface SearchBarProps {
   onSearch: (payload: { query: string; imageFile: File | null }) => void;
   loading?: boolean;
+  initialQuery?: string;
+  initialImageFile?: File | null;
+  onStateChange?: (payload: { query: string; imageFile: File | null }) => void;
 }
 
-export default function SearchBar({ onSearch, loading = false }: SearchBarProps) {
-  const [query, setQuery] = useState("");
+export default function SearchBar({
+  onSearch,
+  loading = false,
+  initialQuery = "",
+  initialImageFile = null,
+  onStateChange,
+}: SearchBarProps) {
+  const [query, setQuery] = useState(initialQuery);
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [imageFile, setImageFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [isImageLoading, setIsImageLoading] = useState(false);
+  const [imageFile, setImageFile] = useState<File | null>(initialImageFile);
+  const [isImageLoading, setIsImageLoading] = useState(Boolean(initialImageFile));
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const inputId = useId();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const previewUrl = useMemo(
+    () => (imageFile ? URL.createObjectURL(imageFile) : null),
+    [imageFile]
+  );
   const trimmedQuery = query.trim();
   const hasImage = imageFile !== null;
   const hasReadyImage = hasImage && !isImageLoading;
   const typing = query.length > 0 && query !== debouncedQuery;
   const active = !typing && (debouncedQuery.trim().length > 0 || hasReadyImage);
   const isDisabled = loading || isImageLoading || (trimmedQuery.length === 0 && !hasImage);
+
+  useEffect(() => {
+    if (typeof onStateChange === "function") {
+      onStateChange({ query, imageFile });
+    }
+  }, [query, imageFile, onStateChange]);
 
   useEffect(() => {
     return () => {
@@ -58,40 +76,19 @@ export default function SearchBar({ onSearch, loading = false }: SearchBarProps)
 
   const handleImageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
-    if (previewUrl) {
-      URL.revokeObjectURL(previewUrl);
-    }
     if (!file) {
       setImageFile(null);
-      setPreviewUrl(null);
       setIsImageLoading(false);
       return;
     }
-
-    const nextPreviewUrl = URL.createObjectURL(file);
+    // Image search is exclusive: clear text query once image is selected.
+    setQuery("");
     setImageFile(file);
-    setPreviewUrl(nextPreviewUrl);
     setIsImageLoading(true);
-
-    const image = new window.Image();
-    image.onload = () => {
-      setIsImageLoading(false);
-    };
-    image.onerror = () => {
-      setImageFile(null);
-      setPreviewUrl(null);
-      setIsImageLoading(false);
-      URL.revokeObjectURL(image.src);
-    };
-    image.src = nextPreviewUrl;
   };
 
   const clearImage = () => {
-    if (previewUrl) {
-      URL.revokeObjectURL(previewUrl);
-    }
     setImageFile(null);
-    setPreviewUrl(null);
     setIsImageLoading(false);
     setIsPreviewOpen(false);
     if (fileInputRef.current) {
@@ -141,6 +138,11 @@ export default function SearchBar({ onSearch, loading = false }: SearchBarProps)
                   src={previewUrl}
                   alt="Выбранное изображение"
                   className="h-full w-full object-cover"
+                  onLoad={() => setIsImageLoading(false)}
+                  onError={() => {
+                    setImageFile(null);
+                    setIsImageLoading(false);
+                  }}
                 />
                 {!isImageLoading && (
                   <div className="absolute inset-0 bg-black/0 opacity-0 transition-opacity duration-200 group-hover:bg-black/45 group-hover:opacity-100" />
@@ -167,8 +169,12 @@ export default function SearchBar({ onSearch, loading = false }: SearchBarProps)
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            disabled={hasImage}
+            readOnly={hasImage}
             placeholder="Найдётся почти всё..."
-            className="min-w-0 flex-1 bg-transparent px-1 py-1 text-gray-700 outline-none"
+            className={`min-w-0 flex-1 bg-transparent px-1 py-1 text-gray-700 outline-none ${
+              hasImage ? "cursor-not-allowed opacity-60" : ""
+            }`}
           />
           <input
             id={inputId}
