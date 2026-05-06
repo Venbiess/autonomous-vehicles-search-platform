@@ -225,10 +225,12 @@ export default function AnnotationPanel({
         const rows = Array.isArray(response.data?.datasets?.rows_distribution)
           ? response.data.datasets.rows_distribution
           : [];
-        const datasetNames = rows
+        const datasetNames: string[] = rows
           .map((item: any) => String(item?.dataset || "").trim())
-          .filter((name: string) => Boolean(name));
-        const unique = Array.from(new Set(datasetNames)).sort((a, b) => a.localeCompare(b));
+          .filter((name: string): name is string => Boolean(name));
+        const unique = Array.from(new Set<string>(datasetNames)).sort((a, b) =>
+          a.localeCompare(b)
+        );
         setAvailableDatasets(unique);
       } catch {
         setAvailableDatasets([]);

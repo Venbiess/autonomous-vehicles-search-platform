@@ -5,6 +5,7 @@ import { once } from "events";
 import { randomUUID } from "crypto";
 
 import { readStorageJson } from "../../../../lib/storageServer";
+import { loadDatasetVisibility } from "../../../../lib/datasetVisibility";
 import {
   SNAPSHOT_FORMAT_EMBEDDINGS,
   SNAPSHOT_FORMAT_FULL,
@@ -122,7 +123,25 @@ function normalizeObjectMeta(item) {
   };
 }
 
-async function forEachObjectPage({ pageSize = OBJECTS_PAGE_SIZE, assertNotAborted, onPage }) {
+function normalizeDatasetName(value) {
+  return String(value || "").trim();
+}
+
+function createVisibilityPredicate(hiddenDatasets = []) {
+  const hidden = new Set(
+    (Array.isArray(hiddenDatasets) ? hiddenDatasets : [])
+      .map((name) => normalizeDatasetName(name))
+      .filter(Boolean)
+  );
+  return (item) => !hidden.has(normalizeDatasetName(item?.bucket));
+}
+
+async function forEachObjectPage({
+  pageSize = OBJECTS_PAGE_SIZE,
+  assertNotAborted,
+  onPage,
+  isVisibleObject,
+}) {
   let cursor = "";
   let guard = 0;
   while (guard < 10_000) {
@@ -133,9 +152,13 @@ async function forEachObjectPage({ pageSize = OBJECTS_PAGE_SIZE, assertNotAborte
       params.set("cursor", cursor);
     }
     const payload = await readStorageJson(`/objects?${params.toString()}`);
-    const items = Array.isArray(payload?.items) ? payload.items : [];
+    const rawItems = Array.isArray(payload?.items) ? payload.items : [];
+    const items =
+      typeof isVisibleObject === "function"
+        ? rawItems.filter((item) => isVisibleObject(item))
+        : rawItems;
     if (items.length > 0) {
-      await onPage(items);
+      await onPage(items, rawItems.length);
     }
     cursor = String(payload?.next_cursor || "").trim();
     if (!cursor) {
@@ -144,7 +167,10 @@ async function forEachObjectPage({ pageSize = OBJECTS_PAGE_SIZE, assertNotAborte
   }
 }
 
-async function exportEmbeddingsToNdjson(filePath, { assertNotAborted, onPreparedBytes }) {
+async function exportEmbeddingsToNdjson(
+  filePath,
+  { assertNotAborted, onPreparedBytes, isVisibleObject }
+) {
   const writer = createNdjsonWriter(filePath, {
     onBytesWritten: (bytes) => {
       if (typeof onPreparedBytes === "function") {
@@ -187,6 +213,7 @@ async function exportEmbeddingsToNdjson(filePath, { assertNotAborted, onPrepared
   try {
     await forEachObjectPage({
       assertNotAborted,
+      isVisibleObject,
       onPage: async (items) => {
         for (const raw of items) {
           const objectID = String(raw?.object_id || "").trim();
@@ -206,7 +233,10 @@ async function exportEmbeddingsToNdjson(filePath, { assertNotAborted, onPrepared
   return count;
 }
 
-async function exportVlmAnnotationsToNdjson(filePath, { assertNotAborted, onPreparedBytes }) {
+async function exportVlmAnnotationsToNdjson(
+  filePath,
+  { assertNotAborted, onPreparedBytes, isVisibleObject }
+) {
   const writer = createNdjsonWriter(filePath, {
     onBytesWritten: (bytes) => {
       if (typeof onPreparedBytes === "function") {
@@ -256,6 +286,7 @@ async function exportVlmAnnotationsToNdjson(filePath, { assertNotAborted, onPrep
   try {
     await forEachObjectPage({
       assertNotAborted,
+      isVisibleObject,
       onPage: async (items) => {
         for (const raw of items) {
           const objectID = String(raw?.object_id || "").trim();
@@ -277,7 +308,7 @@ async function exportVlmAnnotationsToNdjson(filePath, { assertNotAborted, onPrep
 
 async function exportObjectsToArchive(
   rootDir,
-  { assertNotAborted, onPreparedBytes, onPreparedObject }
+  { assertNotAborted, onPreparedBytes, onPreparedObject, isVisibleObject }
 ) {
   const objectsDir = path.join(rootDir, "objects");
   await mkdir(objectsDir, { recursive: true });
@@ -295,6 +326,7 @@ async function exportObjectsToArchive(
   try {
     await forEachObjectPage({
       assertNotAborted,
+      isVisibleObject,
       onPage: async (rawItems) => {
         const metas = rawItems.map(normalizeObjectMeta).filter((item) => item.object_id);
         for (const metaChunk of chunkArray(metas, OBJECT_CONTENT_BATCH_SIZE)) {
@@ -458,6 +490,16 @@ export default async function handler(req, res) {
 
   try {
     const createdAt = new Date().toISOString();
+    const visibilityPayload = loadDatasetVisibility();
+    const hiddenDatasets = Array.isArray(visibilityPayload?.hidden_datasets)
+      ? visibilityPayload.hidden_datasets
+      : [];
+    const isVisibleObject = createVisibilityPredicate(hiddenDatasets);
+    appendLog(
+      hiddenDatasets.length > 0
+        ? `Applying visibility filter: hidden datasets=${hiddenDatasets.join(", ")}.`
+        : "Applying visibility filter: all datasets visible."
+    );
     ensureSnapshotTransferJob(jobId, jobType, {
       export_id: exportId,
       kind,
@@ -497,6 +539,7 @@ export default async function handler(req, res) {
       await exportEmbeddingsToNdjson(path.join(workDir, "embeddings.ndjson"), {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
+        isVisibleObject,
       });
       appendLog("Embeddings snapshot data prepared.");
     } else if (kind === SNAPSHOT_KIND_VLM) {
@@ -517,6 +560,7 @@ export default async function handler(req, res) {
       await exportVlmAnnotationsToNdjson(path.join(workDir, "vlm.ndjson"), {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
+        isVisibleObject,
       });
       appendLog("VLM snapshot data prepared.");
     } else {
@@ -538,15 +582,18 @@ export default async function handler(req, res) {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
         onPreparedObject: bumpPreparedObjects,
+        isVisibleObject,
       });
       appendLog(`Objects prepared: ${fullObjectsCount}.`);
       await exportEmbeddingsToNdjson(path.join(workDir, "embeddings.ndjson"), {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
+        isVisibleObject,
       });
       await exportVlmAnnotationsToNdjson(path.join(workDir, "vlm.ndjson"), {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
+        isVisibleObject,
       });
       appendLog("Full snapshot data prepared.");
     }

@@ -343,6 +343,26 @@ export default function HomePageClient({
     URL.revokeObjectURL(href);
   };
 
+  const openTransferSnapshotSection = () => {
+    setSearchMode("STORAGE");
+    if (typeof window === "undefined") {
+      return;
+    }
+    let attempts = 0;
+    const scrollToSection = () => {
+      const section = document.getElementById("transfer-snapshot-section");
+      if (section) {
+        section.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      attempts += 1;
+      if (attempts < 12) {
+        setTimeout(scrollToSection, 120);
+      }
+    };
+    setTimeout(scrollToSection, 80);
+  };
+
   return (
     <main className="min-h-screen bg-gray-100">
       <div className="fixed right-4 top-4 z-[70]">
@@ -640,7 +660,7 @@ export default function HomePageClient({
           </section>
         </>
       )}
-      <TransferToast />
+      <TransferToast onOpenTransfer={openTransferSnapshotSection} />
     </main>
   );
 }

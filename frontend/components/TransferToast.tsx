@@ -51,7 +51,11 @@ function normalizeProgress(job: SnapshotTransferJob): number {
   return Math.max(0, Math.min(100, Math.round(Number(job.progress || 0))));
 }
 
-export default function TransferToast() {
+export default function TransferToast({
+  onOpenTransfer,
+}: {
+  onOpenTransfer?: () => void;
+}) {
   const [jobs, setJobs] = useState<SnapshotTransferJob[]>([]);
   const pollTokenRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -114,7 +118,16 @@ export default function TransferToast() {
 
   return (
     <div className="fixed bottom-4 right-4 z-[80]">
-      <div className="flex min-w-[18rem] items-center gap-3 rounded-2xl border border-slate-200 bg-white/95 px-4 py-3 shadow-xl backdrop-blur">
+      <button
+        type="button"
+        onClick={() => {
+          if (typeof onOpenTransfer === "function") {
+            onOpenTransfer();
+          }
+        }}
+        className="flex min-w-[18rem] items-center gap-3 rounded-2xl border border-slate-200 bg-white/95 px-4 py-3 text-left shadow-xl backdrop-blur transition hover:border-sky-300 hover:bg-white"
+        title="Открыть раздел Transfer Snapshot"
+      >
         <div className="relative h-[54px] w-[54px] shrink-0">
           <svg
             viewBox={`0 0 ${size} ${size}`}
@@ -165,7 +178,7 @@ export default function TransferToast() {
             <div className="text-[11px] text-slate-500">{`+${remainingCount} active`}</div>
           )}
         </div>
-      </div>
+      </button>
     </div>
   );
 }

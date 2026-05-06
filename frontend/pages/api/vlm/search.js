@@ -1,4 +1,4 @@
-import { loadDatasetVisibility } from "../../lib/datasetVisibility";
+import { loadDatasetVisibility } from "../../../lib/datasetVisibility";
 const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
 
 function buildImageUrl(storagePath, defaultBucket) {

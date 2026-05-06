@@ -804,6 +804,13 @@ export default function StoragePanel({
             status,
             hint: phase === "uploading" ? "Uploading snapshot..." : "Extracting and applying snapshot...",
           });
+          if (status === "running") {
+            if (phase === "processing") {
+              setSnapshotImportInlineMessage("Разархивация и импорт снапшота продолжаются...");
+            } else if (phase === "uploading") {
+              setSnapshotImportInlineMessage("Загрузка снапшота продолжается...");
+            }
+          }
 
           if (status === "error") {
             setSnapshotImportInlineMessage("Ошибка при импорте снапшота.");
@@ -1003,14 +1010,21 @@ export default function StoragePanel({
         updateSnapshotTransferSize(actionId, totalSeen, totalPlanned);
 
         if (actionId === "import-snapshot") {
-          setSnapshotImportInlineMessage("Импорт снапшота продолжается...");
+          const restoredPhase = String(runningSnapshotJob.phase || "")
+            .trim()
+            .toLowerCase();
+          setSnapshotImportInlineMessage(
+            restoredPhase === "processing"
+              ? "Разархивация и импорт снапшота продолжаются..."
+              : "Загрузка снапшота продолжается..."
+          );
           const jobConfig =
             runningSnapshotJob.job_config && typeof runningSnapshotJob.job_config === "object"
               ? (runningSnapshotJob.job_config as Record<string, unknown>)
               : {};
           const importId = String(jobConfig.import_id || "").trim();
           updateSnapshotProgressMeta(actionId, {
-            phase: String(runningSnapshotJob.phase || "").trim().toLowerCase() || "processing",
+            phase: restoredPhase || "processing",
             status: "running",
             hint: "Extracting and applying snapshot...",
           });
@@ -1512,7 +1526,7 @@ export default function StoragePanel({
       onConfirm: async () => {
         const actionId: SnapshotActionId = "import-snapshot";
         const importId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        setSnapshotImportInlineMessage(null);
+        setSnapshotImportInlineMessage("Загрузка снапшота продолжается...");
         const controller = new AbortController();
         setSnapshotAbortController(actionId, controller);
         updateSnapshotProgressMeta(actionId, {
@@ -1528,10 +1542,10 @@ export default function StoragePanel({
         startSnapshotImportProgressPoll(importId, actionId);
         startSnapshotProgressAnimation(actionId, {
           from: 4,
-          cap: 70,
-          stepMin: 0.35,
-          stepMax: 0.9,
-          intervalMs: 140,
+          cap: 55,
+          stepMin: 0.2,
+          stepMax: 0.45,
+          intervalMs: 160,
         });
 
         await runStorageAction(actionId, async () => {
@@ -1556,13 +1570,14 @@ export default function StoragePanel({
                 if (total > 0) {
                   clearSnapshotProgressTimer(actionId);
                   const uploadPercent = Math.min(1, Math.max(0, loaded / total));
-                  updateSnapshotProgress(actionId, 6 + uploadPercent * 69, "max");
+                  updateSnapshotProgress(actionId, 5 + uploadPercent * 50, "max");
                 }
                 if (!processingAnimationStarted && total > 0 && loaded >= total) {
                   processingAnimationStarted = true;
                   clearSnapshotProgressTimer(actionId);
+                  updateSnapshotProgress(actionId, 70, "max");
                   startSnapshotProgressAnimation(actionId, {
-                    from: 76,
+                    from: 70,
                     cap: 98,
                     stepMin: 0.35,
                     stepMax: 0.85,
@@ -1573,6 +1588,7 @@ export default function StoragePanel({
                     status: "running",
                     hint: "Extracting and applying snapshot...",
                   });
+                  setSnapshotImportInlineMessage("Разархивация и импорт снапшота продолжаются...");
                 }
               },
             }
@@ -1780,17 +1796,15 @@ export default function StoragePanel({
     let sizeText = "";
     const hasTotalSize = Number(transferSize?.totalBytes || 0) > 0;
     const transferRatioProgress = hasTotalSize
-      ? Math.max(
-          0,
-          Math.min(
-            100,
-            Math.round(
-              (Number(transferSize?.loadedBytes || 0) /
-                Math.max(1, Number(transferSize?.totalBytes || 0))) *
-                100
-            )
-          )
-        )
+      ? (() => {
+          const loaded = Number(transferSize?.loadedBytes || 0);
+          const total = Math.max(1, Number(transferSize?.totalBytes || 0));
+          const ratio = (loaded / total) * 100;
+          if (loaded > 0 && loaded < total) {
+            return Math.max(0, Math.min(99, Math.floor(ratio)));
+          }
+          return Math.max(0, Math.min(100, Math.round(ratio)));
+        })()
       : null;
     const isMidTransfer =
       hasTotalSize &&
@@ -1804,6 +1818,17 @@ export default function StoragePanel({
     const progress = shouldPreferTransferRatio
       ? Number(transferRatioProgress || 0)
       : rawProgress;
+    let displayActiveLabel = activeLabel;
+    if (actionId === "import-snapshot") {
+      const phase = String(transferMeta?.phase || "").trim().toLowerCase();
+      if (phase === "uploading") {
+        displayActiveLabel = "Загрузка...";
+      } else if (phase === "processing") {
+        displayActiveLabel = "Разархивация...";
+      } else if (phase === "done") {
+        displayActiveLabel = "Импорт...";
+      }
+    }
 
     if (transferSize && transferSize.loadedBytes > 0) {
       if (hasTotalSize) {
@@ -1817,8 +1842,8 @@ export default function StoragePanel({
       sizeText = ` (${transferMeta.hint})`;
     }
     const activeText = hasTotalSize
-      ? `${activeLabel} ${progress}%${sizeText}`
-      : `${activeLabel}${sizeText}`;
+      ? `${displayActiveLabel} ${progress}%${sizeText}`
+      : `${displayActiveLabel}${sizeText}`;
     const handleClick = () => {
       if (isActive && onCancel) {
         onCancel(actionId);
@@ -1870,7 +1895,10 @@ export default function StoragePanel({
   };
 
   const snapshotSection = (
-    <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+    <div
+      id="transfer-snapshot-section"
+      className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
+    >
       <h3 className="text-lg font-semibold text-slate-900">Transfer Snapshot</h3>
       <p className="mt-1 text-sm text-slate-600">
         Экспорт/импорт полного storage и отдельной разметки (VLM/Embedder) через файл.
