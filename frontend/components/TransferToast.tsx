@@ -7,6 +7,7 @@ type SnapshotTransferJob = {
   job_id?: string;
   job_type?: string;
   status?: string;
+  phase?: string;
   progress?: number;
   total_seen?: number;
   total_planned?: number;
@@ -16,7 +17,12 @@ type SnapshotTransferJob = {
 
 function isSnapshotTransferJob(job: SnapshotTransferJob): boolean {
   const type = String(job.job_type || "").trim();
-  return type === "snapshot_import" || type.startsWith("snapshot_export_");
+  return (
+    type === "snapshot_import" ||
+    type === "snapshot_transfer" ||
+    type === "snapshot_export" ||
+    type.startsWith("snapshot_export_")
+  );
 }
 
 function formatBytes(value: number): string {
@@ -34,10 +40,30 @@ function formatBytes(value: number): string {
 function getJobTitle(job: SnapshotTransferJob): string {
   const type = String(job.job_type || "").trim();
   if (type === "snapshot_import") return "Импорт snapshot";
+  if (type === "snapshot_transfer" || type === "snapshot_export") return "Выгрузка snapshot";
   if (type === "snapshot_export_full") return "Выгрузка full snapshot";
   if (type === "snapshot_export_embeddings") return "Выгрузка embeddings";
   if (type === "snapshot_export_vlm") return "Выгрузка VLM";
   return "Transfer snapshot";
+}
+
+function getJobPhaseHint(job: SnapshotTransferJob): string {
+  const type = String(job.job_type || "").trim();
+  const phase = String(job.phase || "").trim().toLowerCase();
+  const isExport =
+    type === "snapshot_transfer" ||
+    type === "snapshot_export" ||
+    type.startsWith("snapshot_export_");
+  if (type === "snapshot_import") {
+    if (phase === "uploading") return "Загрузка snapshot...";
+    if (phase === "processing") return "Разархивация snapshot...";
+  }
+  if (isExport) {
+    if (phase === "preparing") return "Подготовка snapshot...";
+    if (phase === "archiving") return "Архивация snapshot...";
+    if (phase === "streaming") return "Скачивание snapshot...";
+  }
+  return "";
 }
 
 function normalizeProgress(job: SnapshotTransferJob): number {
@@ -115,6 +141,12 @@ export default function TransferToast({
   const center = size / 2;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference * (1 - progress / 100);
+  const phase = String(primaryJob.phase || "").trim().toLowerCase();
+  const phaseHint = getJobPhaseHint(primaryJob);
+  const isImportExtractPhase =
+    String(primaryJob.job_type || "").trim() === "snapshot_import" && phase === "processing";
+  const progressStrokeColor = isImportExtractPhase ? "#10b981" : "#0ea5e9";
+  const progressTrackColor = isImportExtractPhase ? "#d1fae5" : "#dbeafe";
 
   return (
     <div className="fixed bottom-4 right-4 z-[80]">
@@ -142,7 +174,7 @@ export default function TransferToast({
               cx={center}
               cy={center}
               r={radius}
-              stroke="#dbeafe"
+              stroke={progressTrackColor}
               strokeWidth={strokeWidth}
               fill="none"
             />
@@ -150,7 +182,7 @@ export default function TransferToast({
               cx={center}
               cy={center}
               r={radius}
-              stroke="#0ea5e9"
+              stroke={progressStrokeColor}
               strokeWidth={strokeWidth}
               fill="none"
               strokeLinecap="round"
@@ -174,6 +206,7 @@ export default function TransferToast({
               ? `${formatBytes(totalSeen)} / ${formatBytes(totalPlanned)}`
               : formatBytes(totalSeen)}
           </div>
+          {phaseHint && <div className="truncate text-xs text-slate-500">{phaseHint}</div>}
           {remainingCount > 0 && (
             <div className="text-[11px] text-slate-500">{`+${remainingCount} active`}</div>
           )}

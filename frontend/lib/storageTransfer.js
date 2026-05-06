@@ -81,6 +81,7 @@ function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
+      env: options.env ? { ...process.env, ...options.env } : process.env,
     });
     let stderr = "";
     let finished = false;
@@ -110,7 +111,17 @@ function runCommand(command, args, options = {}) {
     }
 
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
+      const text = chunk.toString("utf8");
+      stderr += text;
+      if (typeof options.onStderrChunk === "function") {
+        options.onStderrChunk(text);
+      }
+    });
+
+    child.stdout.on("data", (chunk) => {
+      if (typeof options.onStdoutChunk === "function") {
+        options.onStdoutChunk(chunk.toString("utf8"));
+      }
     });
 
     child.on("error", (error) => {
@@ -139,7 +150,67 @@ export async function packDirectoryToTarGz(sourceDir, archivePath, options = {})
 }
 
 export async function extractTarGzToDirectory(archivePath, targetDir, options = {}) {
-  await runCommand("tar", ["-xzf", archivePath, "-C", targetDir], options);
+  const checkpointRecords = Math.max(1, Number(options.checkpointRecords || 4096));
+  const runExtract = async (withCheckpoints) => {
+    let stderrBuffer = "";
+    let progressEvents = 0;
+    const args = ["-xzf", archivePath, "-C", targetDir];
+    if (withCheckpoints) {
+      args.push(
+        `--checkpoint=${checkpointRecords}`,
+        "--checkpoint-action=echo=AVSP_CHECKPOINT:%u"
+      );
+    }
+    await runCommand("tar", args, {
+      ...options,
+      env: {
+        LC_ALL: "C",
+        LANG: "C",
+      },
+      onStderrChunk: (text) => {
+        if (!withCheckpoints || typeof options.onProgress !== "function") {
+          return;
+        }
+        stderrBuffer += text;
+        const lines = stderrBuffer.split(/\r?\n/);
+        stderrBuffer = lines.pop() || "";
+        for (const line of lines) {
+          const match = line.match(/AVSP_CHECKPOINT:(\d+)/);
+          if (!match) {
+            continue;
+          }
+          const checkpoint = Number(match[1]);
+          if (!Number.isFinite(checkpoint) || checkpoint <= 0) {
+            continue;
+          }
+          const bytesReadEstimate = checkpoint * checkpointRecords * 512;
+          progressEvents += 1;
+          options.onProgress({
+            checkpoint,
+            bytes_read_estimate: bytesReadEstimate,
+          });
+        }
+      },
+    });
+    return {
+      checkpointEnabled: withCheckpoints,
+      progressEvents,
+    };
+  };
+
+  try {
+    return await runExtract(true);
+  } catch (error) {
+    const message = String(error?.message || "").toLowerCase();
+    const checkpointUnsupported =
+      message.includes("checkpoint") ||
+      message.includes("unrecognized option") ||
+      message.includes("unknown option");
+    if (checkpointUnsupported) {
+      return await runExtract(false);
+    }
+    throw error;
+  }
 }
 
 export async function writeRequestToFile(req, filePath, maxBytes, options = {}) {

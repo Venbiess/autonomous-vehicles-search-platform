@@ -44,6 +44,19 @@ const OBJECT_CONTENT_BATCH_SIZE = 2;
 const VECTOR_BATCH_SIZE = 256;
 const VLM_BATCH_SIZE = 400;
 
+function formatBytes(value) {
+  const bytes = Math.max(0, Number(value || 0));
+  if (bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = bytes;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(unit === 0 ? 0 : 2)} ${units[unit]}`;
+}
+
 function normalizeKind(rawKind) {
   const kind = String(rawKind || "").trim().toLowerCase();
   if (kind === SNAPSHOT_KIND_VLM) return SNAPSHOT_KIND_VLM;
@@ -422,6 +435,8 @@ export default async function handler(req, res) {
   let preparedBytes = 0;
   let preparedObjects = 0;
   let nextPreparedLogAt = 64 * 1024 * 1024;
+  let manifestPayload = null;
+  let manifestBytesWritten = 0;
 
   const updateProgress = (patch) => {
     if (!exportId) return;
@@ -460,7 +475,9 @@ export default async function handler(req, res) {
     });
     updateJobByteProgress(preparedBytes, 0);
     if (preparedBytes >= nextPreparedLogAt) {
-      appendLog(`Preparing snapshot: ${preparedObjects} objects, ${preparedBytes} bytes staged.`);
+      appendLog(
+        `Preparing snapshot: ${preparedObjects} objects, ${formatBytes(preparedBytes)} staged.`
+      );
       nextPreparedLogAt += 64 * 1024 * 1024;
     }
   };
@@ -529,13 +546,14 @@ export default async function handler(req, res) {
 
     if (kind === SNAPSHOT_KIND_EMBEDDINGS) {
       appendLog("Preparing embeddings snapshot files...");
-      const manifestBytes = await writeManifest(workDir, {
+      manifestPayload = {
         format: SNAPSHOT_FORMAT_EMBEDDINGS,
         kind,
         created_at: createdAt,
         archive_type: "tar.gz",
-      });
-      bumpPreparedBytes(manifestBytes);
+      };
+      manifestBytesWritten = await writeManifest(workDir, manifestPayload);
+      bumpPreparedBytes(manifestBytesWritten);
       await exportEmbeddingsToNdjson(path.join(workDir, "embeddings.ndjson"), {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
@@ -547,13 +565,14 @@ export default async function handler(req, res) {
       const fieldsPayload = await readMasterJson("/vlm/fields");
       const fields = Array.isArray(fieldsPayload?.fields) ? fieldsPayload.fields : [];
 
-      const manifestBytes = await writeManifest(workDir, {
+      manifestPayload = {
         format: SNAPSHOT_FORMAT_VLM,
         kind,
         created_at: createdAt,
         archive_type: "tar.gz",
-      });
-      bumpPreparedBytes(manifestBytes);
+      };
+      manifestBytesWritten = await writeManifest(workDir, manifestPayload);
+      bumpPreparedBytes(manifestBytesWritten);
       const fieldsRaw = JSON.stringify(fields);
       await writeFile(path.join(workDir, "fields.json"), fieldsRaw, "utf8");
       bumpPreparedBytes(Buffer.byteLength(fieldsRaw, "utf8"));
@@ -568,13 +587,14 @@ export default async function handler(req, res) {
       const fieldsPayload = await readMasterJson("/vlm/fields");
       const fields = Array.isArray(fieldsPayload?.fields) ? fieldsPayload.fields : [];
 
-      const manifestBytes = await writeManifest(workDir, {
+      manifestPayload = {
         format: SNAPSHOT_FORMAT_FULL,
         kind: SNAPSHOT_KIND_FULL,
         created_at: createdAt,
         archive_type: "tar.gz",
-      });
-      bumpPreparedBytes(manifestBytes);
+      };
+      manifestBytesWritten = await writeManifest(workDir, manifestPayload);
+      bumpPreparedBytes(manifestBytesWritten);
       const fieldsRaw = JSON.stringify(fields);
       await writeFile(path.join(workDir, "fields.json"), fieldsRaw, "utf8");
       bumpPreparedBytes(Buffer.byteLength(fieldsRaw, "utf8"));
@@ -598,9 +618,24 @@ export default async function handler(req, res) {
       appendLog("Full snapshot data prepared.");
     }
 
+    if (manifestPayload && typeof manifestPayload === "object") {
+      const enrichedManifest = {
+        ...manifestPayload,
+        extract_total_bytes_estimate: preparedBytes,
+        prepared_bytes: preparedBytes,
+        prepared_objects: preparedObjects,
+      };
+      const updatedManifestBytes = await writeManifest(workDir, enrichedManifest);
+      const delta = updatedManifestBytes - manifestBytesWritten;
+      if (delta > 0) {
+        bumpPreparedBytes(delta);
+      }
+      manifestBytesWritten = updatedManifestBytes;
+    }
+
     assertNotAborted();
     const archivePath = path.join(archiveDir, "snapshot.tar.gz");
-    appendLog(`Archiving started (${preparedBytes} bytes staged).`);
+    appendLog(`Archiving started (${formatBytes(preparedBytes)} staged).`);
     updateProgress({
       phase: "archiving",
       status: "running",
@@ -643,7 +678,7 @@ export default async function handler(req, res) {
     assertNotAborted();
     const archiveStat = await stat(archivePath);
     const archiveBytes = Math.max(0, Number(archiveStat.size || 0));
-    appendLog(`Archive created: ${archiveBytes} bytes.`);
+    appendLog(`Archive created: ${formatBytes(archiveBytes)}.`);
     updateProgress({
       phase: "streaming",
       status: "running",

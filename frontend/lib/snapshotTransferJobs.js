@@ -1,6 +1,7 @@
 const STORE_KEY = "__AVSP_SNAPSHOT_TRANSFER_JOBS_STORE__";
 const STALE_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_LOG_LINES = 5000;
+const DEFAULT_SNAPSHOT_JOB_TYPE = "snapshot_export";
 
 function nowMs() {
   return Date.now();
@@ -85,7 +86,7 @@ function defaultJob(jobId, jobType, jobConfig = {}) {
 export function ensureSnapshotTransferJob(jobId, jobType, jobConfig = {}) {
   const id = String(jobId || "").trim();
   if (!id) return null;
-  const type = String(jobType || "snapshot_transfer").trim() || "snapshot_transfer";
+  const type = String(jobType || DEFAULT_SNAPSHOT_JOB_TYPE).trim() || DEFAULT_SNAPSHOT_JOB_TYPE;
   const store = getStore();
   cleanupStaleEntries(store);
   if (!store.has(id)) {
@@ -99,7 +100,9 @@ export function updateSnapshotTransferJob(jobId, patch = {}) {
   if (!id) return null;
   const store = getStore();
   cleanupStaleEntries(store);
-  const prev = store.get(id) || defaultJob(id, String(patch.job_type || "snapshot_transfer"));
+  const prev =
+    store.get(id) ||
+    defaultJob(id, String(patch.job_type || DEFAULT_SNAPSHOT_JOB_TYPE));
   const next = {
     ...prev,
     ...patch,
@@ -107,7 +110,7 @@ export function updateSnapshotTransferJob(jobId, patch = {}) {
     updated_at: nowSec(),
   };
   store.set(id, next);
-  return next;
+  return next;``
 }
 
 export function appendSnapshotTransferJobLog(jobId, line) {
