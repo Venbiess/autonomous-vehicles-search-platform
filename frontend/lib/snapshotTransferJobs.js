@@ -10,6 +10,17 @@ function nowSec() {
   return Math.floor(nowMs() / 1000);
 }
 
+function formatLogTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  const seconds = pad(date.getSeconds());
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
 function getStore() {
   const root = globalThis;
   if (!root[STORE_KEY]) {
@@ -105,7 +116,7 @@ export function appendSnapshotTransferJobLog(jobId, line) {
   if (!id || !text) return null;
   const job = updateSnapshotTransferJob(id, {});
   const logs = Array.isArray(job.job_log) ? [...job.job_log] : [];
-  logs.push(text);
+  logs.push(`[${formatLogTimestamp()}] ${text}`);
   if (logs.length > MAX_LOG_LINES) {
     logs.splice(0, logs.length - MAX_LOG_LINES);
   }
