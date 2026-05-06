@@ -80,9 +80,6 @@ class WaymoPreprocessor(Preprocessor):
         self.install_log_callback: Optional[Callable[[str], None]] = None
         self.cancel_requested_callback: Optional[Callable[[], bool]] = None
 
-        if self.exist_skip:
-            self._processed_episode_ids = self._load_processed_episode_ids_from_storage()
-
     def _extract_episode_id_from_storage_key(self, key: str) -> Optional[str]:
         normalized = key.strip().replace("\\", "/")
         if not normalized.startswith("waymo/"):
@@ -133,7 +130,12 @@ class WaymoPreprocessor(Preprocessor):
         if not self.exist_skip:
             return False
         if self._processed_episode_ids is None:
-            return False
+            self._log("[Waymo] exist_skip=true: start scanning storage to detect already processed episodes...")
+            self._processed_episode_ids = self._load_processed_episode_ids_from_storage()
+            self._log(
+                "[Waymo] exist_skip=true: storage scan completed, "
+                f"found {len(self._processed_episode_ids)} processed episodes."
+            )
         episode_id = Path(episode_name).stem
         return episode_id in self._processed_episode_ids
 
