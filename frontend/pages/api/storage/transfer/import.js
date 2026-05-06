@@ -78,23 +78,27 @@ async function readJsonFileOrDefault(filePath, fallbackValue) {
 }
 
 function createAbortState(req, res) {
-  const state = { aborted: false };
-  const markAborted = () => {
+  const state = { aborted: false, reason: "" };
+  const markAborted = (reason) => {
     state.aborted = true;
+    if (!state.reason && reason) {
+      state.reason = String(reason);
+    }
   };
-  req.on("aborted", markAborted);
+  req.on("aborted", () => markAborted("request_aborted"));
   req.on("close", () => {
     if (!req.complete || req.aborted) {
-      markAborted();
+      markAborted("request_closed_incomplete");
     }
   });
   res.on("close", () => {
     if (!res.writableEnded) {
-      markAborted();
+      markAborted("response_closed_early");
     }
   });
   return {
     isAborted: () => state.aborted,
+    reason: () => state.reason || "",
     assertNotAborted: () => {
       if (state.aborted) {
         throw createTransferCancelledError();
@@ -243,6 +247,9 @@ async function importEmbeddingsFromNdjson(filePath, options = {}) {
     if (batch.length >= EMBEDDINGS_BATCH_SIZE) {
       await flushBatch();
     }
+    if (typeof options.onProgress === "function" && received % 2000 === 0) {
+      options.onProgress({ section: "embeddings", received, valid, upserted });
+    }
   }, options);
 
   await flushBatch();
@@ -336,6 +343,14 @@ async function importVlmFromArchive(extractRoot, options = {}) {
     if (batch.length >= VLM_BATCH_SIZE) {
       await flushBatch();
     }
+    if (typeof options.onProgress === "function" && receivedAnnotations % 2000 === 0) {
+      options.onProgress({
+        section: "vlm",
+        received_annotations: receivedAnnotations,
+        valid_annotations: validAnnotations,
+        upserted_annotations: upsertedAnnotations,
+      });
+    }
   }, options);
 
   await flushBatch();
@@ -362,6 +377,9 @@ async function importObjectsFromArchive(extractRoot, options = {}) {
     const result = await uploadObjectFromArchive(extractRoot, row, options);
     if (result.uploaded) {
       uploaded += 1;
+      if (typeof options.onProgress === "function" && received % 500 === 0) {
+        options.onProgress({ section: "objects", received, uploaded, failed: errors.length });
+      }
       return;
     }
     errors.push({ object_id: result.object_id, error: result.error });
@@ -425,7 +443,8 @@ export default async function handler(req, res) {
   const updateJob = (patch) => updateSnapshotTransferJob(jobId, patch);
   const appendLog = (text) => appendSnapshotTransferJobLog(jobId, text);
   const workDir = await createTempDir("avsp-transfer-import-");
-  const { isAborted, assertNotAborted: assertClientNotAborted } = createAbortState(req, res);
+  const { isAborted, reason: abortReason, assertNotAborted: assertClientNotAborted } =
+    createAbortState(req, res);
   const assertNotAborted = () => {
     assertClientNotAborted();
     if (isSnapshotTransferJobCancelRequested(jobId)) {
@@ -433,6 +452,13 @@ export default async function handler(req, res) {
     }
   };
   const isStopped = () => isAborted() || isSnapshotTransferJobCancelRequested(jobId);
+  const getCancelReason = () => {
+    if (isSnapshotTransferJobCancelRequested(jobId)) {
+      return "cancel_requested_by_user";
+    }
+    const reason = abortReason();
+    return reason || "connection_interrupted";
+  };
 
   try {
     const contentLength = Number(req.headers?.["content-length"] || 0);
@@ -450,6 +476,7 @@ export default async function handler(req, res) {
       total_planned: expectedBytes,
     });
     appendLog("Snapshot import started.");
+    let lastUploadLoggedPct = -1;
 
     const parsedMaxBytes = Number(
       process.env.STORAGE_TRANSFER_IMPORT_MAX_BYTES || DEFAULT_MAX_IMPORT_BYTES
@@ -466,6 +493,16 @@ export default async function handler(req, res) {
         const uploaded = Math.max(0, Number(total || 0));
         const progress =
           expectedBytes > 0 ? Math.min(55, Math.round((uploaded / expectedBytes) * 55)) : 0;
+        if (expectedBytes > 0) {
+          const uploadPct = Math.max(0, Math.min(100, Math.floor((uploaded / expectedBytes) * 100)));
+          const bucket = Math.floor(uploadPct / 10) * 10;
+          if (bucket >= 0 && bucket !== lastUploadLoggedPct) {
+            lastUploadLoggedPct = bucket;
+            appendLog(
+              `Upload progress: ${uploadPct}% (${uploaded} / ${expectedBytes} bytes).`
+            );
+          }
+        }
         updateJob({
           progress,
           phase: "uploading",
@@ -475,7 +512,7 @@ export default async function handler(req, res) {
         });
       },
     });
-    appendLog("Archive uploaded. Extracting...");
+    appendLog(`Archive uploaded (${uploadedBytes} bytes). Extracting...`);
     updateJob({
       phase: "processing",
       total_seen: uploadedBytes,
@@ -487,7 +524,7 @@ export default async function handler(req, res) {
     const extractRoot = path.join(workDir, "extracted");
     await mkdir(extractRoot, { recursive: true });
     await extractTarGzToDirectory(archivePath, extractRoot, { isAborted: isStopped });
-    appendLog("Archive extracted.");
+    appendLog("Archive extracted. Applying snapshot data...");
     updateJob({
       progress: 70,
       phase: "processing",
@@ -506,8 +543,29 @@ export default async function handler(req, res) {
     }
     appendLog(`Manifest loaded: format=${String(manifest?.format || "unknown")}.`);
 
+    const updateImportPhaseProgress = (section) => {
+      if (section === "objects") {
+        updateJob({ progress: 80, phase: "processing" });
+        return;
+      }
+      if (section === "embeddings") {
+        updateJob({ progress: 90, phase: "processing" });
+        return;
+      }
+      if (section === "vlm") {
+        updateJob({ progress: 97, phase: "processing" });
+      }
+    };
+
     const result = await importSnapshotFromArchive(extractRoot, manifest, {
       assertNotAborted,
+      onProgress: (event) => {
+        const section = String(event?.section || "").trim();
+        if (section) {
+          updateImportPhaseProgress(section);
+          appendLog(`Applying ${section}: ${JSON.stringify(event)}`);
+        }
+      },
     });
     appendLog(`Snapshot import completed: format=${String(result?.format || "unknown")}.`);
     appendLog("Snapshot import data applied.");
@@ -527,7 +585,8 @@ export default async function handler(req, res) {
     });
   } catch (error) {
     if (isStopped()) {
-      appendLog("Snapshot import cancelled.");
+      const cancelReason = getCancelReason();
+      appendLog(`Snapshot import cancelled. reason=${cancelReason}`);
       updateJob({
         status: "cancelled",
         phase: "cancelled",
