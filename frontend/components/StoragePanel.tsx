@@ -1897,18 +1897,24 @@ export default function StoragePanel({
           />
         )}
         {isActive ? (
-          <span className={`relative z-10 inline-block whitespace-nowrap ${textTone}`}>
-            <span aria-hidden="true" className="invisible">
-              {activeText}
+          <>
+            <span className={`relative z-10 inline-block whitespace-nowrap ${textTone}`}>
+              <span aria-hidden="true" className="opacity-0">
+                {activeText}
+              </span>
             </span>
-            <span className="absolute inset-0">{activeText}</span>
             <span
-              className="absolute inset-y-0 left-0 overflow-hidden whitespace-nowrap text-white transition-[width] duration-200 ease-out"
-              style={{ width: `${progress}%` }}
+              className={`pointer-events-none absolute inset-0 z-10 flex items-center justify-center whitespace-nowrap ${textTone}`}
             >
               {activeText}
             </span>
-          </span>
+            <span
+              className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center whitespace-nowrap text-white transition-[clip-path] duration-200 ease-out"
+              style={{ clipPath: `inset(0 ${100 - progress}% 0 0)` }}
+            >
+              {activeText}
+            </span>
+          </>
         ) : (
           <span className="relative z-10">{idleLabel}</span>
         )}
@@ -2565,18 +2571,22 @@ export default function StoragePanel({
                             />
                           )}
                           {isDeleting ? (
-                            <span className="relative z-10 inline-block whitespace-nowrap text-rose-700">
-                              <span aria-hidden="true" className="invisible">
+                            <>
+                              <span className="relative z-10 inline-block whitespace-nowrap text-rose-700">
+                                <span aria-hidden="true" className="opacity-0">
+                                  Deleting
+                                </span>
+                              </span>
+                              <span className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center whitespace-nowrap text-rose-700">
                                 Deleting
                               </span>
-                              <span className="absolute inset-0">Deleting</span>
                               <span
-                                className="absolute inset-y-0 left-0 overflow-hidden whitespace-nowrap text-white transition-[width] duration-300 ease-out"
-                                style={{ width: `${progress}%` }}
+                                className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center whitespace-nowrap text-white transition-[clip-path] duration-300 ease-out"
+                                style={{ clipPath: `inset(0 ${100 - progress}% 0 0)` }}
                               >
                                 Deleting
                               </span>
-                            </span>
+                            </>
                           ) : (
                             <span className="relative z-10">Delete dataset</span>
                           )}
