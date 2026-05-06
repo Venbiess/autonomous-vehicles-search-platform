@@ -519,6 +519,28 @@ export default function StoragePanel({
   const snapshotImportPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const snapshotImportPollTokenRef = useRef(0);
 
+  useEffect(() => {
+    if (!confirmDialog && !previewObjectId) {
+      return;
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (confirmDialog && !confirmDialogBusy) {
+        setConfirmDialog(null);
+        return;
+      }
+      if (previewObjectId) {
+        setPreviewObjectId(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [confirmDialog, confirmDialogBusy, previewObjectId]);
+
   const extractAxiosErrorMessage = (
     error: unknown,
     fallback: string

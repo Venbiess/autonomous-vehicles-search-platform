@@ -651,7 +651,7 @@ export default function SystemMonitor({
   ]);
 
   useEffect(() => {
-    if (!logViewer && !configViewer && !cancelDialogJob) {
+    if (!logViewer && !configViewer && !cancelDialogJob && !waymoAuthModalOpen) {
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
@@ -668,13 +668,18 @@ export default function SystemMonitor({
       }
       if (cancelDialogJob) {
         setCancelDialogJob(null);
+        return;
+      }
+      if (waymoAuthModalOpen) {
+        setWaymoAuthModalOpen(false);
+        setWaymoAuthError(null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [logViewer, configViewer, cancelDialogJob]);
+  }, [logViewer, configViewer, cancelDialogJob, waymoAuthModalOpen]);
 
   if (isLoading && !systemInfo) {
     return (
@@ -1483,7 +1488,15 @@ export default function SystemMonitor({
       )}
 
       {waymoAuthModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setWaymoAuthModalOpen(false);
+              setWaymoAuthError(null);
+            }
+          }}
+        >
           <div className="w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl">
             <div className="border-b border-slate-200 px-5 py-4">
               <div className="text-base font-semibold text-slate-900">
