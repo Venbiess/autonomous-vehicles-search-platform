@@ -1005,7 +1005,6 @@ export default function SystemMonitor({
               <tbody className="bg-white divide-y divide-gray-200">
                 {jobs.map((job) => {
                   const statusColors = getJobStatusColor(job.status);
-                  const progress = job.progress;
                   const isCancellableJobType =
                     job.job_type === "backfill_vlm" ||
                     job.job_type === "backfill_embeddings" ||
@@ -1021,6 +1020,22 @@ export default function SystemMonitor({
                   const isSnapshotTransferJob =
                     job.job_type === "snapshot_import" ||
                     job.job_type.startsWith("snapshot_export_");
+                  const normalizeSnapshotProgress = () => {
+                    const totalSeen = Math.max(0, Number(job.total_seen ?? 0));
+                    const totalPlannedRaw = Number(job.total_planned ?? job.total_limit ?? 0);
+                    const totalPlanned =
+                      Number.isFinite(totalPlannedRaw) && totalPlannedRaw > 0 ? totalPlannedRaw : 0;
+                    if (totalPlanned > 0 && totalSeen > 0 && totalSeen < totalPlanned) {
+                      return Math.max(
+                        0,
+                        Math.min(100, Math.round((totalSeen / totalPlanned) * 100))
+                      );
+                    }
+                    return Math.max(0, Math.min(100, Math.round(Number(job.progress || 0))));
+                  };
+                  const progress = isSnapshotTransferJob
+                    ? normalizeSnapshotProgress()
+                    : Math.max(0, Math.min(100, Math.round(Number(job.progress || 0))));
                   const plannedTotal = job.total_planned ?? job.total_limit;
                   const progressLabel = isSnapshotTransferJob
                     ? `${formatDataSize(job.total_seen ?? 0)} / ${
