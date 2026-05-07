@@ -552,9 +552,20 @@ def _is_storage_query_unavailable_error(exc: Exception) -> bool:
 
 
 def _search_dependencies_ready() -> tuple[bool, str]:
-    model_health = model_gateway.health()
-    if str(model_health.get("status", "")).lower() != "ok":
-        return False, f"model backend not ready: {model_health}"
+    normalized_embedder_endpoint = str(EMBEDDER_ENDPOINT or "").strip().rstrip("/")
+    if normalized_embedder_endpoint:
+        try:
+            timeout = httpx.Timeout(min(max(EMBEDDER_TIMEOUT_SEC, 1), 5))
+            with httpx.Client(timeout=timeout) as client:
+                response = client.get(f"{normalized_embedder_endpoint}/health")
+            if not response.is_success:
+                return False, f"embedder HTTP health failed: status={response.status_code}"
+        except Exception as exc:  # noqa: BLE001
+            return False, f"embedder HTTP health failed: {exc}"
+    else:
+        model_health = model_gateway.health()
+        if str(model_health.get("status", "")).lower() != "ok":
+            return False, f"model backend not ready: {model_health}"
     try:
         storage_health = storage_api.health()
     except Exception as exc:  # noqa: BLE001

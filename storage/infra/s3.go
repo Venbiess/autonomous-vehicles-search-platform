@@ -120,27 +120,26 @@ func (m *S3Adapter) PutStream(ctx context.Context, bucket, key string, reader io
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	res, err := m.client.PutObject(ctx, bucket, key, reader, size, minio.PutObjectOptions{ContentType: contentType})
+
+	exists, err := m.client.BucketExists(ctx, bucket)
 	if err != nil {
-		if isMinioNoSuchBucket(err) {
-			if mkErr := m.client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{}); mkErr != nil {
-				return PutResult{}, mkErr
-			}
-			res, err = m.client.PutObject(
-				ctx,
-				bucket,
-				key,
-				bytes.NewReader(data),
-				int64(len(data)),
-				minio.PutObjectOptions{ContentType: contentType},
-			)
-			if err != nil {
-				return PutResult{}, err
-			}
-			return PutResult{SizeBytes: res.Size, ContentType: contentType}, nil
-		}
 		return PutResult{}, err
 	}
+	if !exists {
+		if err := m.client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{}); err != nil {
+			alreadyOwned := strings.TrimSpace(minio.ToErrorResponse(err).Code) == "BucketAlreadyOwnedByYou"
+			alreadyExists := strings.TrimSpace(minio.ToErrorResponse(err).Code) == "BucketAlreadyExists"
+			if !alreadyOwned && !alreadyExists {
+				return PutResult{}, err
+			}
+		}
+	}
+
+	res, err := m.client.PutObject(ctx, bucket, key, reader, size, minio.PutObjectOptions{ContentType: contentType})
+	if err != nil {
+		return PutResult{}, err
+	}
+
 	return PutResult{SizeBytes: res.Size, ContentType: contentType}, nil
 }
 

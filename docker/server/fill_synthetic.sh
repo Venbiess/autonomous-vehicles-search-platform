@@ -17,6 +17,7 @@ SYNTHETIC_NUM_IMAGES="${SYNTHETIC_NUM_IMAGES:-64}"
 SYNTHETIC_BATCH_SIZE="${SYNTHETIC_BATCH_SIZE:-16}"
 SYNTHETIC_BUCKET="${SYNTHETIC_BUCKET:-synthetic}"
 SYNTHETIC_KEEP_LOCAL_IMAGES="${SYNTHETIC_KEEP_LOCAL_IMAGES:-0}"
+STORAGE_READY_TIMEOUT_SEC="${STORAGE_READY_TIMEOUT_SEC:-180}"
 MASTER_READY_TIMEOUT_SEC="${MASTER_READY_TIMEOUT_SEC:-180}"
 
 compose() {
@@ -43,7 +44,8 @@ wait_http() {
   echo "${name} is ready"
 }
 
-wait_http "master-server" "http://localhost:9002/health" "${MASTER_READY_TIMEOUT_SEC}"
+wait_http "storage-server" "http://localhost:9013/health" "${STORAGE_READY_TIMEOUT_SEC}"
+wait_http "master-server" "http://localhost:9002/jobs" "${MASTER_READY_TIMEOUT_SEC}"
 
 preprocess_cmd=(
   python -m backend.processors.synthetic_preprocessor
