@@ -79,6 +79,12 @@ interface WaymoAuthStatusResponse {
   error?: string;
 }
 
+interface EmbeddingMismatchDialogState {
+  queryDim: number;
+  storedDim: number;
+  message: string;
+}
+
 interface PendingInstallPayload {
   datasets: string[];
   configs: Record<string, Record<string, unknown>>;
@@ -192,6 +198,9 @@ export default function AnnotationPanel({
   const [isUploadingLocalImage, setIsUploadingLocalImage] = useState(false);
   const [localUploadError, setLocalUploadError] = useState<string | null>(null);
   const [localUploadSuccess, setLocalUploadSuccess] = useState<string | null>(null);
+  const [embeddingMismatchDialog, setEmbeddingMismatchDialog] =
+    useState<EmbeddingMismatchDialogState | null>(null);
+  const [isRebuildingEmbeddings, setIsRebuildingEmbeddings] = useState(false);
   const [localUploadForm, setLocalUploadForm] = useState<LocalUploadFormState>({
     bucket: "manual",
     datasetType: "local_upload",
@@ -252,9 +261,7 @@ export default function AnnotationPanel({
         const datasetNames: string[] = rows
           .map((item) => String(item?.dataset || "").trim())
           .filter((name: string): name is string => Boolean(name));
-        const unique = Array.from(new Set<string>(datasetNames)).sort((a, b) =>
-          a.localeCompare(b)
-        );
+        const unique = Array.from(new Set(datasetNames)).sort((a, b) => a.localeCompare(b));
         setAvailableDatasets(unique);
       } catch {
         setAvailableDatasets([]);
@@ -386,6 +393,26 @@ export default function AnnotationPanel({
     setShowJobsLink(false);
 
     try {
+      try {
+        const dimResponse = await axios.get("/api/embeddings/dimensions");
+        const payload = dimResponse.data || {};
+        if (payload?.status === "ok" && payload?.mismatch === true) {
+          const queryDim = Number(payload?.query_dim || 0);
+          const storedDim = Number(payload?.stored_dim || 0);
+          setEmbeddingMismatchDialog({
+            queryDim,
+            storedDim,
+            message:
+              queryDim > 0 && storedDim > 0
+                ? `Размерность нового embedder (${queryDim}) не совпадает с текущей разметкой storage (${storedDim}).`
+                : "Размерность нового embedder не совпадает с текущей разметкой storage.",
+          });
+          return;
+        }
+      } catch {
+        // If dimensions endpoint is unavailable, continue with current flow.
+      }
+
       const statsResponse = await axios.get("/api/storage/stats", {
         params: { include_storage_details: 0 },
       });
@@ -417,6 +444,51 @@ export default function AnnotationPanel({
       setErrorMessage(message);
     } finally {
       setIsStartingJob(false);
+    }
+  };
+
+  const rebuildEmbeddingsAndStartBackfill = async () => {
+    try {
+      setIsRebuildingEmbeddings(true);
+      setStatusMessage(null);
+      setWarningMessage(null);
+      setErrorMessage(null);
+      setShowJobsLink(false);
+
+      const resetResponse = await axios.post("/api/storage/clear-embeddings", {
+        confirm: true,
+        page_size: 1000,
+      });
+      const resetEmbeddings = Number(resetResponse.data?.reset_embeddings || 0);
+
+      const statsResponse = await axios.get("/api/storage/stats", {
+        params: { include_storage_details: 0 },
+      });
+      const pendingRows = Number(statsResponse.data?.embeddings?.pending_rows ?? 0);
+      const response = await axios.post("/api/backfill", {
+        limit: Math.max(1, Math.max(Math.floor(pendingRows || 0), limit)),
+        batch_size: Math.max(1, batchSize),
+        stop_on_error: stopOnError,
+        dataset: embeddingDataset === "all" ? null : embeddingDataset,
+      });
+
+      setEmbeddingMismatchDialog(null);
+      setStatusMessage(
+        `Embeddings reset: ${resetEmbeddings}. Embedding backfill started. Job ID: ${response.data.job_id}.`
+      );
+      setShowJobsLink(true);
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && error.response?.data?.detail
+          ? error.response.data.detail
+          : axios.isAxiosError(error) && error.response?.data?.error
+            ? error.response.data.error
+            : error instanceof Error
+              ? error.message
+              : "Failed to rebuild embeddings";
+      setErrorMessage(message);
+    } finally {
+      setIsRebuildingEmbeddings(false);
     }
   };
 
@@ -773,9 +845,7 @@ export default function AnnotationPanel({
     localUploadFileInputRef.current?.click();
   };
 
-  const handleLocalImageSelected = (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
+  const handleLocalImageSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
     if (!file) return;
     setLocalUploadFile(file);
@@ -1175,6 +1245,57 @@ export default function AnnotationPanel({
                   className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isUploadingLocalImage ? "Uploading..." : "Upload"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {embeddingMismatchDialog && (
+          <div
+            className="fixed inset-0 z-[80] flex items-center justify-center bg-black/45 p-4"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget && !isRebuildingEmbeddings) {
+                setEmbeddingMismatchDialog(null);
+              }
+            }}
+          >
+            <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+              <div className="border-b border-slate-200 px-5 py-4">
+                <div className="text-base font-semibold text-slate-900">
+                  Несовместимая размерность embeddings
+                </div>
+                <div className="mt-1 text-sm text-slate-600">{embeddingMismatchDialog.message}</div>
+              </div>
+              <div className="space-y-3 px-5 py-4 text-sm text-slate-700">
+                <div>
+                  Текущий embedder: <span className="font-semibold">{embeddingMismatchDialog.queryDim || "—"}</span>
+                </div>
+                <div>
+                  Разметка в storage: <span className="font-semibold">{embeddingMismatchDialog.storedDim || "—"}</span>
+                </div>
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
+                  Возможно стоит пересоздать embedding storage под новую размерность и запустить разметку заново либо вернуть прежнюю модель.
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+                <button
+                  type="button"
+                  onClick={() => setEmbeddingMismatchDialog(null)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                  disabled={isRebuildingEmbeddings}
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  onClick={rebuildEmbeddingsAndStartBackfill}
+                  className={`rounded-lg px-3 py-2 text-sm font-semibold text-white ${
+                    isRebuildingEmbeddings ? "cursor-not-allowed bg-slate-400" : "bg-blue-600 hover:bg-blue-700"
+                  }`}
+                  disabled={isRebuildingEmbeddings}
+                >
+                  {isRebuildingEmbeddings ? "Пересоздаю embeddings..." : "Пересоздать и разметить заново"}
                 </button>
               </div>
             </div>

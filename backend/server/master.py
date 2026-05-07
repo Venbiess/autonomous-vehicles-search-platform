@@ -29,6 +29,7 @@ from configs.common import (
     VLM_ENDPOINT,
     VLM_TIMEOUT_SEC,
 )
+from configs.hw_settings import EMBEDDER_CONFIG, VLM_CONFIG
 from backend.server.analytics_api import AnalyticsAPI
 from backend.server.dataset_visibility import load_hidden_datasets
 from backend.server.model_bus import ModelGateway
@@ -1947,16 +1948,29 @@ def _collect_nvidia_info() -> Dict[str, Any]:
         return out
 
 
-def _fetch_model_runtime(name: str, endpoint: str, timeout_sec: int = 3) -> Dict[str, Any]:
+def _fetch_model_runtime(
+    name: str,
+    endpoint: str,
+    timeout_sec: int = 3,
+    *,
+    fallback_model: str = "",
+    fallback_device: str = "",
+    fallback_dtype: str = "",
+) -> Dict[str, Any]:
     normalized_endpoint = endpoint.rstrip("/")
+    configured_device = str(fallback_device).strip().lower()
+    configured_dtype = str(fallback_dtype).strip()
     result: Dict[str, Any] = {
         "name": name,
         "endpoint": normalized_endpoint,
         "reachable": False,
         "status": "unavailable",
-        "model": "",
-        "device": "",
-        "runtime": {},
+        "model": str(fallback_model).strip(),
+        "device": configured_device,
+        "runtime": {
+            "configured_device": configured_device,
+            "dtype": configured_dtype,
+        },
         "memory": {},
         "counters": {},
         "error": "",
@@ -1996,23 +2010,95 @@ def _fetch_model_runtime(name: str, endpoint: str, timeout_sec: int = 3) -> Dict
             }
         )
         return result
-    except Exception as exc:
-        result["error"] = str(exc)
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc).strip()
+        lowered = message.lower()
+        if (
+            "connection refused" in lowered
+            or "all connection attempts failed" in lowered
+            or "timed out" in lowered
+        ):
+            # Service is booting; keep config values and avoid noisy transport errors.
+            result["status"] = "starting"
+            result["error"] = ""
+            return result
+        result["error"] = message
         return result
 
 
-def _queue_only_runtime(name: str, reason: str) -> Dict[str, Any]:
+def _sample_existing_embedding_dim(max_objects_scan: int = 512) -> Optional[int]:
+    cursor = ""
+    scanned = 0
+    page_limit = 128
+
+    while scanned < max_objects_scan:
+        limit = min(page_limit, max_objects_scan - scanned)
+        payload = storage_api.list_objects(limit=limit, cursor=cursor or None)
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        if not isinstance(items, list) or len(items) == 0:
+            return None
+
+        object_ids = [
+            str(item.get("object_id", "")).strip()
+            for item in items
+            if isinstance(item, dict) and str(item.get("object_id", "")).strip()
+        ]
+        scanned += len(object_ids)
+        if object_ids:
+            completed = storage_api.completed_vector_object_ids(object_ids)
+            if completed:
+                vectors = storage_api.get_vectors(completed[:1])
+                if vectors:
+                    embedding = vectors[0].get("embedding", []) if isinstance(vectors[0], dict) else []
+                    if isinstance(embedding, list) and embedding:
+                        return len(embedding)
+
+        next_cursor = str(payload.get("next_cursor", "")).strip() if isinstance(payload, dict) else ""
+        if not next_cursor:
+            break
+        cursor = next_cursor
+    return None
+
+
+def _build_embedding_dim_warning(query_embedding: List[float], source: str) -> Optional[Dict[str, Any]]:
+    query_dim = len(query_embedding)
+    if query_dim <= 0:
+        return None
+    try:
+        total_vectors = max(0, int(storage_api.count_vectors()))
+        if total_vectors == 0:
+            return None
+        stored_dim = _sample_existing_embedding_dim()
+        if stored_dim is None or stored_dim <= 0 or stored_dim == query_dim:
+            return None
+        return {
+            "code": "embedding_dim_mismatch",
+            "source": source,
+            "query_dim": query_dim,
+            "stored_dim": int(stored_dim),
+            "message": (
+                f"Embedding dimension mismatch: query_dim={query_dim}, stored_dim={stored_dim}. "
+                "Search results may be empty until embeddings are rebuilt."
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to detect embedding dimension mismatch: %s", exc)
+        return None
+
+
+def _build_search_backend_unavailable_warning(reason: str, source: str) -> Dict[str, Any]:
+    normalized = str(reason).strip()
+    lowered = normalized.lower()
+    is_model_unavailable = "model backend not ready" in lowered
     return {
-        "name": name,
-        "endpoint": "",
-        "reachable": False,
-        "status": "queue_only",
-        "model": "",
-        "device": "",
-        "runtime": {},
-        "memory": {},
-        "counters": {},
-        "error": reason,
+        "code": "model_unavailable" if is_model_unavailable else "search_backend_unavailable",
+        "source": source,
+        "message": (
+            "Модель сейчас недоступна (starting/offline). Дождитесь статуса online в Job Monitor."
+            if is_model_unavailable
+            else f"Search backend is unavailable: {normalized}"
+        ),
+        "reason": normalized,
     }
 
 
@@ -2024,15 +2110,38 @@ def get_system_info():
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
         uptime_seconds = int(time.time() - psutil.boot_time())
-        embedder_runtime = _fetch_model_runtime("embedder", EMBEDDER_ENDPOINT)
-        normalized_vlm_endpoint = str(VLM_ENDPOINT or "").strip()
-        if normalized_vlm_endpoint:
-            vlm_runtime = _fetch_model_runtime("vlm", normalized_vlm_endpoint)
-        else:
-            vlm_runtime = _queue_only_runtime(
-                "vlm",
-                "vlm endpoint is not configured",
-            )
+        embedder_runtime = _fetch_model_runtime(
+            "embedder",
+            EMBEDDER_ENDPOINT,
+            fallback_model=os.getenv(
+                "EMBEDDER_MODEL_NAME",
+                str(getattr(EMBEDDER_CONFIG, "MODEL_NAME", "") or ""),
+            ),
+            fallback_device=os.getenv(
+                "EMBEDDER_DEVICE",
+                str(getattr(EMBEDDER_CONFIG, "DEVICE", "") or ""),
+            ),
+            fallback_dtype=os.getenv(
+                "EMBEDDER_TORCH_DTYPE",
+                str(getattr(EMBEDDER_CONFIG, "TORCH_DTYPE", "") or ""),
+            ),
+        )
+        vlm_runtime = _fetch_model_runtime(
+            "vlm",
+            VLM_ENDPOINT,
+            fallback_model=os.getenv(
+                "VLM_MODEL_NAME",
+                str(getattr(VLM_CONFIG, "MODEL_NAME", "") or ""),
+            ),
+            fallback_device=os.getenv(
+                "VLM_DEVICE",
+                str(getattr(VLM_CONFIG, "DEVICE", "") or ""),
+            ),
+            fallback_dtype=os.getenv(
+                "VLM_TORCH_DTYPE",
+                str(getattr(VLM_CONFIG, "TORCH_DTYPE", "") or ""),
+            ),
+        )
         gpu_info = _collect_nvidia_info()
 
         return {
@@ -2086,9 +2195,7 @@ def get_system_info():
             },
             "services": {
                 "embedder": _fetch_model_runtime("embedder", EMBEDDER_ENDPOINT),
-                "vlm": _fetch_model_runtime("vlm", str(VLM_ENDPOINT or "").strip())
-                if str(VLM_ENDPOINT or "").strip()
-                else _queue_only_runtime("vlm", "vlm endpoint is not configured"),
+                "vlm": _fetch_model_runtime("vlm", VLM_ENDPOINT),
             },
             "uptime_seconds": 0,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -2099,6 +2206,34 @@ def get_system_info():
 def backfill_embeddings(payload: BackfillRequest):
     job_id = _start_backfill_embeddings_job(payload)
     return {"job_id": job_id, "status": "started"}
+
+
+@app.get("/embeddings/dimensions")
+def embeddings_dimensions():
+    ready, reason = _search_dependencies_ready()
+    if not ready:
+        return {
+            "status": "unavailable",
+            "reason": reason,
+            "query_dim": None,
+            "stored_dim": None,
+            "mismatch": None,
+        }
+
+    timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
+    with httpx.Client(timeout=timeout) as client:
+        query_embedding, _ = _embed_text(client, "embedding-dimension-check")
+    query_dim = len(query_embedding)
+    stored_dim = _sample_existing_embedding_dim()
+    mismatch = (
+        bool(stored_dim is not None and stored_dim > 0 and query_dim > 0 and int(stored_dim) != int(query_dim))
+    )
+    return {
+        "status": "ok",
+        "query_dim": query_dim if query_dim > 0 else None,
+        "stored_dim": int(stored_dim) if stored_dim is not None and stored_dim > 0 else None,
+        "mismatch": mismatch,
+    }
 
 
 @app.post("/datasets/install")
@@ -2279,6 +2414,7 @@ def search_text(payload: TextSearchRequest):
             return {
                 "mode": "vector_server",
                 "results": [],
+                "warning": _build_search_backend_unavailable_warning(reason, source="text"),
             }
 
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
@@ -2298,6 +2434,7 @@ def search_text(payload: TextSearchRequest):
                 str(exc),
             )
             results = []
+        warning = _build_embedding_dim_warning(query_embedding, source="text") if not results else None
         query_elapsed_ms = (time.perf_counter() - query_started_at) * 1000
         total_elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.info(
@@ -2315,6 +2452,7 @@ def search_text(payload: TextSearchRequest):
     return {
         "mode": "vector_server",
         "results": results,
+        "warning": warning,
     }
 
 
@@ -2339,6 +2477,7 @@ async def search_image_bytes(
             return {
                 "mode": "vector_server",
                 "results": [],
+                "warning": _build_search_backend_unavailable_warning(reason, source="image"),
             }
 
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
@@ -2358,6 +2497,7 @@ async def search_image_bytes(
                 str(exc),
             )
             results = []
+        warning = _build_embedding_dim_warning(query_embedding, source="image") if not results else None
         query_elapsed_ms = (time.perf_counter() - query_started_at) * 1000
         total_elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.info(
@@ -2375,6 +2515,7 @@ async def search_image_bytes(
     return {
         "mode": "vector_server",
         "results": results,
+        "warning": warning,
     }
 
 

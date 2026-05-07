@@ -371,6 +371,50 @@ func (s *StorageServer) DeleteVectors(ctx context.Context, objectIDs []string) (
 	return len(normalized), nil
 }
 
+func (s *StorageServer) ClearVectors(ctx context.Context, pageSize int) (int, error) {
+	limit := pageSize
+	if limit <= 0 {
+		limit = 1000
+	}
+	if limit > 5000 {
+		limit = 5000
+	}
+
+	totalDeleted := 0
+	cursor := ""
+	for {
+		items, nextCursor, err := s.ListObjects(ctx, limit, cursor)
+		if err != nil {
+			return totalDeleted, err
+		}
+		if len(items) == 0 {
+			break
+		}
+
+		objectIDs := make([]string, 0, len(items))
+		for _, item := range items {
+			objectID := strings.TrimSpace(item.ObjectID)
+			if objectID != "" {
+				objectIDs = append(objectIDs, objectID)
+			}
+		}
+		if len(objectIDs) > 0 {
+			deleted, err := s.DeleteVectors(ctx, objectIDs)
+			if err != nil {
+				return totalDeleted, err
+			}
+			totalDeleted += deleted
+		}
+
+		if strings.TrimSpace(nextCursor) == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+
+	return totalDeleted, nil
+}
+
 func (s *StorageServer) ensureMetadataTable(ctx context.Context) error {
 	if _, err := s.metaDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", pqIdent(s.cfg.MetadataSchema))); err != nil {
 		return err
