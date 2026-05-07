@@ -157,7 +157,6 @@ func (p *PgVectorAdapter) ensureANNIndexes(ctx context.Context) error {
 	if _, err := p.db.ExecContext(ctx, ivfQuery); err == nil {
 		return nil
 	}
-	// Do not fail service startup when ANN index creation is unsupported.
 	log.Printf("pgvector: ivfflat index creation skipped")
 	return nil
 }
@@ -250,7 +249,6 @@ func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, to
 	defer func() {
 		_ = tx.Rollback()
 	}()
-	// Prevent HNSW default ef_search=40 from capping results when topK is larger.
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", efSearch)); err != nil {
 		log.Printf("pgvector: failed to set hnsw.ef_search=%d: %v", efSearch, err)
 	}

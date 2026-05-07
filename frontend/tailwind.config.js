@@ -1,4 +1,3 @@
-/** @type {import('tailwindcss').Config} */
 module.exports = {
   content: [
     "./pages/**/*.{js,ts,jsx,tsx}",
@@ -8,7 +7,7 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        bebas: ['BebasNeue', 'sans-serif'], // имя шрифта, указанное в @font-face
+        bebas: ['BebasNeue', 'sans-serif'],
       },
     },
   },

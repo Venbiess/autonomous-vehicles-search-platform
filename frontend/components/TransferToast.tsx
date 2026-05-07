@@ -99,7 +99,6 @@ export default function TransferToast({
           .sort((left, right) => Number(right.created_at || 0) - Number(left.created_at || 0));
         setJobs(running);
       } catch {
-        // best effort only
       } finally {
         if (token === pollTokenRef.current) {
           pollTimerRef.current = setTimeout(poll, 700);

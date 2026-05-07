@@ -14,7 +14,7 @@
 }
 
 @font-face {
-  font-family: 'BebasNeue'; /* имя, которое ты будешь использовать */
+  font-family: 'BebasNeue';
   src: url('/fonts/Bebas Neue Cyrillic.ttf') format('truetype');
   font-weight: normal;
   font-style: normal;

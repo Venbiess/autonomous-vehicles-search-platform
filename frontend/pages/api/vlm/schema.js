@@ -11,7 +11,6 @@ export default async function handler(req, res) {
         payload = {};
       }
       if (!response.ok) {
-        // Do not block initial UI load when analytics backend is temporarily unavailable.
         return res.status(200).json({
           fields: [],
           warning:

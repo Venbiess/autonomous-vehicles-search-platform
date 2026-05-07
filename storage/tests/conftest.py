@@ -55,7 +55,7 @@ def wait_for_storage_ready(settings: TestSettings, http_session: requests.Sessio
             if response.status_code == 200:
                 return
             last_error = f"status={response.status_code} body={response.text[:300]}"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_error = str(exc)
         time.sleep(1)
     pytest.fail(f"storage server is not ready: {last_error}")

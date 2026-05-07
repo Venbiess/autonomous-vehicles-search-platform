@@ -72,7 +72,7 @@ class ClickHouseShard:
                     connect_timeout=5,
                     send_receive_timeout=30,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 last_exc = exc
                 if attempt == 10:
                     break

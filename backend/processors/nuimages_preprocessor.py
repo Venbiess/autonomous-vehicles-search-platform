@@ -161,7 +161,7 @@ class NuImagesPreprocessor(Preprocessor):
             for archive in resolved:
                 try:
                     size = int(archive.stat().st_size)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     size = 0
                 self._log(f"[NuImages] Found archive: {archive.name} ({size} bytes)")
         return resolved
@@ -283,7 +283,6 @@ class NuImagesPreprocessor(Preprocessor):
     def _extract_archive_fast(self, archive_path: Path) -> None:
         if self._should_stop():
             raise InterruptedError("Dataset installation cancelled by user")
-        # Default mode: use system tar for maximum extraction speed.
         started_at = time.time()
         tar_args = ["tar", "-xzf", str(archive_path), "-C", str(DATA_FOLDER)]
         if archive_path.suffix.lower() == ".tar":
@@ -338,7 +337,7 @@ class NuImagesPreprocessor(Preprocessor):
                     if tar_stream is not None and hasattr(tar_stream, "tell"):
                         try:
                             stream_pos = int(max(tar_stream.tell(), 0))
-                        except Exception:  # noqa: BLE001
+                        except Exception:
                             stream_pos = extracted_bytes
                     self._report_extract_progress(
                         file_index=archive_index,

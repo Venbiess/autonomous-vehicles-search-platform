@@ -20,7 +20,6 @@ request_lock = threading.Lock()
 requests_in_progress = 0
 last_request_finished_at = 0.0
 
-# --- Choose device ---
 cfg_device = EMBEDDER_CONFIG.DEVICE.lower()
 if cfg_device == "cuda" and torch.cuda.is_available():
     device = "cuda"
@@ -45,7 +44,6 @@ if cfg_device != device:
 
 
 def _process_rss_mb() -> float:
-    # Linux containers expose resident pages in /proc/self/statm.
     try:
         with open("/proc/self/statm", "r", encoding="utf-8") as fp:
             parts = fp.read().strip().split()
@@ -59,7 +57,6 @@ def _process_rss_mb() -> float:
     try:
         usage = resource.getrusage(resource.RUSAGE_SELF)
         rss = float(usage.ru_maxrss)
-        # Linux reports KiB, macOS reports bytes.
         if rss > 10 ** 8:
             return round(rss / (1024 ** 2), 2)
         return round(rss / 1024.0, 2)
@@ -150,7 +147,7 @@ def get_embedding(inputs, type: Literal["text", "image"] = "image") -> torch.Ten
     if hasattr(outputs, "pooler_output"):
         outputs = outputs.pooler_output
 
-    embedding = outputs / outputs.norm(dim=-1, keepdim=True)  # [1, D]
+    embedding = outputs / outputs.norm(dim=-1, keepdim=True)
     embedding = embedding.cpu().tolist()[0]
 
     return embedding

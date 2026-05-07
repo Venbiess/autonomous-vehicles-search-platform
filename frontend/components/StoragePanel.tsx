@@ -781,7 +781,6 @@ export default function StoragePanel({
             return;
           }
         } catch {
-          // Best effort polling; ignore transient failures.
         }
         if (token === snapshotExportPollTokenRef.current) {
           scheduleNext(350);
@@ -864,7 +863,6 @@ export default function StoragePanel({
             return;
           }
         } catch {
-          // Best effort polling; ignore transient failures.
         }
         if (token === snapshotImportPollTokenRef.current) {
           scheduleNext(450);
@@ -896,7 +894,6 @@ export default function StoragePanel({
           await axios.post("/api/jobs/cancel", { job_id: jobID });
         }
       } catch {
-        // no-op
       }
     }
     updateSnapshotProgressMeta(actionId, {
@@ -1013,7 +1010,6 @@ export default function StoragePanel({
     loadStats(true);
   }, []);
 
-  // Run once on mount to restore snapshot progress after tab switch/remount.
   useEffect(() => {
     let cancelled = false;
     const restoreSnapshotAction = async () => {
@@ -1081,7 +1077,6 @@ export default function StoragePanel({
           startSnapshotExportProgressPoll(exportId, actionId);
         }
       } catch {
-        // no-op
       }
     };
 

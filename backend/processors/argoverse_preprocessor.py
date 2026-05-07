@@ -24,7 +24,7 @@ OUTPUT_COLUMNS = [
 
 
 class ArgoversePreprocessor(Preprocessor):
-    CHUNK_SIZE = 1024 * 1024  # 1 MB
+    CHUNK_SIZE = 1024 * 1024
 
     CAMERA_TO_LABEL = {
         "FRONT": "ring_front_center",
@@ -48,7 +48,7 @@ class ArgoversePreprocessor(Preprocessor):
                      "train": range(14),
                      "val": range(3),
                      "test": range(3)
-                 },  # https://www.argoverse.org/av2.html#download-link
+                 },
                  remove_after_load: bool = False
                 ):
         super().__init__()
@@ -66,7 +66,6 @@ class ArgoversePreprocessor(Preprocessor):
 
         os.makedirs(DATA_FOLDER, exist_ok=True)
 
-        # for iterable
         self.iteration = 0
         self.install_log_callback: Optional[Callable[[str], None]] = None
         self.download_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
@@ -225,7 +224,7 @@ class ArgoversePreprocessor(Preprocessor):
             return pd.DataFrame(columns=OUTPUT_COLUMNS)
         try:
             df = pd.read_csv(manifest_path)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return pd.DataFrame(columns=OUTPUT_COLUMNS)
         for col in OUTPUT_COLUMNS:
             if col not in df.columns:
@@ -279,7 +278,7 @@ class ArgoversePreprocessor(Preprocessor):
         if marker_path.exists() and manifest_path.exists() and meta_path.exists():
             try:
                 stored_meta = json.loads(meta_path.read_text())
-            except Exception:  # noqa: BLE001
+            except Exception:
                 stored_meta = {}
             stored_manifest_version = int(stored_meta.get("manifest_version", 1) or 1)
             stored_cfg = {
@@ -351,7 +350,7 @@ class ArgoversePreprocessor(Preprocessor):
                 if file_obj is not None and hasattr(file_obj, "tell"):
                     try:
                         current_stream_pos = int(file_obj.tell())
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         current_stream_pos = 0
                 if archive_size > 0:
                     extract_bytes_local = min(max(current_stream_pos, 0), archive_size)
@@ -497,7 +496,6 @@ class ArgoversePreprocessor(Preprocessor):
         if not numeric_tokens:
             return None
 
-        # Prefer long tokens (real sensor timestamps) over short collision suffixes like "_1".
         long_tokens = [token for token in numeric_tokens if len(token) >= 12]
         candidate = long_tokens[-1] if long_tokens else numeric_tokens[-1]
         try:
@@ -532,10 +530,5 @@ if __name__ == "__main__":
         cameras=["FRONT"]
     )
 
-    # for i, episode in enumerate(processor):
-    #     if i >= 1:
-    #         break
-    #     print(i)
-    #     print(episode)
 
     processor.download_to_storage(bucket="argoverse")

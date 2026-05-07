@@ -55,7 +55,7 @@ class Preprocessor:
             if not str(payload.get("object_id", "")).strip():
                 return None
             return payload
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("failed to upload object: path=%s bucket=%s key=%s", local_path, bucket, object_name)
             return None
 
@@ -99,7 +99,6 @@ class Preprocessor:
         digest = hashlib.sha1(str(local_path).encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
         return f"{dataset_type}/{digest}_{base_name}"
 
-    # Backward compatibility: legacy preprocessors/scripts may still call this name.
     def upload_to_s3(self, local_path: str, bucket: str, object_name: str) -> Optional[dict]:
         return self.upload_to_storage(local_path, bucket, object_name)
 
@@ -125,13 +124,13 @@ class Preprocessor:
             return
         try:
             stop = stop_at.resolve()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return
         current = path.parent
         while True:
             try:
                 current_resolved = current.resolve()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 break
             if str(current_resolved) == str(stop):
                 break
@@ -139,7 +138,7 @@ class Preprocessor:
                 if any(current.iterdir()):
                     break
                 current.rmdir()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 break
             current = current.parent
 

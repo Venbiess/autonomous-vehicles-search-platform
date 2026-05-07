@@ -141,7 +141,7 @@ def run_embedder_worker(ch, queue_name: str) -> None:
                 status = "ok"
             else:
                 response = {"ok": False, "error": f"unknown embedder task: {task}"}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             response = {"ok": False, "error": str(exc)}
         _reply(channel, props, response)
         channel.basic_ack(delivery_tag=method.delivery_tag)
@@ -177,7 +177,7 @@ def run_vlm_worker(ch, queue_name: str) -> None:
             generated = _generate_text(image, prompt, max_new_tokens)
             response = {"ok": True, "response": generated}
             status = "ok"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             response = {"ok": False, "error": str(exc)}
         _reply(channel, props, response)
         channel.basic_ack(delivery_tag=method.delivery_tag)

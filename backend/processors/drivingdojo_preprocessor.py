@@ -242,7 +242,7 @@ class DrivingDojoPreprocessor(Preprocessor):
         try:
             rel = archive_path.relative_to(self.source_dir)
             return str(rel).replace("\\", "/")
-        except Exception:  # noqa: BLE001
+        except Exception:
             return archive_path.name
 
     def _prepare_stream_archives_from_hf(self, local_archives: List[Path]) -> List[Path]:
@@ -265,7 +265,7 @@ class DrivingDojoPreprocessor(Preprocessor):
                 "DrivingDojo archive listing failed while reading dataset metadata from Hugging Face. "
                 f"Details: HTTP {status}: {details}"
             ) from exc
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(
                 "DrivingDojo archive listing failed. "
                 "Dataset may be gated: accept access conditions on Hugging Face and provide HF token. "
@@ -318,7 +318,7 @@ class DrivingDojoPreprocessor(Preprocessor):
         expected_sizes: Dict[str, int] = {}
         try:
             expected_sizes = self._hf_archive_size_map()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._log(f"[DrivingDojo] Skip pre-validation: failed to fetch remote sizes ({exc})")
             expected_sizes = {}
         if not expected_sizes:
@@ -388,7 +388,7 @@ class DrivingDojoPreprocessor(Preprocessor):
                 "DrivingDojo download failed while reading dataset metadata from Hugging Face. "
                 f"Details: HTTP {status}: {details}"
             ) from exc
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             details = str(exc)
             raise RuntimeError(
                 "DrivingDojo download failed. "
@@ -411,7 +411,7 @@ class DrivingDojoPreprocessor(Preprocessor):
             size_raw = item.get("size", 0)
             try:
                 size = max(int(size_raw or 0), 0)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 size = 0
             if size <= 0:
                 size = self._hf_head_size(filename)
@@ -881,7 +881,7 @@ class DrivingDojoPreprocessor(Preprocessor):
             return fallback
         try:
             return int(m.group(1))
-        except Exception:  # noqa: BLE001
+        except Exception:
             return fallback
 
     def _build_image_episodes(self) -> List[Dict[str, Any]]:
@@ -1080,7 +1080,7 @@ class DrivingDojoPreprocessor(Preprocessor):
                     if size > 0:
                         self._hf_file_size_cache[filename] = size
                         return size
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
         try:
@@ -1096,7 +1096,7 @@ class DrivingDojoPreprocessor(Preprocessor):
             if size > 0:
                 self._hf_file_size_cache[filename] = size
             return size
-        except Exception:  # noqa: BLE001
+        except Exception:
             return 0
 
     def _response_total_size(self, response: requests.Response, resume_from: int = 0) -> int:
@@ -1112,7 +1112,7 @@ class DrivingDojoPreprocessor(Preprocessor):
                     parsed = int(total_raw)
                     if parsed > 0:
                         return parsed
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
 
         content_length_raw = str(response.headers.get("Content-Length", "") or "").strip()
@@ -1120,7 +1120,7 @@ class DrivingDojoPreprocessor(Preprocessor):
             return 0
         try:
             content_length = int(content_length_raw)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return 0
         if content_length <= 0:
             return 0
@@ -1412,13 +1412,13 @@ class DrivingDojoPreprocessor(Preprocessor):
             size_int = 0
             try:
                 size_int = int(size or 0)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 size_int = 0
             if size_int <= 0 and isinstance(raw.get("lfs"), dict):
                 size = raw["lfs"].get("size", 0)
             try:
                 parsed_size = max(int(size or 0), 0)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 parsed_size = 0
             out.append({"rfilename": filename, "size": parsed_size})
         return out

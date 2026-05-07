@@ -381,11 +381,9 @@ func scoreToDistanceSimilarity(score float64, distance string) (float64, float64
 	case "dot":
 		return 1 - score, score
 	case "euclid", "manhattan":
-		// In qdrant for distance metrics score is ordered descending;
-		// treat negative distance as score and convert back to positive distance.
 		dist := math.Abs(score)
 		return dist, 1 / (1 + dist)
-	default: // cosine
+	default:
 		return 1 - score, score
 	}
 }

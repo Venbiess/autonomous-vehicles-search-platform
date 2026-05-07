@@ -127,7 +127,7 @@ class StorageAPI:
                     message = payload.get("error", {}).get("message")
                     if isinstance(message, str) and message.strip():
                         detail = message
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             raise RuntimeError(
                 f"vectors/upsert failed: status={response.status_code}, detail={detail}"

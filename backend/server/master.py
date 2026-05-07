@@ -502,17 +502,17 @@ def _normalize_job_config(payload: Any) -> Dict[str, Any]:
         return {}
     if hasattr(payload, "model_dump"):
         try:
-            dumped = payload.model_dump()  # pydantic v2
+            dumped = payload.model_dump()
             if isinstance(dumped, dict):
                 return dumped
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     if hasattr(payload, "dict"):
         try:
-            dumped = payload.dict()  # pydantic v1
+            dumped = payload.dict()
             if isinstance(dumped, dict):
                 return dumped
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     if isinstance(payload, dict):
         return dict(payload)
@@ -537,7 +537,7 @@ def _raise_upstream_http_error(exc: httpx.HTTPStatusError) -> None:
     detail: Any
     try:
         detail = exc.response.json()
-    except Exception:  # noqa: BLE001
+    except Exception:
         detail = exc.response.text or str(exc)
     raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
 
@@ -560,7 +560,7 @@ def _search_dependencies_ready() -> tuple[bool, str]:
                 response = client.get(f"{normalized_embedder_endpoint}/health")
             if not response.is_success:
                 return False, f"embedder HTTP health failed: status={response.status_code}"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return False, f"embedder HTTP health failed: {exc}"
     else:
         model_health = model_gateway.health()
@@ -568,7 +568,7 @@ def _search_dependencies_ready() -> tuple[bool, str]:
             return False, f"model backend not ready: {model_health}"
     try:
         storage_health = storage_api.health()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return False, f"storage health check failed: {exc}"
     if str(storage_health.get("status", "")).lower() != "ok":
         return False, f"storage backend not ready: {storage_health}"
@@ -682,7 +682,7 @@ def _append_job_log(job: Dict[str, Any], message: str) -> None:
         try:
             with log_path.open("a", encoding="utf-8") as fp:
                 fp.write(line + "\n")
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Failed to write job log file for job_id=%s", job_id)
 
 
@@ -718,8 +718,6 @@ def _embed_install_queue_worker(
                     break
                 continue
 
-            # Do not stall progress waiting for a full batch: if queue is idle,
-            # process whatever has already been downloaded.
             if len(pending_ids) < requested_batch and not producer_done and not queue_wait_timed_out:
                 continue
 
@@ -752,7 +750,7 @@ def _embed_install_queue_worker(
                             dim=dim,
                         )
                     )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.exception("Auto-embedding failed for object_id=%s", object_id)
                     errors.append({"object_id": object_id, "error": str(exc)})
 
@@ -769,7 +767,7 @@ def _embed_install_queue_worker(
                                 )
                             }
                         )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.exception(
                         "Auto-embedding vector upsert failed for rows=%s", len(rows)
                     )
@@ -824,7 +822,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
             for chunk in _chunk_object_ids(inserted_object_ids):
                 try:
                     cleanup_removed += storage_api.delete_vectors(chunk)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     cancel_errors.append({"error": f"cleanup vectors delete failed: {exc}"})
             cancel_errors.append(
                 {
@@ -927,7 +925,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                                 dim=dim,
                             )
                         )
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.exception("Embedding failed for object_id=%s", object_id)
                         errors.append(
                             {"object_id": object_id, "error": str(exc)}
@@ -958,7 +956,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                             )
                             if payload.stop_on_error:
                                 break
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.exception(
                             "Batch vector upsert failed for rows=%s", len(rows)
                         )
@@ -1022,7 +1020,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                         f"errors={len(errors)}"
                     ),
                 )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("Backfill embeddings job %s failed", job_id)
         with jobs_lock:
             if job_id in jobs_store:
@@ -1115,7 +1113,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                 for chunk in _chunk_object_ids(annotated_object_ids):
                     try:
                         cleanup_removed += analytics_api.delete_annotations(chunk)
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         cancel_errors.append({"error": f"cleanup annotations delete failed: {exc}"})
                 cancel_errors.append(
                     {
@@ -1253,7 +1251,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                 annotated_object_ids_seen.add(object_id)
                                 annotated_object_ids.append(object_id)
                         total_seen += 1
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.exception("VLM failed for object_id=%s", object_id)
                         errors.append({"object_id": object_id, "error": str(exc)})
                         total_seen += 1
@@ -1331,7 +1329,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                         f"annotations_saved={total_inserted}, errors={len(errors)}"
                     ),
                 )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("Backfill VLM job %s failed", job_id)
         with jobs_lock:
             if job_id in jobs_store:
@@ -1409,13 +1407,13 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
             try:
                 _embed_install_queue_worker(
                     job_id=job_id,
-                    object_queue=embed_queue,  # type: ignore[arg-type]
+                    object_queue=embed_queue,
                     errors=errors,
                 )
             except InterruptedError:
                 with embed_worker_lock:
                     embed_worker_state["cancelled"] = True
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.exception(
                     "Streaming auto-embedding worker failed: job_id=%s dataset=%s",
                     job_id,
@@ -1484,7 +1482,6 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 job["current_scene_tasks_total"] = int(
                     event.get("current_scene_tasks_total", 0) or 0
                 )
-                # Hide extraction progress while current stage is archive download.
                 job["extract_scene_tasks_completed"] = 0
                 job["extract_scene_tasks_total"] = 0
                 job["extract_file_name"] = ""
@@ -1498,7 +1495,6 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                     job["progress"] = min(100, int((seen / max(total, 1)) * 100))
 
             if ev == "download_detail":
-                # Keep main phase as download, use extract_* fields for 3rd progress bar details.
                 job["extract_scene_index"] = int(event.get("current_scene_index", 0) or 0)
                 job["extract_scene_tasks_completed"] = int(
                     event.get("current_scene_tasks_completed", 0) or 0
@@ -1523,7 +1519,6 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                 job["current_scene_tasks_total"] = int(
                     event.get("current_scene_tasks_total", 0) or 0
                 )
-                # Hide extraction detail bar once installation switched to upload stage.
                 job["extract_scene_tasks_completed"] = 0
                 job["extract_scene_tasks_total"] = 0
                 job["extract_file_name"] = ""
@@ -1682,7 +1677,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                     delete_result = storage_api.delete_object(object_id)
                     if bool(delete_result.get("deleted", False)):
                         removed_count += 1
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     cleanup_errors.append(
                         {"object_id": object_id, "error": f"cleanup failed: {exc}"}
                     )
@@ -1721,7 +1716,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                     jobs_store[job_id],
                     f"Cancelled (cleanup_mode={cleanup_mode}, removed={removed_count}/{len(uploaded_object_ids)})",
                 )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _stop_embedding_worker(wait=True)
         logger.exception("Dataset installation job failed: job_id=%s dataset=%s", job_id, dataset_key)
         errors.append({"error": str(exc), "log": traceback.format_exc()})
@@ -1861,14 +1856,14 @@ def get_jobs():
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return default
 
 
 def _to_int(value: Any, default: int = 0) -> int:
     try:
         return int(float(value))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return default
 
 
@@ -1946,7 +1941,7 @@ def _collect_nvidia_info() -> Dict[str, Any]:
     except FileNotFoundError:
         out["error"] = "nvidia-smi not found"
         return out
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         out["error"] = str(exc)
         return out
 
@@ -2000,7 +1995,7 @@ def _fetch_model_runtime(name: str, endpoint: str, timeout_sec: int = 3) -> Dict
             }
         )
         return result
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result["error"] = str(exc)
         return result
 
@@ -2060,7 +2055,7 @@ def get_system_info():
             "uptime_seconds": uptime_seconds,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.error("Error getting system info: %s", exc)
         return {
             "error": str(exc),
@@ -2197,7 +2192,7 @@ def waymo_auth_status():
             "quota_project_id": quota_project_id,
             "credential_type": credential_type,
         }
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         message = str(exc)
         lowered = message.lower()
         reason = "unknown"
@@ -2291,7 +2286,7 @@ def search_text(payload: TextSearchRequest):
         query_started_at = time.perf_counter()
         try:
             results = storage_api.query_vectors(query_embedding, payload.top_k)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if not _is_storage_query_unavailable_error(exc):
                 raise
             logger.warning(
@@ -2311,7 +2306,7 @@ def search_text(payload: TextSearchRequest):
         )
     except httpx.HTTPStatusError as exc:
         _raise_upstream_http_error(exc)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {
         "mode": "vector_server",
@@ -2351,7 +2346,7 @@ async def search_image_bytes(
         query_started_at = time.perf_counter()
         try:
             results = storage_api.query_vectors(query_embedding, max(1, top_k))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if not _is_storage_query_unavailable_error(exc):
                 raise
             logger.warning(
@@ -2371,7 +2366,7 @@ async def search_image_bytes(
         )
     except httpx.HTTPStatusError as exc:
         _raise_upstream_http_error(exc)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {
         "mode": "vector_server",
@@ -2515,12 +2510,12 @@ def delete_object(object_id: str):
             "object_id": object_id,
             "deleted": bool(deleted.get("deleted", False)),
         }
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         errors["storage_server"] = str(exc)
 
     try:
         result["annotations"]["requested"] = analytics_api.delete_annotations([object_id])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         errors["analytics_server"] = str(exc)
 
     if errors:

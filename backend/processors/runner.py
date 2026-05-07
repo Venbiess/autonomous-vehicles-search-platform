@@ -32,14 +32,14 @@ def _to_bool(value: Any, default: bool = False) -> bool:
 def _to_int(value: Any, default: int) -> int:
     try:
         return int(value)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return default
 
 
 def _to_float(value: Any, default: float) -> float:
     try:
         return float(value)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return default
 
 
@@ -48,7 +48,7 @@ def _to_optional_int(value: Any) -> Optional[int]:
         return None
     try:
         return int(value)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -70,7 +70,7 @@ def _normalize_download_parts(value: Any) -> Dict[str, List[int]]:
         for item in raw_parts:
             try:
                 parts.append(int(item))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
         out[str(split)] = parts
     return out or {"train": [0, 1], "val": [0], "test": [0]}

@@ -102,7 +102,6 @@ func Middleware(service string, next http.Handler) http.Handler {
 			requestsTotal.WithLabelValues(service, method, path, statusClass).Inc()
 			requestDuration.WithLabelValues(service, method, path, statusClass).Observe(duration.Seconds())
 
-			// Keep logging lightweight: emit only errors or slow requests.
 			if rec.status >= 500 || duration >= slowRequestThreshold {
 				LogInfo("http_request", map[string]any{
 					"service":     service,

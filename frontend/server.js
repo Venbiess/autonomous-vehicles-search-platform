@@ -50,7 +50,6 @@ app.prepare().then(() => {
     }
   });
 
-  // Needed for long-running snapshot upload streams.
   server.requestTimeout = requestTimeoutMs;
 
   server.listen(port, hostname, () => {

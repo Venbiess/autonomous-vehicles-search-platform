@@ -322,7 +322,7 @@ class OncePreprocessor(Preprocessor):
 
         try:
             importlib.import_module("gdown")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(
                 "Package 'gdown' is required for Google Drive download. "
                 "Install it in server image (pip install gdown)."
@@ -473,7 +473,7 @@ class OncePreprocessor(Preprocessor):
             archive_count += 1
             try:
                 total_bytes += int(path.stat().st_size)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
         self._report_download_progress(
             file_index=max(total_parts, 1),
@@ -656,8 +656,6 @@ class OncePreprocessor(Preprocessor):
             match = self.CAMERA_RE.search(candidate)
             if match:
                 return match.group(1).lower()
-        # Some local ONCE archives contain per-camera image files without camera
-        # tokens in file/path names. If user selected exactly one camera, infer it.
         if self.selected_cameras and len(self.selected_cameras) == 1:
             return next(iter(self.selected_cameras))
         return None
@@ -667,7 +665,7 @@ class OncePreprocessor(Preprocessor):
         if match:
             try:
                 return int(match.group(1))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 return fallback
         return fallback
 

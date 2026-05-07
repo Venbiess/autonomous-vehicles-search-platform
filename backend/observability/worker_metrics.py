@@ -8,8 +8,8 @@ from typing import Optional
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 try:
-    import pynvml  # type: ignore
-except Exception:  # noqa: BLE001
+    import pynvml
+except Exception:
     pynvml = None
 
 
@@ -104,7 +104,7 @@ def _gpu_metrics_loop(worker_name: str) -> None:
             proc_count = 0
             try:
                 processes = pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 processes = []
             for proc in processes:
                 proc_count += 1
@@ -118,7 +118,7 @@ def _gpu_metrics_loop(worker_name: str) -> None:
             )
             gpu_memory_used_bytes.labels(worker=worker_name).set(float(proc_mem))
             gpu_process_count.labels(worker=worker_name).set(float(proc_count))
-        except Exception:  # noqa: BLE001
+        except Exception:
             gpu_available.labels(worker=worker_name).set(0)
         time.sleep(max(0.5, poll_interval))
 
@@ -135,5 +135,5 @@ def _init_nvml_handle() -> Optional[object]:
         else:
             device_index = 0
         return pynvml.nvmlDeviceGetHandleByIndex(device_index)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None

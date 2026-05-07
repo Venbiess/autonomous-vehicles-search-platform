@@ -81,7 +81,6 @@ export default function SearchBar({
       setIsImageLoading(false);
       return;
     }
-    // Image search is exclusive: clear text query once image is selected.
     setQuery("");
     setImageFile(file);
     setIsImageLoading(true);
@@ -101,7 +100,6 @@ export default function SearchBar({
       className="flex flex-col gap-3 w-full max-w-3xl sm:flex-row sm:items-center"
       onSubmit={handleSubmit}
     >
-      {/* Контейнер только для инпута с радужной рамкой */}
       <div className="relative flex-1 rounded-full p-[4px]">
         <div
           className={`

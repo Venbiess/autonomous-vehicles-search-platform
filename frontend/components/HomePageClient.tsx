@@ -1,4 +1,4 @@
-"use client"; // делаем компонент клиентским, чтобы можно было использовать useState
+"use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
@@ -8,7 +8,6 @@ import {
   type SearchMode,
 } from "../lib/searchMode";
 
-// Импортируем компоненты
 import SearchBar from "../components/SearchBar";
 import ImageGallery from "../components/ImageGallery";
 import SystemMonitor from "../components/SystemMonitor";
@@ -438,7 +437,6 @@ export default function HomePageClient({
         </div>
       </div>
 
-      {/* Вкладки переключения режимов поиска */}
       <section className="bg-white border-b border-gray-200 shadow-sm">
         <div className="mx-auto max-w-5xl px-6">
           <div className="flex items-center justify-center py-6">
@@ -527,7 +525,6 @@ export default function HomePageClient({
                 Поиск сцен автономного транспорта
               </h1>
 
-              {/* Компонент поиска */}
               <SearchBar
                 onSearch={handleSearch}
                 loading={isLoading}

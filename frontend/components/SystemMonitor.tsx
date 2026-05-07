@@ -221,7 +221,7 @@ export default function SystemMonitor({
     const interval = setInterval(() => {
       fetchSystemInfo();
       fetchJobs();
-    }, 5000); // Обновление каждые 5 секунд
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -735,7 +735,6 @@ export default function SystemMonitor({
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* CPU */}
           <div className="bg-gray-50 rounded-lg p-4">
             <div className="flex justify-between items-center mb-2">
               <h3 className="text-lg font-semibold text-gray-700">Процессор (CPU)</h3>
@@ -757,7 +756,6 @@ export default function SystemMonitor({
             </div>
           </div>
 
-          {/* Memory */}
           <div className="bg-gray-50 rounded-lg p-4">
             <div className="flex justify-between items-center mb-2">
               <h3 className="text-lg font-semibold text-gray-700">Память (RAM)</h3>
@@ -786,7 +784,6 @@ export default function SystemMonitor({
             </div>
           </div>
 
-          {/* Disk */}
           <div className="bg-gray-50 rounded-lg p-4">
             <div className="flex justify-between items-center mb-2">
               <h3 className="text-lg font-semibold text-gray-700">Диск</h3>
@@ -815,7 +812,6 @@ export default function SystemMonitor({
             </div>
           </div>
 
-          {/* Uptime */}
           <div className="bg-gray-50 rounded-lg p-4">
             <div className="flex justify-between items-center mb-2">
               <h3 className="text-lg font-semibold text-gray-700">Время работы</h3>
@@ -969,7 +965,6 @@ export default function SystemMonitor({
         )}
       </div>
 
-      {/* Таблица джобов */}
       <div className="max-w-[96rem] mx-auto bg-white rounded-lg shadow-lg p-6 mt-6">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-bold text-gray-900">Джобы</h2>

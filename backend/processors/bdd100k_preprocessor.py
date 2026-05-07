@@ -374,7 +374,7 @@ class BDD100KPreprocessor(Preprocessor):
             return fallback
         try:
             return int(m.group(1))
-        except Exception:  # noqa: BLE001
+        except Exception:
             return fallback
 
     def _build_episodes(self) -> Dict[str, List[Dict[str, Any]]]:

@@ -33,7 +33,7 @@ class WaymoPreprocessor(Preprocessor):
         "FRONT_RIGHT": 3,
         "BACK_LEFT": 4,
         "BACK_RIGHT": 5
-    }  # https://github.com/Jossome/Waymo-open-dataset-document
+    }
     REVERSE_CAMERA_TO_LABEL = {
         v: k for k, v in CAMERA_TO_LABEL.items()
     }
@@ -72,7 +72,6 @@ class WaymoPreprocessor(Preprocessor):
 
         os.makedirs(DATA_FOLDER, exist_ok=True)
 
-        # for iterable
         self.iteration = 0
         self.download_progress_callback: Optional[
             Callable[[Dict[str, Any]], None]
@@ -106,7 +105,7 @@ class WaymoPreprocessor(Preprocessor):
                 )
                 response.raise_for_status()
                 payload = response.json()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("failed to load objects metadata for waymo exist_skip")
                 return processed
 
@@ -180,7 +179,7 @@ class WaymoPreprocessor(Preprocessor):
                 f.seek(-4, os.SEEK_END)
                 footer = f.read(4)
             return header == b"PAR1" and footer == b"PAR1"
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
     def download_blob(self, blob_name: str, dst_path: str, file_index: int):
@@ -349,7 +348,6 @@ class WaymoPreprocessor(Preprocessor):
 
             ts_str = str(int(ts))
 
-            # Include episode key in file name to avoid collisions on camera+timestamp.
             file_path = DATA_FOLDER / f"{cam}_{episode_id}_{ts_str}.jpg"
             if file_path.exists():
                 i = 1
@@ -411,10 +409,5 @@ class WaymoPreprocessor(Preprocessor):
 if __name__ == "__main__":
     processor = WaymoPreprocessor(resample_seconds=0.5)
 
-    # for i, episode in enumerate(processor):
-    #     print(i)
-    #     print(episode)
-    #     if i >= 1000:
-    #         break
 
     processor.download_to_storage(bucket="waymo")

@@ -50,7 +50,7 @@ class RabbitRPCClient:
                 return
             try:
                 responses[corr_id] = json.loads(body.decode("utf-8"))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 responses[corr_id] = {
                     "ok": False,
                     "error": f"invalid worker response: {exc}",
@@ -74,7 +74,7 @@ class RabbitRPCClient:
         try:
             if ch and ch.is_open and consumer_tag:
                 ch.basic_cancel(consumer_tag=consumer_tag)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         try:
             if conn and conn.is_open:
@@ -195,7 +195,7 @@ class ModelGateway:
                 "rabbitmq": snapshot,
                 "embedder_endpoints": self._embedder_endpoints,
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {
                 "status": "error",
                 "mode": self.mode,

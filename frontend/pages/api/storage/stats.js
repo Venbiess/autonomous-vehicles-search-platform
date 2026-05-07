@@ -63,7 +63,6 @@ export default async function handler(req, res) {
     const visibilityPayload = loadDatasetVisibility();
     const visibilityMap = visibilityMapForBuckets(allBuckets);
 
-    // Embeddings coverage from vector index.
     try {
       const vectorPayload = await readStorageJson("/vectors/count");
       const vectorCount = Math.max(0, Number(vectorPayload?.count || 0));
@@ -85,7 +84,6 @@ export default async function handler(req, res) {
       warnings.push(`vector stats unavailable: ${error.message}`);
     }
 
-    // VLM coverage from analytics service.
     try {
       const fieldsPayload = await readAnalyticsJson("/fields");
       const fields = Array.isArray(fieldsPayload?.fields) ? fieldsPayload.fields : [];
