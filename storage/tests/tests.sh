@@ -70,7 +70,7 @@ compose_up() {
 wait_storage_ready() {
   local base_url="${STORAGE_BASE_URL:-http://localhost:9012}"
   local timeout_sec="${STORAGE_TEST_TIMEOUT_SEC:-20}"
-  local retries="${STORAGE_READY_RETRIES:-10}"
+  local retries="${STORAGE_READY_RETRIES:-60}"
 
   echo "Waiting for storage health at ${base_url}/health ..."
   for ((i=1; i<=retries; i++)); do
@@ -86,6 +86,8 @@ wait_storage_ready() {
   echo "Storage did not become ready in time" >&2
   echo "----- docker compose ps -----" >&2
   docker compose -f "$COMPOSE_FILE" ps >&2 || true
+  echo "----- storage-server inspect -----" >&2
+  docker inspect "avsp-storage-storage-server-${USER}" >&2 || true
   echo "----- storage-server logs (tail 200) -----" >&2
   docker compose -f "$COMPOSE_FILE" logs --tail 200 storage-server >&2 || true
   echo "----- postgres logs (tail 120) -----" >&2

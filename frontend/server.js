@@ -41,7 +41,6 @@ app.prepare().then(() => {
       const parsedUrl = parse(req.url || "/", true);
       await handle(req, res, parsedUrl);
     } catch (error) {
-      // eslint-disable-next-line no-console
       console.error("Error handling request", req.url, error);
       if (!res.headersSent) {
         res.statusCode = 500;
@@ -53,7 +52,6 @@ app.prepare().then(() => {
   server.requestTimeout = requestTimeoutMs;
 
   server.listen(port, hostname, () => {
-    // eslint-disable-next-line no-console
     console.log(
       `> Ready on http://${hostname}:${port} (mode=${dev ? "development" : "production"}, requestTimeout=${requestTimeoutMs}ms)`
     );

@@ -24,9 +24,13 @@ jobs:
           pip install -r docker/server/requirements.txt pytest
 
       - name: Run backend unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: pytest -q backend/tests
 
       - name: Compile backend Python modules
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           python -m py_compile \
             backend/server/master.py \

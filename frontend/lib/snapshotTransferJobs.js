@@ -110,7 +110,7 @@ export function updateSnapshotTransferJob(jobId, patch = {}) {
     updated_at: nowSec(),
   };
   store.set(id, next);
-  return next;``
+  return next;
 }
 
 export function appendSnapshotTransferJobLog(jobId, line) {

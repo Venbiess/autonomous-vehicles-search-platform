@@ -31,6 +31,10 @@ interface PreprocessorMethod {
   default_config?: Record<string, unknown>;
 }
 
+interface DatasetRowDistribution {
+  dataset?: string;
+}
+
 function isSyntheticMethod(method: Pick<PreprocessorMethod, "key" | "label">): boolean {
   const key = String(method.key || "").trim().toLowerCase();
   const label = String(method.label || "").trim().toLowerCase();
@@ -222,11 +226,13 @@ export default function AnnotationPanel({
         const response = await axios.get("/api/storage/stats", {
           params: { include_storage_details: 0 },
         });
-        const rows = Array.isArray(response.data?.datasets?.rows_distribution)
+        const rows: DatasetRowDistribution[] = Array.isArray(
+          response.data?.datasets?.rows_distribution
+        )
           ? response.data.datasets.rows_distribution
           : [];
         const datasetNames: string[] = rows
-          .map((item: any) => String(item?.dataset || "").trim())
+          .map((item) => String(item?.dataset || "").trim())
           .filter((name: string): name is string => Boolean(name));
         const unique = Array.from(new Set<string>(datasetNames)).sort((a, b) =>
           a.localeCompare(b)
@@ -731,7 +737,9 @@ export default function AnnotationPanel({
     localUploadFileInputRef.current?.click();
   };
 
-  const handleLocalImageSelected = (event: any) => {
+  const handleLocalImageSelected = (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
     const file = event.target.files?.[0] ?? null;
     if (!file) return;
     setLocalUploadFile(file);
