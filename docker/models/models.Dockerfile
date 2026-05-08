@@ -45,17 +45,68 @@ RUN . /etc/app.env && \
         --index-url https://download.pytorch.org/whl/${TORCH_CUDA_TAG} ; \
     fi
 
-# Ensure NVRTC builtins are present for CUDA torch wheels (needed by some GPU ops/JIT paths).
+COPY docker/models/requirements.txt /requirements.txt
+RUN pip install -r /requirements.txt
+
+# Re-pin torch stack from the same PyTorch index after installing generic deps.
+# This avoids mixed CUDA runtime packages pulled by transitive dependencies.
+RUN . /etc/app.env && \
+    TORCH_VERSION="${TORCH_VERSION:-2.9.1}" && \
+    TORCH_CUDA_TAG="${TORCH_CUDA_TAG:-cpu}" && \
+    TORCHVISION_VERSION="0.24.1" && \
+    if [ "$TORCH_CUDA_TAG" = "cpu" ] || [ "$TORCH_CUDA_TAG" = "None" ]; then \
+      if [ "$TARGETARCH" = "arm64" ]; then \
+        pip install --no-cache-dir --retries 10 --timeout 120 --force-reinstall \
+          torch==${TORCH_VERSION} torchvision==${TORCHVISION_VERSION} ; \
+      else \
+        pip install --no-cache-dir --retries 10 --timeout 120 --force-reinstall \
+          torch==${TORCH_VERSION} torchvision==${TORCHVISION_VERSION} \
+          --index-url https://download.pytorch.org/whl/cpu ; \
+      fi ; \
+    else \
+      pip install --no-cache-dir --retries 10 --timeout 120 --force-reinstall \
+        torch==${TORCH_VERSION} torchvision==${TORCHVISION_VERSION} \
+        --index-url https://download.pytorch.org/whl/${TORCH_CUDA_TAG} ; \
+    fi
+
+# Ensure NVRTC libraries are available for both CUDA12 and CUDA13 package layouts.
 RUN . /etc/app.env && \
     TORCH_CUDA_TAG="${TORCH_CUDA_TAG:-cpu}" && \
     if [ "$TORCH_CUDA_TAG" != "cpu" ] && [ "$TORCH_CUDA_TAG" != "None" ]; then \
-      pip install --no-cache-dir --retries 10 --timeout 120 \
-        nvidia-cuda-runtime-cu12 \
-        nvidia-cuda-nvrtc-cu12 ; \
+      case "$TORCH_CUDA_TAG" in \
+        cu13*) \
+          pip install --no-cache-dir --retries 10 --timeout 120 \
+            nvidia-cuda-runtime \
+            nvidia-cuda-nvrtc \
+            nvidia-nvjitlink ;; \
+        *) \
+          pip install --no-cache-dir --retries 10 --timeout 120 \
+            nvidia-cuda-runtime-cu12 \
+            nvidia-cuda-nvrtc-cu12 \
+            nvidia-nvjitlink-cu12 ;; \
+      esac ; \
     fi
 
-COPY docker/models/requirements.txt /requirements.txt
-RUN pip install -r /requirements.txt
+# Create compatibility symlink for runtime-builtins when package exposes x.y but runtime requests x.0.
+RUN python - <<'PY'
+import glob
+import os
+
+libdir = "/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib"
+if os.path.isdir(libdir):
+    for major in ("12", "13"):
+        expected = os.path.join(libdir, f"libnvrtc-builtins.so.{major}.0")
+        if os.path.exists(expected):
+            continue
+        candidates = sorted(glob.glob(os.path.join(libdir, f"libnvrtc-builtins.so.{major}.*")))
+        if not candidates:
+            continue
+        selected = os.path.basename(candidates[-1])
+        try:
+            os.symlink(selected, expected)
+        except FileExistsError:
+            pass
+PY
 
 COPY docker/models/start.sh /start.sh
 RUN chmod +x /start.sh

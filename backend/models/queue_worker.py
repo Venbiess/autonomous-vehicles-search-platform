@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import glob
 import io
 import json
 import logging
@@ -11,6 +12,7 @@ import time
 import traceback
 from typing import Any
 from typing import Dict
+from pathlib import Path
 
 import pika
 import uvicorn
@@ -34,6 +36,67 @@ def _suppress_healthcheck_access_logs() -> None:
     access_logger = logging.getLogger("uvicorn.access")
     if not any(isinstance(item, _HealthcheckAccessFilter) for item in access_logger.filters):
         access_logger.addFilter(_HealthcheckAccessFilter())
+
+
+def _prepare_cuda_library_path() -> None:
+    """
+    Ensure CUDA/NVIDIA wheel libraries are resolvable by dynamic loader.
+    Some torch builds expect libnvrtc-builtins from package-specific folders.
+    """
+
+    base = Path("/usr/local/lib/python3.10/site-packages/nvidia")
+    discovered: list[str] = []
+    if base.exists():
+        preferred = (
+            "cuda_runtime",
+            "cuda_nvrtc",
+            "cublas",
+            "cudnn",
+            "cusparse",
+            "cusolver",
+            "nccl",
+            "nvjitlink",
+            "cu12",
+            "cu13",
+        )
+        for name in preferred:
+            candidate = base / name / "lib"
+            if candidate.is_dir():
+                discovered.append(str(candidate))
+
+        for candidate in sorted(base.glob("*/lib")):
+            text = str(candidate)
+            if candidate.is_dir() and text not in discovered:
+                discovered.append(text)
+
+    existing = [segment.strip() for segment in str(os.getenv("LD_LIBRARY_PATH", "")).split(":") if segment.strip()]
+    merged: list[str] = []
+    for item in [*discovered, *existing]:
+        if item not in merged:
+            merged.append(item)
+    if merged:
+        os.environ["LD_LIBRARY_PATH"] = ":".join(merged)
+
+    nvrtc_candidates = []
+    for folder in discovered:
+        nvrtc_candidates.extend(sorted(glob.glob(os.path.join(folder, "libnvrtc-builtins.so*"))))
+    logger.info("LD_LIBRARY_PATH prepared (%s entries)", len(merged))
+    logger.info("NVRTC builtins candidates: %s", nvrtc_candidates[:20])
+
+
+def _log_torch_runtime_info() -> None:
+    try:
+        import torch
+
+        logger.info(
+            "torch runtime: version=%s cuda=%s cuda_available=%s device_count=%s",
+            getattr(torch, "__version__", "unknown"),
+            getattr(torch.version, "cuda", None),
+            torch.cuda.is_available(),
+            torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("failed to log torch runtime info")
 
 
 def _connect_with_retry(params: pika.URLParameters) -> pika.BlockingConnection:
@@ -246,6 +309,8 @@ def main() -> None:
         )
         root_logger.addHandler(file_handler)
     logger.info("startup logs enabled: worker=%s path=%s", startup_log.worker, startup_log.path)
+    _prepare_cuda_library_path()
+    _log_torch_runtime_info()
 
     rabbit_url = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/%2f")
     embedder_queue = os.getenv("RABBITMQ_EMBEDDER_QUEUE", "avsp.embedder.tasks")

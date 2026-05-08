@@ -112,7 +112,11 @@ class RabbitRPCClient:
             response = responses.pop(corr_id, None)
             if response is not None:
                 if not response.get("ok", False):
-                    raise RabbitRPCError(str(response.get("error", "worker error")))
+                    error_message = str(response.get("error", "worker error"))
+                    worker_traceback = str(response.get("traceback", "")).strip()
+                    if worker_traceback:
+                        raise RabbitRPCError(f"{error_message}\n--- worker traceback ---\n{worker_traceback}")
+                    raise RabbitRPCError(error_message)
                 return response
             conn.process_data_events(time_limit=0.2)
 
