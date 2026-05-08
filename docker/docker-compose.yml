@@ -137,7 +137,7 @@ services:
     image: avsp-models-cpu
     build:
       context: ..
-      dockerfile: docker/models/models-cpu.Dockerfile
+      dockerfile: docker/models/models.Dockerfile
     healthcheck:
       test: ["CMD", "true"]
       interval: 30s
@@ -170,7 +170,7 @@ services:
     image: avsp-models-cpu
     build:
       context: ..
-      dockerfile: docker/models/models-cpu.Dockerfile
+      dockerfile: docker/models/models.Dockerfile
     healthcheck:
       test: ["CMD", "true"]
       interval: 30s
