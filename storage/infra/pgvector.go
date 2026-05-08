@@ -104,6 +104,23 @@ func (p *PgVectorAdapter) ensureTable(ctx context.Context) error {
 
 func (p *PgVectorAdapter) ensureVectorDimensions(ctx context.Context) error {
 	if p.vectorSize <= 0 {
+		_, hasDimensions, err := p.currentVectorDimensions(ctx)
+		if err != nil {
+			return err
+		}
+		if !hasDimensions {
+			return nil
+		}
+		// Allow mixed embedding dimensions when vector_size is unset.
+		// This is useful when users switch embedder models (e.g. 640 -> 2048)
+		// and rebuild vectors without recreating metadata storage.
+		query := fmt.Sprintf(
+			"ALTER TABLE %s ALTER COLUMN embedding TYPE vector USING embedding::vector",
+			p.qualifiedTable(),
+		)
+		if _, err := p.db.ExecContext(ctx, query); err != nil {
+			return err
+		}
 		return nil
 	}
 	currentSize, hasDimensions, err := p.currentVectorDimensions(ctx)

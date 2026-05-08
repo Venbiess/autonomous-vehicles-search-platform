@@ -160,20 +160,25 @@ func (s *StorageServer) ListObjects(ctx context.Context, limit int, cursor strin
 	}
 	defer rows.Close()
 
-	out := make([]ObjectMetadata, 0, limit)
-	nextCursor := ""
+	out := make([]ObjectMetadata, 0, limit+1)
 	for rows.Next() {
 		var m ObjectMetadata
 		if err := rows.Scan(&m.ObjectID, &m.StoragePath, &m.Bucket, &m.Key, &m.SizeBytes, &m.ContentType, &m.CreatedAt); err != nil {
 			return nil, "", err
 		}
-		if len(out) == limit {
-			nextCursor = m.ObjectID
-			break
-		}
 		out = append(out, m)
 	}
-	return out, nextCursor, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+
+	nextCursor := ""
+	if len(out) > limit {
+		// Continue from the last returned object id so no rows are skipped.
+		nextCursor = out[limit-1].ObjectID
+		out = out[:limit]
+	}
+	return out, nextCursor, nil
 }
 
 func (s *StorageServer) GetContent(ctx context.Context, objectID string) ([]byte, string, error) {
