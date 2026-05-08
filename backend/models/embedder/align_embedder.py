@@ -16,9 +16,11 @@ class AlignEmbedder(BaseEmbedder):
         self.processor = AlignProcessor.from_pretrained(model_name)
         model_kwargs = {}
         if torch_dtype is not None:
-            model_kwargs["dtype"] = torch_dtype
+            model_kwargs["torch_dtype"] = torch_dtype
         self.model = AlignModel.from_pretrained(model_name, **model_kwargs).to(device)
         self.model.eval()
+        vision_conv = self.model.vision_model.embeddings.convolution
+        self._vision_input_dtype = vision_conv.weight.dtype
 
     @property
     def backend_name(self) -> str:
@@ -43,7 +45,10 @@ class AlignEmbedder(BaseEmbedder):
 
     def _embed_image_batch(self, images: list[Image.Image]) -> torch.Tensor:
         image_inputs = self.processor(images=images, return_tensors="pt").to(self.device)
-        outputs = self.model.get_image_features(pixel_values=image_inputs["pixel_values"])
+        pixel_values = image_inputs["pixel_values"]
+        if pixel_values.dtype != self._vision_input_dtype:
+            pixel_values = pixel_values.to(dtype=self._vision_input_dtype)
+        outputs = self.model.get_image_features(pixel_values=pixel_values)
         if hasattr(outputs, "pooler_output"):
             return outputs.pooler_output
         return outputs

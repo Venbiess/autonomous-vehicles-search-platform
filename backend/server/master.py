@@ -692,6 +692,24 @@ def _append_job_log(job: Dict[str, Any], message: str) -> None:
             logger.exception("Failed to write job log file for job_id=%s", job_id)
 
 
+def _record_job_error(
+    job_id: str,
+    errors: List[Dict[str, str]],
+    error_item: Dict[str, str],
+    *,
+    log_message: Optional[str] = None,
+) -> None:
+    errors.append(error_item)
+    with jobs_lock:
+        job = jobs_store.get(job_id)
+        if not job:
+            return
+        job["errors"] = list(errors)
+        job["updated_at"] = time.time()
+        if log_message:
+            _append_job_log(job, log_message)
+
+
 def _embed_install_queue_worker(
     job_id: str,
     object_queue: "queue.Queue[Optional[str]]",
@@ -754,7 +772,12 @@ def _embed_install_queue_worker(
                     valid_images.append(image_bytes)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Auto-embedding failed for object_id=%s", object_id)
-                    errors.append({"object_id": object_id, "error": str(exc)})
+                    _record_job_error(
+                        job_id,
+                        errors,
+                        {"object_id": object_id, "error": str(exc)},
+                        log_message=f"Embedding error: object_id={object_id} | {exc}",
+                    )
 
             if valid_images:
                 try:
@@ -788,26 +811,37 @@ def _embed_install_queue_worker(
                             )
                         except Exception as exc:  # noqa: BLE001
                             logger.exception("Auto-embedding fallback failed for object_id=%s", object_id)
-                            errors.append({"object_id": object_id, "error": str(exc)})
+                            _record_job_error(
+                                job_id,
+                                errors,
+                                {"object_id": object_id, "error": str(exc)},
+                                log_message=f"Embedding fallback error: object_id={object_id} | {exc}",
+                            )
 
             upserted = 0
             if rows:
                 try:
                     upserted = _storage_vector_upsert_batch(rows)
                     if upserted != len(rows):
-                        errors.append(
-                            {
-                                "error": (
-                                    f"auto-embedding upsert mismatch: expected={len(rows)} "
-                                    f"actual={upserted}"
-                                )
-                            }
+                        mismatch_error = (
+                            f"auto-embedding upsert mismatch: expected={len(rows)} actual={upserted}"
+                        )
+                        _record_job_error(
+                            job_id,
+                            errors,
+                            {"error": mismatch_error},
+                            log_message=f"Embedding upsert mismatch: {mismatch_error}",
                         )
                 except Exception as exc:
                     logger.exception(
                         "Auto-embedding vector upsert failed for rows=%s", len(rows)
                     )
-                    errors.append({"error": str(exc)})
+                    _record_job_error(
+                        job_id,
+                        errors,
+                        {"error": str(exc)},
+                        log_message=f"Embedding upsert error: {exc}",
+                    )
 
             with jobs_lock:
                 job = jobs_store.get(job_id)
@@ -892,13 +926,14 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                     inserted_object_ids_seen.add(row.object_id)
                     inserted_object_ids.append(row.object_id)
             if upserted != len(rows_buffer):
-                errors.append(
-                    {
-                        "error": (
-                            f"vector upsert mismatch: expected={len(rows_buffer)} "
-                            f"actual={upserted}"
-                        )
-                    }
+                mismatch_error = (
+                    f"vector upsert mismatch: expected={len(rows_buffer)} actual={upserted}"
+                )
+                _record_job_error(
+                    job_id,
+                    errors,
+                    {"error": mismatch_error},
+                    log_message=f"Backfill upsert mismatch: {mismatch_error}",
                 )
                 rows_buffer.clear()
                 return False
@@ -908,7 +943,12 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
             logger.exception(
                 "Batch vector upsert failed for rows=%s", len(rows_buffer)
             )
-            errors.append({"error": str(exc)})
+            _record_job_error(
+                job_id,
+                errors,
+                {"error": str(exc)},
+                log_message=f"Backfill upsert error: {exc}",
+            )
             rows_buffer.clear()
             return False
 
@@ -948,6 +988,20 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                 )
 
     try:
+        ready, reason = _search_dependencies_ready()
+        if not ready:
+            with jobs_lock:
+                if job_id in jobs_store:
+                    jobs_store[job_id].update(
+                        {
+                            "status": JobStatus.ERROR.value,
+                            "errors": [{"error": reason}],
+                            "updated_at": time.time(),
+                        }
+                    )
+                    _append_job_log(jobs_store[job_id], f"Failed preflight: {reason}")
+            return
+
         logger.info(
             "Backfill embeddings job %s started: limit=%s batch_size=%s dry_run=%s dataset=%s",
             job_id,
@@ -1021,8 +1075,11 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                         valid_images.append(image_bytes)
                     except Exception as exc:  # noqa: BLE001
                         logger.exception("Embedding failed for object_id=%s", object_id)
-                        errors.append(
-                            {"object_id": object_id, "error": str(exc)}
+                        _record_job_error(
+                            job_id,
+                            errors,
+                            {"object_id": object_id, "error": str(exc)},
+                            log_message=f"Embedding error: object_id={object_id} | {exc}",
                         )
                         processed_in_batch += 1
                         interim_seen = total_seen + processed_in_batch
@@ -1084,7 +1141,12 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                                         break
                             except Exception as exc:  # noqa: BLE001
                                 logger.exception("Embedding fallback failed for object_id=%s", object_id)
-                                errors.append({"object_id": object_id, "error": str(exc)})
+                                _record_job_error(
+                                    job_id,
+                                    errors,
+                                    {"object_id": object_id, "error": str(exc)},
+                                    log_message=f"Embedding fallback error: object_id={object_id} | {exc}",
+                                )
                             finally:
                                 processed_in_batch += 1
                                 interim_seen = total_seen + processed_in_batch
@@ -1521,14 +1583,28 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
     embed_worker_stopped = False
 
     if embed_on_install:
-        embed_queue = queue.Queue(maxsize=4096)
-        with jobs_lock:
-            job = jobs_store.get(job_id)
-            if job:
-                _append_job_log(
-                    job,
-                    "Auto-embedding enabled, running in streaming mode during install.",
-                )
+        ready, reason = _search_dependencies_ready()
+        if not ready:
+            errors.append({"error": f"auto-embedding preflight failed: {reason}"})
+            embed_on_install = False
+            with jobs_lock:
+                job = jobs_store.get(job_id)
+                if job:
+                    job["embed_on_install"] = False
+                    job["embedding_worker_running"] = False
+                    _append_job_log(
+                        job,
+                        f"Auto-embedding disabled for this run: {reason}",
+                    )
+        if embed_on_install:
+            embed_queue = queue.Queue(maxsize=4096)
+            with jobs_lock:
+                job = jobs_store.get(job_id)
+                if job:
+                    _append_job_log(
+                        job,
+                        "Auto-embedding enabled, running in streaming mode during install.",
+                    )
 
         def _embed_worker_runner() -> None:
             try:
@@ -1558,12 +1634,13 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                         job["embedding_worker_running"] = False
                         job["updated_at"] = time.time()
 
-        embed_thread = threading.Thread(
-            target=_embed_worker_runner,
-            name=f"embed-install-{job_id[:8]}",
-            daemon=True,
-        )
-        embed_thread.start()
+        if embed_on_install:
+            embed_thread = threading.Thread(
+                target=_embed_worker_runner,
+                name=f"embed-install-{job_id[:8]}",
+                daemon=True,
+            )
+            embed_thread.start()
 
     def _stop_embedding_worker(wait: bool = True) -> None:
         nonlocal embed_worker_stopped

@@ -15,6 +15,13 @@ interface AnnotationStats {
   pending_rows: number;
   annotated_percent: number;
   pending_percent: number;
+  dimensions?: {
+    status?: string;
+    query_dim?: number | null;
+    stored_dim?: number | null;
+    mismatch?: boolean | null;
+    reason?: string | null;
+  };
 }
 
 interface VlmStats extends AnnotationStats {
@@ -2343,6 +2350,16 @@ export default function StoragePanel({
               <div className="mt-3">Осталось: {formatNumber(stats.embeddings.pending_rows)}</div>
               <div>Размечено: {formatNumber(stats.embeddings.annotated_rows)}</div>
               <div>Не размечено: {pct(stats.embeddings.pending_percent)}</div>
+              <div>
+                Размерность: query{" "}
+                {stats.embeddings.dimensions?.query_dim ?? "?"} / stored{" "}
+                {stats.embeddings.dimensions?.stored_dim ?? "?"}
+              </div>
+              {stats.embeddings.dimensions?.mismatch ? (
+                <div className="text-xs text-amber-700">
+                  Внимание: mismatch размерности эмбеддингов.
+                </div>
+              ) : null}
               <div className="mt-2 text-xs text-slate-500">
                 Оценка оставшегося объёма: {formatBytes(embeddingsRemainingBytes)}
               </div>

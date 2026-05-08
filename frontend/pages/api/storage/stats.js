@@ -17,6 +17,10 @@ const DEFAULT_ANALYTICS_ENDPOINTS = [
 ]
   .filter(Boolean)
   .map((value) => String(value).replace(/\/$/, ""));
+const MASTER_ENDPOINT = String(process.env.MASTER_ENDPOINT || "http://master:9002").replace(
+  /\/$/,
+  ""
+);
 
 function chunkArray(values, chunkSize) {
   const out = [];
@@ -83,6 +87,38 @@ export default async function handler(req, res) {
       warnings.push(`vector stats unavailable: ${error.message}`);
     }
 
+    // Embeddings dimensions from master service.
+    try {
+      const response = await fetch(`${MASTER_ENDPOINT}/embeddings/dimensions`);
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.detail || payload?.error || response.statusText);
+      }
+      stats.embeddings.dimensions = {
+        status: String(payload?.status || "unknown"),
+        query_dim:
+          Number.isFinite(Number(payload?.query_dim)) && Number(payload?.query_dim) > 0
+            ? Number(payload.query_dim)
+            : null,
+        stored_dim:
+          Number.isFinite(Number(payload?.stored_dim)) && Number(payload?.stored_dim) > 0
+            ? Number(payload.stored_dim)
+            : null,
+        mismatch: Boolean(payload?.mismatch),
+        reason: String(payload?.reason || "").trim() || null,
+      };
+    } catch (error) {
+      stats.embeddings.dimensions = {
+        status: "unavailable",
+        query_dim: null,
+        stored_dim: null,
+        mismatch: null,
+        reason: error.message,
+      };
+      warnings.push(`embedding dimensions unavailable: ${error.message}`);
+    }
+
+    // VLM coverage from analytics service.
     try {
       const fieldsPayload = await readAnalyticsJson("/fields");
       const fields = Array.isArray(fieldsPayload?.fields) ? fieldsPayload.fields : [];
