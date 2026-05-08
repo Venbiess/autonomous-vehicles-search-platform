@@ -365,10 +365,21 @@ func (s *StorageServer) DeleteVectors(ctx context.Context, objectIDs []string) (
 	if len(normalized) == 0 {
 		return 0, nil
 	}
+	deleted := len(normalized)
+	if lookup, ok := s.vectorAdapter.(infra.VectorExistingLookup); ok {
+		existing, err := lookup.ExistingObjectIDs(ctx, normalized)
+		if err != nil {
+			return 0, err
+		}
+		deleted = len(existing)
+		if deleted == 0 {
+			return 0, nil
+		}
+	}
 	if err := s.vectorAdapter.Delete(ctx, normalized); err != nil {
 		return 0, err
 	}
-	return len(normalized), nil
+	return deleted, nil
 }
 
 func (s *StorageServer) ClearVectors(ctx context.Context, pageSize int) (int, error) {
@@ -413,6 +424,14 @@ func (s *StorageServer) ClearVectors(ctx context.Context, pageSize int) (int, er
 	}
 
 	return totalDeleted, nil
+}
+
+func (s *StorageServer) CleanupOrphanVectors(ctx context.Context) (int, error) {
+	cleaner, ok := s.vectorAdapter.(infra.VectorOrphanCleaner)
+	if !ok {
+		return 0, errors.New("vector backend does not support orphan cleanup")
+	}
+	return cleaner.CleanupOrphaned(ctx, s.cfg.MetadataSchema, s.cfg.MetadataTable)
 }
 
 func (s *StorageServer) ensureMetadataTable(ctx context.Context) error {

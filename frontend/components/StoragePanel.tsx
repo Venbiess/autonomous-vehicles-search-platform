@@ -1367,9 +1367,22 @@ export default function StoragePanel({
             dataset,
             confirm: true,
           });
+          const requested = Number(response.data?.requested_count || count);
+          const available = Number(response.data?.available_embeddings || 0);
           const selected = Number(response.data?.selected_images || 0);
           const reset = Number(response.data?.reset_embeddings || 0);
-          setCleanupStatusMessage(`Сброшены embeddings: ${reset} из ${selected} выбранных сцен.`);
+          const orphanRemoved = Number(response.data?.orphan_embeddings_removed || 0);
+          const shortageNote =
+            selected < requested
+              ? ` (доступно embeddings: ${available}, запрошено: ${requested})`
+              : "";
+          const orphanNote =
+            orphanRemoved > 0
+              ? `; удалено orphan embeddings: ${orphanRemoved}`
+              : "";
+          setCleanupStatusMessage(
+            `Сброшены embeddings: ${reset} из ${selected} выбранных сцен${shortageNote}${orphanNote}.`
+          );
           await loadStats(false);
         });
       },

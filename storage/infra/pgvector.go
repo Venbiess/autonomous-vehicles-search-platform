@@ -300,6 +300,38 @@ func (p *PgVectorAdapter) Delete(ctx context.Context, objectIDs []string) error 
 	return err
 }
 
+func (p *PgVectorAdapter) CleanupOrphaned(ctx context.Context, metadataSchema string, metadataTable string) (int, error) {
+	schema := strings.TrimSpace(metadataSchema)
+	table := strings.TrimSpace(metadataTable)
+	if schema == "" {
+		schema = "public"
+	}
+	if table == "" {
+		table = "objects"
+	}
+	query := fmt.Sprintf(
+		`DELETE FROM %s AS v
+		 WHERE NOT EXISTS (
+		   SELECT 1 FROM %s.%s AS o WHERE o.object_id = v.object_id
+		 )`,
+		p.qualifiedTable(),
+		pqIdent(schema),
+		pqIdent(table),
+	)
+	result, err := p.db.ExecContext(ctx, query)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if affected < 0 {
+		return 0, nil
+	}
+	return int(affected), nil
+}
+
 func (p *PgVectorAdapter) Count(ctx context.Context) (int64, error) {
 	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", p.qualifiedTable())
 	var total int64

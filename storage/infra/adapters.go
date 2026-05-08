@@ -48,3 +48,8 @@ type VectorExistingLookup interface {
 type VectorBatchGetter interface {
 	GetByObjectIDs(ctx context.Context, objectIDs []string) (map[string][]float64, error)
 }
+
+// Optional capability for deleting vectors that do not have matching metadata objects.
+type VectorOrphanCleaner interface {
+	CleanupOrphaned(ctx context.Context, metadataSchema string, metadataTable string) (int, error)
+}

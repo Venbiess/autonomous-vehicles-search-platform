@@ -18,8 +18,22 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({ page_size: pageSize }),
     });
+    let orphanRemoved = 0;
+    try {
+      const cleanupPayload = await readStorageJson("/vectors/cleanup-orphans", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...storageWriteHeaders(),
+        },
+      });
+      orphanRemoved = Number(cleanupPayload?.deleted ?? cleanupPayload?.requested ?? 0);
+    } catch {
+      orphanRemoved = 0;
+    }
     return res.status(200).json({
-      reset_embeddings: Number(payload?.requested || 0),
+      reset_embeddings: Number(payload?.deleted ?? payload?.requested ?? 0),
+      orphan_embeddings_removed: orphanRemoved,
     });
   } catch (error) {
     return res

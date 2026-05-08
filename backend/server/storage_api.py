@@ -163,7 +163,16 @@ class StorageAPI:
         )
         response.raise_for_status()
         payload = response.json()
-        return int(payload.get("requested", 0))
+        return int(payload.get("deleted", payload.get("requested", 0)))
+
+    def cleanup_orphan_vectors(self) -> int:
+        response = self._client.post(
+            f"{self.endpoint}/vectors/cleanup-orphans",
+            headers=self.write_headers,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return int(payload.get("deleted", payload.get("requested", 0)))
 
     def delete_object(self, object_id: str) -> Dict[str, Any]:
         if self.write_headers:
