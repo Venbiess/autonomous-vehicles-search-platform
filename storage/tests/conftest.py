@@ -14,6 +14,7 @@ class TestSettings:
     write_token: str
     bucket: str
     request_timeout_sec: int
+    vector_size: int
 
 
 def _env(name: str, default: str) -> str:
@@ -30,6 +31,7 @@ def settings() -> TestSettings:
         write_token=_env("STORAGE_WRITE_TOKEN", "change-me-storage-write-token"),
         bucket=_env("STORAGE_TEST_BUCKET", "avsp"),
         request_timeout_sec=int(_env("STORAGE_TEST_TIMEOUT_SEC", "20")),
+        vector_size=int(_env("STORAGE_TEST_VECTOR_SIZE", "640")),
     )
 
 

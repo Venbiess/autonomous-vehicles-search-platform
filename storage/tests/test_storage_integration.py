@@ -15,6 +15,10 @@ def _fake_jpeg() -> bytes:
     return b"\xff\xd8\xff\xe0AVSP-TEST-" + uuid.uuid4().hex.encode("ascii") + b"\xff\xd9"
 
 
+def _fake_embedding(settings, base: float = 0.1) -> list[float]:
+    return [base] * settings.vector_size
+
+
 def _upload_object(settings, http_session, headers, payload: bytes, filename: str = "image.jpg", key: str | None = None):
     params = {"bucket": settings.bucket, "filename": filename, "content_type": "image/jpeg"}
     if key:
@@ -164,7 +168,7 @@ def test_vector_upsert_query_count_and_delete_cascade(settings, http_session):
     assert count_before.status_code == 200, count_before.text
     before_val = int(count_before.json().get("count", 0))
 
-    vector = [0.1, 0.2, 0.3, 0.4]
+    vector = _fake_embedding(settings)
     upsert = http_session.post(
         f"{settings.storage_base_url}/vectors/upsert",
         json={"vectors": [{"object_id": object_id, "embedding": vector}]},
@@ -287,7 +291,7 @@ def test_write_endpoints_require_token(settings, http_session):
 
     upsert = http_session.post(
         f"{settings.storage_base_url}/vectors/upsert",
-        json={"vectors": [{"object_id": uuid.uuid4().hex, "embedding": [0.1, 0.2, 0.3, 0.4]}]},
+        json={"vectors": [{"object_id": uuid.uuid4().hex, "embedding": _fake_embedding(settings)}]},
         timeout=settings.request_timeout_sec,
     )
     assert upsert.status_code == 403
