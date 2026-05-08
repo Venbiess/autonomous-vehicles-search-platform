@@ -815,6 +815,15 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
     inserted_object_ids_seen: set[str] = set()
     last_progress_log_bucket = -1
     last_progress_log_at = time.monotonic()
+    upsert_flush_size = max(
+        1,
+        int(
+            os.getenv(
+                "EMBEDDINGS_BACKFILL_UPSERT_FLUSH_SIZE",
+                str(min(max(payload.batch_size, 1), 4)),
+            )
+        ),
+    )
 
     def _update_backfill_progress(
         seen_count: int,
@@ -835,6 +844,39 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                     payload_update["current_object_id"] = current_object_id
                 jobs_store[job_id].update(payload_update)
         return progress_value
+
+    def _flush_rows(rows_buffer: List[EmbedResult]) -> bool:
+        nonlocal total_inserted
+        if not rows_buffer or payload.dry_run:
+            rows_buffer.clear()
+            return True
+        try:
+            upserted = _storage_vector_upsert_batch(rows_buffer)
+            total_inserted += upserted
+            for row in rows_buffer[: max(0, upserted)]:
+                if row.object_id not in inserted_object_ids_seen:
+                    inserted_object_ids_seen.add(row.object_id)
+                    inserted_object_ids.append(row.object_id)
+            if upserted != len(rows_buffer):
+                errors.append(
+                    {
+                        "error": (
+                            f"vector upsert mismatch: expected={len(rows_buffer)} "
+                            f"actual={upserted}"
+                        )
+                    }
+                )
+                rows_buffer.clear()
+                return False
+            rows_buffer.clear()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Batch vector upsert failed for rows=%s", len(rows_buffer)
+            )
+            errors.append({"error": str(exc)})
+            rows_buffer.clear()
+            return False
 
     def _cancel_backfill_job() -> None:
         cleanup_mode = _job_install_cleanup_mode(job_id)
@@ -947,7 +989,16 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                                 dim=dim,
                             )
                         )
-                    except Exception as exc:
+                        if len(rows) >= upsert_flush_size:
+                            flushed_ok = _flush_rows(rows)
+                            _update_backfill_progress(
+                                total_seen + processed_in_batch,
+                                total_inserted,
+                                current_object_id=object_id,
+                            )
+                            if payload.stop_on_error and (not flushed_ok or errors):
+                                break
+                    except Exception as exc:  # noqa: BLE001
                         logger.exception("Embedding failed for object_id=%s", object_id)
                         errors.append(
                             {"object_id": object_id, "error": str(exc)}
@@ -963,32 +1014,10 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                         _update_backfill_progress(interim_seen, total_inserted, current_object_id=object_id)
 
                 total_seen += processed_in_batch
-                if rows and not payload.dry_run:
-                    try:
-                        upserted = _storage_vector_upsert_batch(rows)
-                        total_inserted += upserted
-                        for row in rows[: max(0, upserted)]:
-                            if row.object_id not in inserted_object_ids_seen:
-                                inserted_object_ids_seen.add(row.object_id)
-                                inserted_object_ids.append(row.object_id)
-                        if upserted != len(rows):
-                            errors.append(
-                                {
-                                    "error": (
-                                        f"vector upsert mismatch: expected={len(rows)} "
-                                        f"actual={upserted}"
-                                    )
-                                }
-                            )
-                            if payload.stop_on_error:
-                                break
-                    except Exception as exc:
-                        logger.exception(
-                            "Batch vector upsert failed for rows=%s", len(rows)
-                        )
-                        errors.append({"error": str(exc)})
-                        if payload.stop_on_error:
-                            break
+                if rows:
+                    flushed_ok = _flush_rows(rows)
+                    if payload.stop_on_error and (not flushed_ok or errors):
+                        break
 
                 progress = _update_backfill_progress(total_seen, total_inserted)
                 current_bucket = progress // 10
