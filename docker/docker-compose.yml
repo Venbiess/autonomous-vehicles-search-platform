@@ -137,7 +137,7 @@ services:
     image: avsp-models-cpu
     build:
       context: ..
-      dockerfile: docker/models/models-cpu.Dockerfile
+      dockerfile: models/models-cpu.Dockerfile
     healthcheck:
       test: ["CMD", "true"]
       interval: 30s
@@ -170,7 +170,7 @@ services:
     image: avsp-models-cpu
     build:
       context: ..
-      dockerfile: docker/models/models-cpu.Dockerfile
+      dockerfile: models/models-cpu.Dockerfile
     healthcheck:
       test: ["CMD", "true"]
       interval: 30s
@@ -203,7 +203,7 @@ services:
     image: avsp-storage
     build:
       context: ..
-      dockerfile: docker/storage/storage-server.Dockerfile
+      dockerfile: storage/storage-server.Dockerfile
     container_name: "avsp-storage-${USER}"
     depends_on:
       postgres:
@@ -226,7 +226,7 @@ services:
   avsp-server:
     build:
       context: ..
-      dockerfile: docker/server/server.Dockerfile
+      dockerfile: server/server.Dockerfile
     image: avsp-analytics-service
     container_name: "avsp-analytics-service-${USER}"
     depends_on:
