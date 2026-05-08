@@ -333,8 +333,12 @@ def main() -> None:
     _start_http_server(args.worker)
 
     params = pika.URLParameters(rabbit_url)
-    params.heartbeat = 120
-    params.blocked_connection_timeout = 300
+    heartbeat_sec = int(os.getenv("RABBITMQ_HEARTBEAT_SEC", "900"))
+    blocked_timeout_sec = int(
+        os.getenv("RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SEC", str(max(300, heartbeat_sec + 60)))
+    )
+    params.heartbeat = max(30, heartbeat_sec)
+    params.blocked_connection_timeout = max(60, blocked_timeout_sec)
     connection = _connect_with_retry(params)
     channel = connection.channel()
 

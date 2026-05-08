@@ -224,6 +224,8 @@ services:
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
       RABBITMQ_PREFETCH: 1
+      RABBITMQ_HEARTBEAT_SEC: 900
+      RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SEC: 960
     networks:
       - avsp-net
 
@@ -263,6 +265,8 @@ services:
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
       RABBITMQ_PREFETCH: 1
+      RABBITMQ_HEARTBEAT_SEC: 900
+      RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SEC: 960
     networks:
       - avsp-net
 
@@ -336,7 +340,7 @@ services:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
-      RABBITMQ_RPC_TIMEOUT_SEC: 120
+      RABBITMQ_RPC_TIMEOUT_SEC: 900
       ANALYTICS_SERVER_ENDPOINT: http://storage-server:9012
       ANALYTICS_SERVER_TIMEOUT_SEC: 30
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012
