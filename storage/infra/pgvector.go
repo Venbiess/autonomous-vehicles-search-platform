@@ -148,6 +148,9 @@ func (p *PgVectorAdapter) ensureANNIndexes(ctx context.Context) error {
 		return err
 	}
 	if !hasDimensions {
+		if err := p.dropANNIndexes(ctx); err != nil {
+			return err
+		}
 		log.Printf("pgvector: ANN index skipped for %s.%s (embedding column has no fixed dimensions)", p.schema, p.tableName)
 		return nil
 	}
@@ -175,6 +178,20 @@ func (p *PgVectorAdapter) ensureANNIndexes(ctx context.Context) error {
 		return nil
 	}
 	log.Printf("pgvector: ivfflat index creation skipped")
+	return nil
+}
+
+func (p *PgVectorAdapter) dropANNIndexes(ctx context.Context) error {
+	for _, suffix := range []string{"embedding_hnsw_idx", "embedding_ivfflat_idx"} {
+		query := fmt.Sprintf(
+			"DROP INDEX IF EXISTS %s.%s",
+			pqIdent(p.schema),
+			p.indexName(suffix),
+		)
+		if _, err := p.db.ExecContext(ctx, query); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
