@@ -178,6 +178,11 @@ class ModelGateway:
             queues = snapshot.get("queues", {})
             missing_consumers = []
             for queue_name, stats in queues.items():
+                if (
+                    queue_name == self._rpc.cfg.embedder_queue
+                    and len(self._embedder_endpoints) > 0
+                ):
+                    continue
                 if int(stats.get("consumers", 0)) <= 0:
                     missing_consumers.append(queue_name)
             if missing_consumers:
