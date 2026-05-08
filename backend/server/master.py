@@ -816,6 +816,26 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
     last_progress_log_bucket = -1
     last_progress_log_at = time.monotonic()
 
+    def _update_backfill_progress(
+        seen_count: int,
+        inserted_count: int,
+        current_object_id: Optional[str] = None,
+    ) -> int:
+        progress_value = min(int((seen_count / max(planned_total, 1)) * 100), 100)
+        with jobs_lock:
+            if job_id in jobs_store:
+                payload_update: Dict[str, Any] = {
+                    "progress": progress_value,
+                    "total_seen": seen_count,
+                    "total_inserted": inserted_count,
+                    "errors": errors,
+                    "updated_at": time.time(),
+                }
+                if current_object_id:
+                    payload_update["current_object_id"] = current_object_id
+                jobs_store[job_id].update(payload_update)
+        return progress_value
+
     def _cancel_backfill_job() -> None:
         cleanup_mode = _job_install_cleanup_mode(job_id)
         cleanup_removed = 0
@@ -933,10 +953,14 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                             {"object_id": object_id, "error": str(exc)}
                         )
                         processed_in_batch += 1
+                        interim_seen = total_seen + processed_in_batch
+                        _update_backfill_progress(interim_seen, total_inserted, current_object_id=object_id)
                         if payload.stop_on_error:
                             break
                     else:
                         processed_in_batch += 1
+                        interim_seen = total_seen + processed_in_batch
+                        _update_backfill_progress(interim_seen, total_inserted, current_object_id=object_id)
 
                 total_seen += processed_in_batch
                 if rows and not payload.dry_run:
@@ -966,18 +990,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                         if payload.stop_on_error:
                             break
 
-                progress = min(int((total_seen / max(planned_total, 1)) * 100), 100)
-                with jobs_lock:
-                    if job_id in jobs_store:
-                        jobs_store[job_id].update(
-                            {
-                                "progress": progress,
-                                "total_seen": total_seen,
-                                "total_inserted": total_inserted,
-                                "errors": errors,
-                                "updated_at": time.time(),
-                            }
-                        )
+                progress = _update_backfill_progress(total_seen, total_inserted)
                 current_bucket = progress // 10
                 now_mono = time.monotonic()
                 should_log_progress = False
