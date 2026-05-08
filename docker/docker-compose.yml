@@ -216,6 +216,7 @@ services:
       EMBEDDER_PORT: 8000
       WORKER_METRICS_PORT: 9108
       WORKER_HTTP_ENABLED: 1
+      LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/site-packages/nvidia/nccl/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvjitlink/lib
       HF_HOME: /app/.cache/huggingface
       HF_HUB_DISABLE_PROGRESS_BARS: "0"
       TQDM_POSITION: "-1"
@@ -254,6 +255,7 @@ services:
       VLM_PORT: 8001
       WORKER_METRICS_PORT: 9109
       WORKER_HTTP_ENABLED: 1
+      LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/site-packages/nvidia/nccl/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvjitlink/lib
       HF_HOME: /app/.cache/huggingface
       HF_HUB_DISABLE_PROGRESS_BARS: "0"
       TQDM_POSITION: "-1"
