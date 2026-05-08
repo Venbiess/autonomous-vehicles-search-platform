@@ -45,6 +45,15 @@ RUN . /etc/app.env && \
         --index-url https://download.pytorch.org/whl/${TORCH_CUDA_TAG} ; \
     fi
 
+# Ensure NVRTC builtins are present for CUDA torch wheels (needed by some GPU ops/JIT paths).
+RUN . /etc/app.env && \
+    TORCH_CUDA_TAG="${TORCH_CUDA_TAG:-cpu}" && \
+    if [ "$TORCH_CUDA_TAG" != "cpu" ] && [ "$TORCH_CUDA_TAG" != "None" ]; then \
+      pip install --no-cache-dir --retries 10 --timeout 120 \
+        nvidia-cuda-runtime-cu12 \
+        nvidia-cuda-nvrtc-cu12 ; \
+    fi
+
 COPY docker/models/requirements.txt /requirements.txt
 RUN pip install -r /requirements.txt
 
