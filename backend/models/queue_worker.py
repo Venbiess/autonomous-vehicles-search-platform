@@ -209,6 +209,7 @@ def _consume_with_http_priority(
 def run_embedder_worker(ch, queue_name: str) -> None:
     from backend.models.embedder.embedder import get_embedding
     from backend.models.embedder.embedder import has_active_http_requests
+    from backend.models.embedder.embedder import get_embeddings
 
     def _handle_message(channel, method, props, body):
         started_at = time.monotonic()
@@ -229,6 +230,18 @@ def run_embedder_worker(ch, queue_name: str) -> None:
                 image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
                 embedding = get_embedding(image, type="image")
                 response = {"ok": True, "embedding": embedding, "dim": len(embedding)}
+                status = "ok"
+            elif task == "embed_image_batch":
+                encoded_images = payload.get("images_base64", [])
+                if not isinstance(encoded_images, list) or not encoded_images:
+                    raise ValueError("images_base64 must be a non-empty list")
+                images: list[Image.Image] = []
+                for encoded in encoded_images:
+                    image_bytes = base64.b64decode(str(encoded).strip())
+                    images.append(Image.open(io.BytesIO(image_bytes)).convert("RGB"))
+                embeddings = get_embeddings(images, type="image")
+                dim = len(embeddings[0]) if embeddings else 0
+                response = {"ok": True, "embeddings": embeddings, "dim": dim}
                 status = "ok"
             else:
                 response = {"ok": False, "error": f"unknown embedder task: {task}"}

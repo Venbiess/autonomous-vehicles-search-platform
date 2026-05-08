@@ -25,7 +25,10 @@ class AlignEmbedder(BaseEmbedder):
         return "ALIGN"
 
     def _embed_text(self, text: str) -> torch.Tensor:
-        text_inputs = self.processor.tokenizer(text, return_tensors="pt", padding=True).to(self.device)
+        return self._embed_text_batch([text])[0]
+
+    def _embed_text_batch(self, texts: list[str]) -> torch.Tensor:
+        text_inputs = self.processor.tokenizer(texts, return_tensors="pt", padding=True).to(self.device)
         outputs = self.model.get_text_features(
             input_ids=text_inputs["input_ids"],
             attention_mask=text_inputs["attention_mask"],
@@ -36,7 +39,10 @@ class AlignEmbedder(BaseEmbedder):
         return outputs
 
     def _embed_image(self, image: Image.Image) -> torch.Tensor:
-        image_inputs = self.processor(images=image, return_tensors="pt").to(self.device)
+        return self._embed_image_batch([image])[0]
+
+    def _embed_image_batch(self, images: list[Image.Image]) -> torch.Tensor:
+        image_inputs = self.processor(images=images, return_tensors="pt").to(self.device)
         outputs = self.model.get_image_features(pixel_values=image_inputs["pixel_values"])
         if hasattr(outputs, "pooler_output"):
             return outputs.pooler_output

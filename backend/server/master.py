@@ -585,6 +585,10 @@ def _embed_text(client: httpx.Client, text: str) -> Tuple[List[float], int]:
     return model_gateway.embed_text(client, EMBEDDER_ENDPOINT, text)
 
 
+def _embed_images(client: httpx.Client, images_bytes: List[bytes]) -> Tuple[List[List[float]], int]:
+    return model_gateway.embed_images(client, EMBEDDER_ENDPOINT, images_bytes)
+
+
 def _embed_image_direct(client: httpx.Client, image_bytes: bytes) -> Tuple[List[float], int]:
     return model_gateway.embed_image_http(client, EMBEDDER_ENDPOINT, image_bytes)
 
@@ -731,6 +735,8 @@ def _embed_install_queue_worker(
                 item.get("object_id"): item for item in batch_payload if item.get("object_id")
             }
             rows: List[EmbedResult] = []
+            valid_ids: List[str] = []
+            valid_images: List[bytes] = []
 
             for object_id in batch_ids:
                 if _job_cancel_requested(job_id):
@@ -744,17 +750,45 @@ def _embed_install_queue_worker(
                     image_bytes = batch_item.get("content", b"")
                     if not image_bytes:
                         raise ValueError("empty content")
-                    embedding, dim = _embed_image(client, image_bytes)
-                    rows.append(
+                    valid_ids.append(object_id)
+                    valid_images.append(image_bytes)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Auto-embedding failed for object_id=%s", object_id)
+                    errors.append({"object_id": object_id, "error": str(exc)})
+
+            if valid_images:
+                try:
+                    embeddings, dim = _embed_images(client, valid_images)
+                    if len(embeddings) != len(valid_ids):
+                        raise ValueError(
+                            f"batch embedding size mismatch: expected={len(valid_ids)} actual={len(embeddings)}"
+                        )
+                    rows.extend(
                         EmbedResult(
                             object_id=object_id,
                             embedding=embedding,
                             dim=dim,
                         )
+                        for object_id, embedding in zip(valid_ids, embeddings)
                     )
-                except Exception as exc:
-                    logger.exception("Auto-embedding failed for object_id=%s", object_id)
-                    errors.append({"object_id": object_id, "error": str(exc)})
+                except Exception:
+                    logger.exception(
+                        "Auto-embedding batch failed (size=%s), falling back to per-item",
+                        len(valid_ids),
+                    )
+                    for object_id, image_bytes in zip(valid_ids, valid_images):
+                        try:
+                            embedding, dim = _embed_image(client, image_bytes)
+                            rows.append(
+                                EmbedResult(
+                                    object_id=object_id,
+                                    embedding=embedding,
+                                    dim=dim,
+                                )
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.exception("Auto-embedding fallback failed for object_id=%s", object_id)
+                            errors.append({"object_id": object_id, "error": str(exc)})
 
             upserted = 0
             if rows:
@@ -967,6 +1001,8 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                 by_object_id = {
                     item.get("object_id"): item for item in batch_payload if item.get("object_id")
                 }
+                valid_ids: List[str] = []
+                valid_images: List[bytes] = []
 
                 for object_id in batch_ids:
                     if _job_cancel_requested(job_id):
@@ -981,23 +1017,8 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                         image_bytes = batch_item.get("content", b"")
                         if not image_bytes:
                             raise ValueError("empty content")
-                        embedding, dim = _embed_image(client, image_bytes)
-                        rows.append(
-                            EmbedResult(
-                                object_id=object_id,
-                                embedding=embedding,
-                                dim=dim,
-                            )
-                        )
-                        if len(rows) >= upsert_flush_size:
-                            flushed_ok = _flush_rows(rows)
-                            _update_backfill_progress(
-                                total_seen + processed_in_batch,
-                                total_inserted,
-                                current_object_id=object_id,
-                            )
-                            if payload.stop_on_error and (not flushed_ok or errors):
-                                break
+                        valid_ids.append(object_id)
+                        valid_images.append(image_bytes)
                     except Exception as exc:  # noqa: BLE001
                         logger.exception("Embedding failed for object_id=%s", object_id)
                         errors.append(
@@ -1009,9 +1030,71 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                         if payload.stop_on_error:
                             break
                     else:
-                        processed_in_batch += 1
-                        interim_seen = total_seen + processed_in_batch
-                        _update_backfill_progress(interim_seen, total_inserted, current_object_id=object_id)
+                        continue
+
+                if valid_images and not (payload.stop_on_error and errors):
+                    try:
+                        embeddings, dim = _embed_images(client, valid_images)
+                        if len(embeddings) != len(valid_ids):
+                            raise ValueError(
+                                f"batch embedding size mismatch: expected={len(valid_ids)} actual={len(embeddings)}"
+                            )
+
+                        for object_id, embedding in zip(valid_ids, embeddings):
+                            rows.append(
+                                EmbedResult(
+                                    object_id=object_id,
+                                    embedding=embedding,
+                                    dim=dim,
+                                )
+                            )
+                            processed_in_batch += 1
+                            interim_seen = total_seen + processed_in_batch
+                            _update_backfill_progress(
+                                interim_seen,
+                                total_inserted,
+                                current_object_id=object_id,
+                            )
+                            if len(rows) >= upsert_flush_size:
+                                flushed_ok = _flush_rows(rows)
+                                _update_backfill_progress(interim_seen, total_inserted, current_object_id=object_id)
+                                if payload.stop_on_error and (not flushed_ok or errors):
+                                    break
+                    except Exception:
+                        logger.exception(
+                            "Batch embedding failed for batch_size=%s, falling back to per-item",
+                            len(valid_ids),
+                        )
+                        for object_id, image_bytes in zip(valid_ids, valid_images):
+                            if _job_cancel_requested(job_id):
+                                _cancel_backfill_job()
+                                return
+                            try:
+                                embedding, dim = _embed_image(client, image_bytes)
+                                rows.append(
+                                    EmbedResult(
+                                        object_id=object_id,
+                                        embedding=embedding,
+                                        dim=dim,
+                                    )
+                                )
+                                if len(rows) >= upsert_flush_size:
+                                    flushed_ok = _flush_rows(rows)
+                                    if payload.stop_on_error and (not flushed_ok or errors):
+                                        break
+                            except Exception as exc:  # noqa: BLE001
+                                logger.exception("Embedding fallback failed for object_id=%s", object_id)
+                                errors.append({"object_id": object_id, "error": str(exc)})
+                            finally:
+                                processed_in_batch += 1
+                                interim_seen = total_seen + processed_in_batch
+                                _update_backfill_progress(
+                                    interim_seen,
+                                    total_inserted,
+                                    current_object_id=object_id,
+                                )
+                            if payload.stop_on_error and errors:
+                                break
 
                 total_seen += processed_in_batch
                 if rows:

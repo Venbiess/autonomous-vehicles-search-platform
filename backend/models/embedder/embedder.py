@@ -110,6 +110,10 @@ def get_embedding(inputs, type: Literal["text", "image"] = "image") -> list[floa
     return embedder.get_embedding(inputs=inputs, input_type=type)
 
 
+def get_embeddings(inputs, type: Literal["text", "image"] = "image") -> list[list[float]]:
+    return embedder.get_embeddings(inputs=inputs, input_type=type)
+
+
 def _runtime_payload() -> dict:
     payload = runtime_payload(configured_device=cfg_device, selected_device=device)
     payload["runtime"]["dtype"] = embedder.dtype_label
