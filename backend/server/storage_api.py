@@ -58,30 +58,54 @@ class StorageAPI:
     def get_object_bytes_batch(self, object_ids: List[str]) -> List[Dict[str, Any]]:
         if not object_ids:
             return []
-        response = self._client.post(
-            f"{self.endpoint}/objects/get-batch",
-            json={"object_ids": object_ids, "include_content": True},
-        )
-        response.raise_for_status()
-        payload = response.json()
+        normalized_ids = [str(item).strip() for item in object_ids if str(item).strip()]
+        if not normalized_ids:
+            return []
 
+        max_batch_ids = max(
+            1, int(os.getenv("STORAGE_GET_BATCH_MAX_OBJECT_IDS", "256"))
+        )
         results: List[Dict[str, Any]] = []
-        for item in payload.get("items", []):
-            encoded = item.get("content_base64", "")
-            content = b""
-            if encoded:
-                content = base64.b64decode(encoded)
-            results.append(
-                {
-                    "object_id": item.get("object_id", ""),
-                    "content": content,
-                    "content_type": item.get(
-                        "content_type", "application/octet-stream"
-                    ),
-                    "size_bytes": int(item.get("size_bytes", 0)),
-                    "error": item.get("error", ""),
-                }
+
+        for i in range(0, len(normalized_ids), max_batch_ids):
+            chunk = normalized_ids[i : i + max_batch_ids]
+            response = self._client.post(
+                f"{self.endpoint}/objects/get-batch",
+                json={"object_ids": chunk, "include_content": True},
             )
+            if response.is_error:
+                detail = response.text
+                try:
+                    payload = response.json()
+                    if isinstance(payload, dict):
+                        message = payload.get("error", {}).get("message")
+                        if isinstance(message, str) and message.strip():
+                            detail = message
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    "objects/get-batch failed: "
+                    f"status={response.status_code}, chunk_size={len(chunk)}, detail={detail}"
+                )
+
+            payload = response.json()
+            for item in payload.get("items", []):
+                encoded = item.get("content_base64", "")
+                content = b""
+                if encoded:
+                    content = base64.b64decode(encoded)
+                results.append(
+                    {
+                        "object_id": item.get("object_id", ""),
+                        "content": content,
+                        "content_type": item.get(
+                            "content_type", "application/octet-stream"
+                        ),
+                        "size_bytes": int(item.get("size_bytes", 0)),
+                        "error": item.get("error", ""),
+                    }
+                )
+
         return results
 
     def query_vectors(self, embedding: List[float], top_k: int) -> List[Dict[str, Any]]:
