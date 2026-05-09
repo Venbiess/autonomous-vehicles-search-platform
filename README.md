@@ -9,8 +9,7 @@
 colima start --memory 12 --cpu 4 --disk 100
 
 ```
-cd docker/
-docker compose -f ./docker-compose.yml up
+docker compose -f docker/docker-compose.yml up
 ```
 
 ```bash
