@@ -52,9 +52,11 @@ services:
   rabbitmq:
     image: rabbitmq:3.13-management
     container_name: "avsp-rabbitmq-${USER}"
+    hostname: rabbitmq
     user: "0:0"
+    restart: unless-stopped
     environment:
-      RABBITMQ_NODENAME: rabbit@localhost
+      RABBITMQ_NODENAME: rabbit@rabbitmq
     tmpfs:
       - /var/lib/rabbitmq
     volumes:
@@ -155,6 +157,8 @@ services:
     build:
       context: ..
       dockerfile: docker/models/models.Dockerfile
+      args:
+        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
     container_name: "embedder-${USER}"
     profiles: ["model-http"]
     volumes:
@@ -170,6 +174,8 @@ services:
     build:
       context: ..
       dockerfile: docker/models/models.Dockerfile
+      args:
+        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
     container_name: "vlm-${USER}"
     profiles: ["model-http"]
     volumes:
@@ -194,6 +200,8 @@ services:
     build:
       context: ..
       dockerfile: docker/models/models.Dockerfile
+      args:
+        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
     healthcheck:
       test: ["CMD", "true"]
       interval: 30s
@@ -235,6 +243,8 @@ services:
     build:
       context: ..
       dockerfile: docker/models/models.Dockerfile
+      args:
+        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
     healthcheck:
       test: ["CMD", "true"]
       interval: 30s

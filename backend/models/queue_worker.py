@@ -7,9 +7,10 @@ import io
 import json
 import logging
 import os
+import socket
+import traceback
 import threading
 import time
-import traceback
 from typing import Any
 from typing import Dict
 from pathlib import Path
@@ -109,12 +110,13 @@ def _connect_with_retry(params: pika.URLParameters) -> pika.BlockingConnection:
         try:
             logger.info("connecting to RabbitMQ attempt=%s", attempt)
             return pika.BlockingConnection(params)
-        except pika.exceptions.AMQPConnectionError:
+        except (pika.exceptions.AMQPConnectionError, socket.gaierror, OSError) as exc:
             if max_attempts > 0 and attempt >= max_attempts:
                 logger.exception("failed to connect to RabbitMQ after %s attempts", attempt)
                 raise
             logger.warning(
-                "RabbitMQ is unavailable, retrying in %ss (attempt=%s)",
+                "RabbitMQ is unavailable (%s), retrying in %ss (attempt=%s)",
+                exc.__class__.__name__,
                 retry_delay_sec,
                 attempt,
             )
