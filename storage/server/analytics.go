@@ -628,32 +628,44 @@ func (s *clickHouseAnalyticsShard) completedObjectIDs(ctx context.Context, objec
 	if len(normalizedIDs) == 0 || len(normalizedFields) == 0 {
 		return []string{}, nil
 	}
-	query := fmt.Sprintf(
-		"SELECT object_id, argMax(values_json, updated_at) AS values_json FROM %s WHERE object_id IN (%s) GROUP BY object_id",
-		chIdent(s.annotationsTable),
-		quotedList(normalizedIDs),
-	)
-	var payload struct {
-		Data []struct {
-			ObjectID   string `json:"object_id"`
-			ValuesJSON string `json:"values_json"`
-		} `json:"data"`
-	}
-	if err := s.queryJSON(ctx, query, &payload); err != nil {
-		return nil, err
-	}
-	completed := make([]string, 0, len(payload.Data))
-	for _, row := range payload.Data {
-		values := decodeValues(row.ValuesJSON)
-		ok := true
-		for _, fieldName := range normalizedFields {
-			if strings.TrimSpace(values[fieldName]) == "" {
-				ok = false
-				break
+	// Large IN(...) lists can exceed ClickHouse max_query_size. Chunk IDs to keep
+	// each generated query small regardless of client payload size.
+	completedSet := make(map[string]struct{}, len(normalizedIDs))
+	for i := 0; i < len(normalizedIDs); i += analyticsScanBatchSize {
+		end := min(i+analyticsScanBatchSize, len(normalizedIDs))
+		chunk := normalizedIDs[i:end]
+		query := fmt.Sprintf(
+			"SELECT object_id, argMax(values_json, updated_at) AS values_json FROM %s WHERE object_id IN (%s) GROUP BY object_id",
+			chIdent(s.annotationsTable),
+			quotedList(chunk),
+		)
+		var payload struct {
+			Data []struct {
+				ObjectID   string `json:"object_id"`
+				ValuesJSON string `json:"values_json"`
+			} `json:"data"`
+		}
+		if err := s.queryJSON(ctx, query, &payload); err != nil {
+			return nil, err
+		}
+		for _, row := range payload.Data {
+			values := decodeValues(row.ValuesJSON)
+			ok := true
+			for _, fieldName := range normalizedFields {
+				if strings.TrimSpace(values[fieldName]) == "" {
+					ok = false
+					break
+				}
+			}
+			if ok {
+				completedSet[row.ObjectID] = struct{}{}
 			}
 		}
-		if ok {
-			completed = append(completed, row.ObjectID)
+	}
+	completed := make([]string, 0, len(completedSet))
+	for _, objectID := range normalizedIDs {
+		if _, ok := completedSet[objectID]; ok {
+			completed = append(completed, objectID)
 		}
 	}
 	return completed, nil
