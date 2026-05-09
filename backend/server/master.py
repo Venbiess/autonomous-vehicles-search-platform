@@ -395,7 +395,16 @@ def _filter_pending_vlm_object_ids(
 ) -> List[str]:
     if overwrite_existing or not object_ids:
         return object_ids
-    completed = set(analytics_api.completed_object_ids(object_ids, field_names))
+    try:
+        completed = set(analytics_api.completed_object_ids(object_ids, field_names))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "VLM pending filter skipped due analytics error: %s",
+            exc,
+        )
+        # Do not fail the whole backfill job if completed-ids probe is unavailable.
+        # In this case we may re-run some already annotated objects, but progress continues.
+        return object_ids
     return [object_id for object_id in object_ids if object_id not in completed]
 
 

@@ -121,14 +121,19 @@ class AnalyticsAPI:
                             f"{self.endpoint}/annotations/completed-object-ids",
                             json=payload,
                         )
-                        response.raise_for_status()
+                        if not response.is_success:
+                            status_code = int(response.status_code)
+                            if status_code in retryable_statuses and attempt < max_attempts:
+                                time.sleep(0.4 * attempt)
+                                continue
+                            detail = (response.text or "").strip()
+                            detail_short = detail[:500] if detail else "<empty>"
+                            raise RuntimeError(
+                                "annotations/completed-object-ids failed: "
+                                f"status={status_code}, detail={detail_short}, "
+                                f"chunk_size={len(chunk)}, fields={len(normalized_fields)}"
+                            )
                         break
-                    except httpx.HTTPStatusError as exc:
-                        status_code = int(exc.response.status_code) if exc.response is not None else 0
-                        if status_code in retryable_statuses and attempt < max_attempts:
-                            time.sleep(0.4 * attempt)
-                            continue
-                        raise
                     except httpx.RequestError:
                         if attempt < max_attempts:
                             time.sleep(0.4 * attempt)
