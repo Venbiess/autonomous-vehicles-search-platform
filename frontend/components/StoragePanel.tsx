@@ -1381,7 +1381,7 @@ export default function StoragePanel({
               ? `; удалено orphan embeddings: ${orphanRemoved}`
               : "";
           setCleanupStatusMessage(
-            `Сброшены embeddings: ${reset} из ${selected} выбранных сцен${shortageNote}${orphanNote}.`
+            `Сброшены embeddings: ${reset} из ${requested} выбранных сцен${shortageNote}${orphanNote}.`
           );
           await loadStats(false);
         });
@@ -1403,9 +1403,17 @@ export default function StoragePanel({
             dataset,
             confirm: true,
           });
+          const requested = Number(response.data?.requested_count || count);
+          const available = Number(response.data?.available_vlm_annotations || 0);
           const selected = Number(response.data?.selected_images || 0);
           const reset = Number(response.data?.reset_vlm_annotations || 0);
-          setCleanupStatusMessage(`Сброшены VLM-аннотации: ${reset} из ${selected} выбранных сцен.`);
+          const shortageNote =
+            selected < requested
+              ? ` (доступно VLM-аннотаций: ${available}, запрошено: ${requested})`
+              : "";
+          setCleanupStatusMessage(
+            `Сброшены VLM-аннотации: ${reset} из ${requested} выбранных сцен${shortageNote}.`
+          );
           await loadStats(false);
         });
       },
@@ -1454,11 +1462,17 @@ export default function StoragePanel({
             dataset,
             confirm: true,
           });
+          const requested = Number(response.data?.requested_count || count);
+          const available = Number(response.data?.available_images || 0);
           const selected = Number(response.data?.selected_images || 0);
           const deleted = Number(response.data?.deleted_images || 0);
           const failed = Number(response.data?.failed_images || 0);
+          const shortageNote =
+            selected < requested
+              ? ` (доступно сцен: ${available}, запрошено: ${requested})`
+              : "";
           setCleanupStatusMessage(
-            `Полное удаление сцен: выбранo ${selected}, удалено ${deleted}, ошибок ${failed}.`
+            `Полное удаление сцен: выбрано ${selected} из ${requested}, удалено ${deleted}, ошибок ${failed}${shortageNote}.`
           );
           await Promise.all([
             loadStats(false),
