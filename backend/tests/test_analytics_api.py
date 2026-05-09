@@ -19,6 +19,7 @@ class _FakeResponse:
 class _FakeClient:
     calls: list[Dict[str, Any]] = []
     response_payload: Dict[str, Any] = {}
+    response_fn = None
 
     def __init__(self, timeout=None):
         self.timeout = timeout
@@ -31,10 +32,16 @@ class _FakeClient:
 
     def get(self, url: str, **kwargs: Any) -> _FakeResponse:
         self.calls.append({"method": "GET", "url": url, **kwargs})
+        if self.response_fn is not None:
+            payload = self.response_fn("GET", url, kwargs)
+            return _FakeResponse(payload)
         return _FakeResponse(dict(self.response_payload))
 
     def post(self, url: str, **kwargs: Any) -> _FakeResponse:
         self.calls.append({"method": "POST", "url": url, **kwargs})
+        if self.response_fn is not None:
+            payload = self.response_fn("POST", url, kwargs)
+            return _FakeResponse(payload)
         return _FakeResponse(dict(self.response_payload))
 
 
@@ -82,9 +89,31 @@ def test_upsert_fields_and_annotations_send_write_token(monkeypatch) -> None:
 
 def test_completed_object_ids_short_circuits_empty_inputs(monkeypatch) -> None:
     _FakeClient.calls = []
+    _FakeClient.response_fn = None
     monkeypatch.setattr("backend.server.analytics_api.httpx.Client", _FakeClient)
     api = AnalyticsAPI("http://storage-server:9012", 10)
 
     assert api.completed_object_ids([], ["field"]) == []
     assert api.completed_object_ids(["obj"], []) == []
     assert _FakeClient.calls == []
+
+
+def test_completed_object_ids_chunks_large_requests(monkeypatch) -> None:
+    _FakeClient.calls = []
+
+    def _response(method: str, _url: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        assert method == "POST"
+        req_ids = kwargs.get("json", {}).get("object_ids", [])
+        # Return one completed id per chunk to prove chunk fanout/merge works.
+        return {"object_ids": [req_ids[0]] if req_ids else []}
+
+    _FakeClient.response_fn = _response
+    monkeypatch.setattr("backend.server.analytics_api.httpx.Client", _FakeClient)
+    api = AnalyticsAPI("http://storage-server:9012", 10)
+
+    object_ids = [f"obj-{idx}" for idx in range(1200)]
+    completed = api.completed_object_ids(object_ids, ["field-a"])
+
+    assert completed == ["obj-0", "obj-500", "obj-1000"]
+    assert len(_FakeClient.calls) == 3
+    assert [len(call["json"]["object_ids"]) for call in _FakeClient.calls] == [500, 500, 200]

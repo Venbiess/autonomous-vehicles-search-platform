@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List
 
 import httpx
@@ -97,14 +98,53 @@ class AnalyticsAPI:
     def completed_object_ids(self, object_ids: List[str], field_names: List[str]) -> List[str]:
         if not object_ids or not field_names:
             return []
+        normalized_ids = [str(item).strip() for item in object_ids if str(item).strip()]
+        normalized_fields = [str(item).strip() for item in field_names if str(item).strip()]
+        if not normalized_ids or not normalized_fields:
+            return []
+
+        chunk_size = 500
+        max_attempts = 3
+        retryable_statuses = {429, 502, 503, 504}
+        seen: set[str] = set()
+        out: List[str] = []
+
         with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(
-                f"{self.endpoint}/annotations/completed-object-ids",
-                json={"object_ids": object_ids, "field_names": field_names},
-            )
-            response.raise_for_status()
-            payload = response.json()
-        return payload.get("object_ids", [])
+            for i in range(0, len(normalized_ids), chunk_size):
+                chunk = normalized_ids[i : i + chunk_size]
+                payload = {"object_ids": chunk, "field_names": normalized_fields}
+                response: httpx.Response | None = None
+
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        response = client.post(
+                            f"{self.endpoint}/annotations/completed-object-ids",
+                            json=payload,
+                        )
+                        response.raise_for_status()
+                        break
+                    except httpx.HTTPStatusError as exc:
+                        status_code = int(exc.response.status_code) if exc.response is not None else 0
+                        if status_code in retryable_statuses and attempt < max_attempts:
+                            time.sleep(0.4 * attempt)
+                            continue
+                        raise
+                    except httpx.RequestError:
+                        if attempt < max_attempts:
+                            time.sleep(0.4 * attempt)
+                            continue
+                        raise
+
+                if response is None:
+                    continue
+                item_ids = response.json().get("object_ids", [])
+                for item in item_ids:
+                    normalized = str(item).strip()
+                    if not normalized or normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    out.append(normalized)
+        return out
 
     def search(self, filters: List[Dict[str, str]], limit: int) -> List[Dict[str, Any]]:
         with httpx.Client(timeout=self.timeout) as client:
