@@ -557,7 +557,23 @@ def _search_dependencies_ready(
     *,
     require_embedder: bool = True,
     require_vlm: bool = True,
+    allow_embedder_http_fallback: bool = False,
 ) -> tuple[bool, str]:
+    def _embedder_http_ready() -> bool:
+        endpoint = str(EMBEDDER_ENDPOINT or "").strip().rstrip("/")
+        if not endpoint:
+            return False
+        timeout = httpx.Timeout(min(10.0, max(1.0, float(EMBEDDER_TIMEOUT_SEC))))
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                response = client.get(f"{endpoint}/health")
+            if response.status_code >= 400:
+                return False
+            payload = response.json()
+            return str(payload.get("status", "")).lower() == "ok"
+        except Exception:
+            return False
+
     model_health = model_gateway.health()
     if str(model_health.get("status", "")).lower() != "ok":
         mode = str(model_health.get("mode", "")).strip().lower()
@@ -580,12 +596,27 @@ def _search_dependencies_ready(
                 # Non-required queue is down; allow request/job that doesn't use it.
                 pass
             else:
-                if missing_required:
-                    model_health = {
-                        **model_health,
-                        "missing_required_consumers": missing_required,
-                    }
-                return False, f"model backend not ready: {model_health}"
+                if (
+                    allow_embedder_http_fallback
+                    and require_embedder
+                    and not require_vlm
+                    and _embedder_http_ready()
+                ):
+                    pass
+                else:
+                    if missing_required:
+                        model_health = {
+                            **model_health,
+                            "missing_required_consumers": missing_required,
+                        }
+                    return False, f"model backend not ready: {model_health}"
+        elif (
+            allow_embedder_http_fallback
+            and require_embedder
+            and not require_vlm
+            and _embedder_http_ready()
+        ):
+            pass
         else:
             return False, f"model backend not ready: {model_health}"
     try:
@@ -2547,7 +2578,11 @@ def backfill_embeddings(payload: BackfillRequest):
 
 @app.get("/embeddings/dimensions")
 def embeddings_dimensions():
-    ready, reason = _search_dependencies_ready(require_embedder=True, require_vlm=False)
+    ready, reason = _search_dependencies_ready(
+        require_embedder=True,
+        require_vlm=False,
+        allow_embedder_http_fallback=True,
+    )
     if not ready:
         return {
             "status": "unavailable",
@@ -2745,7 +2780,11 @@ def complete_waymo_auth(payload: WaymoAuthCompleteRequest):
 @app.post("/search/text")
 def search_text(payload: TextSearchRequest):
     try:
-        ready, reason = _search_dependencies_ready(require_embedder=True, require_vlm=False)
+        ready, reason = _search_dependencies_ready(
+            require_embedder=True,
+            require_vlm=False,
+            allow_embedder_http_fallback=True,
+        )
         if not ready:
             logger.warning("search_text dependencies unavailable; returning empty results: %s", reason)
             return {
@@ -2805,7 +2844,11 @@ async def search_image_bytes(
         raise HTTPException(status_code=400, detail="Image bytes are required")
 
     try:
-        ready, reason = _search_dependencies_ready(require_embedder=True, require_vlm=False)
+        ready, reason = _search_dependencies_ready(
+            require_embedder=True,
+            require_vlm=False,
+            allow_embedder_http_fallback=True,
+        )
         if not ready:
             logger.warning(
                 "search_image_bytes dependencies unavailable; returning empty results: %s",

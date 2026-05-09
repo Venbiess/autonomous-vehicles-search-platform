@@ -36,7 +36,11 @@ def test_search_dependencies_ready_prefers_embedder_http(monkeypatch) -> None:
     monkeypatch.setattr(master.storage_api, "health", lambda: {"status": "ok"})
     monkeypatch.setattr(master.model_gateway, "health", lambda: {"status": "error"})
 
-    ready, reason = master._search_dependencies_ready()
+    ready, reason = master._search_dependencies_ready(
+        require_embedder=True,
+        require_vlm=False,
+        allow_embedder_http_fallback=True,
+    )
 
     assert ready is True
     assert reason == ""
@@ -48,6 +52,7 @@ def test_search_dependencies_ready_fails_on_storage_health(monkeypatch) -> None:
 
     monkeypatch.setattr(master, "EMBEDDER_ENDPOINT", "http://embedder-worker:8000")
     monkeypatch.setattr(master.httpx, "Client", lambda timeout: fake_client)
+    monkeypatch.setattr(master.model_gateway, "health", lambda: {"status": "ok"})
     monkeypatch.setattr(master.storage_api, "health", lambda: {"status": "error", "detail": "db down"})
 
     ready, reason = master._search_dependencies_ready()

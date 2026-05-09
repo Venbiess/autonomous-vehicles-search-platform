@@ -62,8 +62,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (container_label_com_docker_compose_service) (rate(container_cpu_usage_seconds_total{image!=\"\",container_label_com_docker_compose_service!=\"\"}[5m]))",
-          "legendFormat": "{{container_label_com_docker_compose_service}}",
+          "expr": "sum by (service) (label_replace(rate(container_cpu_usage_seconds_total{cpu=\"total\",container_label_com_docker_compose_service!=\"\"}[5m]), \"service\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or sum by (service) (label_replace(rate(process_cpu_seconds_total{job=~\"embedder-worker-metrics|vlm-worker-metrics|storage-server\"}[5m]), \"service\", \"$1\", \"job\", \"(.+)\"))",
+          "legendFormat": "{{service}}",
           "range": true,
           "refId": "A"
         }
@@ -111,8 +111,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (container_label_com_docker_compose_service) (container_memory_working_set_bytes{image!=\"\",container_label_com_docker_compose_service!=\"\"})",
-          "legendFormat": "{{container_label_com_docker_compose_service}}",
+          "expr": "sum by (service) (label_replace(container_memory_working_set_bytes{container_label_com_docker_compose_service!=\"\"}, \"service\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or sum by (service) (label_replace(container_memory_working_set_bytes{id=\"/docker\"}, \"service\", \"docker_total\", \"id\", \".+\"))",
+          "legendFormat": "{{service}}",
           "range": true,
           "refId": "A"
         }
