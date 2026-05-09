@@ -9,7 +9,7 @@ from backend.models.vlm.base import BaseVLM
 
 
 class QwenVLMBackend(BaseVLM):
-    DEFAULT_MODEL_NAME = "Qwen/Qwen3-VL-8B-Thinking"
+    DEFAULT_MODEL_NAME = "Qwen/Qwen3-VL-2B-Thinking"
 
     def __init__(
         self,

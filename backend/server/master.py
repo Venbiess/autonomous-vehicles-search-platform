@@ -553,20 +553,40 @@ def _is_storage_query_unavailable_error(exc: Exception) -> bool:
     return False
 
 
-def _search_dependencies_ready() -> tuple[bool, str]:
-    normalized_embedder_endpoint = str(EMBEDDER_ENDPOINT or "").strip().rstrip("/")
-    if normalized_embedder_endpoint:
-        try:
-            timeout = httpx.Timeout(min(max(EMBEDDER_TIMEOUT_SEC, 1), 5))
-            with httpx.Client(timeout=timeout) as client:
-                response = client.get(f"{normalized_embedder_endpoint}/health")
-            if not response.is_success:
-                return False, f"embedder HTTP health failed: status={response.status_code}"
-        except Exception as exc:
-            return False, f"embedder HTTP health failed: {exc}"
-    else:
-        model_health = model_gateway.health()
-        if str(model_health.get("status", "")).lower() != "ok":
+def _search_dependencies_ready(
+    *,
+    require_embedder: bool = True,
+    require_vlm: bool = True,
+) -> tuple[bool, str]:
+    model_health = model_gateway.health()
+    if str(model_health.get("status", "")).lower() != "ok":
+        mode = str(model_health.get("mode", "")).strip().lower()
+        if mode == "rabbitmq":
+            rabbitmq = model_health.get("rabbitmq", {})
+            queues = rabbitmq.get("queues", {}) if isinstance(rabbitmq, dict) else {}
+            embedder_queue = os.getenv("RABBITMQ_EMBEDDER_QUEUE", "avsp.embedder.tasks")
+            vlm_queue = os.getenv("RABBITMQ_VLM_QUEUE", "avsp.vlm.tasks")
+            required_queues: List[str] = []
+            if require_embedder:
+                required_queues.append(embedder_queue)
+            if require_vlm:
+                required_queues.append(vlm_queue)
+            missing_required: List[str] = []
+            for queue_name in required_queues:
+                stats = queues.get(queue_name, {}) if isinstance(queues, dict) else {}
+                if int(stats.get("consumers", 0)) <= 0:
+                    missing_required.append(queue_name)
+            if not missing_required and required_queues:
+                # Non-required queue is down; allow request/job that doesn't use it.
+                pass
+            else:
+                if missing_required:
+                    model_health = {
+                        **model_health,
+                        "missing_required_consumers": missing_required,
+                    }
+                return False, f"model backend not ready: {model_health}"
+        else:
             return False, f"model backend not ready: {model_health}"
     try:
         storage_health = storage_api.health()
@@ -1040,7 +1060,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                 )
 
     try:
-        ready, reason = _search_dependencies_ready()
+        ready, reason = _search_dependencies_ready(require_embedder=True, require_vlm=False)
         if not ready:
             with jobs_lock:
                 if job_id in jobs_store:
@@ -1687,7 +1707,7 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
     embed_worker_stopped = False
 
     if embed_on_install:
-        ready, reason = _search_dependencies_ready()
+        ready, reason = _search_dependencies_ready(require_embedder=True, require_vlm=False)
         if not ready:
             errors.append({"error": f"auto-embedding preflight failed: {reason}"})
             embed_on_install = False
@@ -2527,7 +2547,7 @@ def backfill_embeddings(payload: BackfillRequest):
 
 @app.get("/embeddings/dimensions")
 def embeddings_dimensions():
-    ready, reason = _search_dependencies_ready()
+    ready, reason = _search_dependencies_ready(require_embedder=True, require_vlm=False)
     if not ready:
         return {
             "status": "unavailable",
@@ -2725,7 +2745,7 @@ def complete_waymo_auth(payload: WaymoAuthCompleteRequest):
 @app.post("/search/text")
 def search_text(payload: TextSearchRequest):
     try:
-        ready, reason = _search_dependencies_ready()
+        ready, reason = _search_dependencies_ready(require_embedder=True, require_vlm=False)
         if not ready:
             logger.warning("search_text dependencies unavailable; returning empty results: %s", reason)
             return {
@@ -2785,7 +2805,7 @@ async def search_image_bytes(
         raise HTTPException(status_code=400, detail="Image bytes are required")
 
     try:
-        ready, reason = _search_dependencies_ready()
+        ready, reason = _search_dependencies_ready(require_embedder=True, require_vlm=False)
         if not ready:
             logger.warning(
                 "search_image_bytes dependencies unavailable; returning empty results: %s",
