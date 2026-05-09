@@ -66,18 +66,17 @@ export default async function handler(req, res) {
     try {
       const vectorPayload = await readStorageJson("/vectors/count");
       const vectorCount = Math.max(0, Number(vectorPayload?.count || 0));
-      if (vectorCount <= totalObjects) {
-        const annotated = vectorCount;
-        const pending = Math.max(0, totalObjects - annotated);
-        stats.embeddings.annotated_rows = annotated;
-        stats.embeddings.pending_rows = pending;
-        stats.embeddings.annotated_percent =
-          totalObjects > 0 ? (annotated / totalObjects) * 100 : 0;
-        stats.embeddings.pending_percent =
-          totalObjects > 0 ? (pending / totalObjects) * 100 : 0;
-      } else {
+      const annotated = Math.max(0, Math.min(vectorCount, totalObjects));
+      const pending = Math.max(0, totalObjects - annotated);
+      stats.embeddings.annotated_rows = annotated;
+      stats.embeddings.pending_rows = pending;
+      stats.embeddings.annotated_percent =
+        totalObjects > 0 ? (annotated / totalObjects) * 100 : 0;
+      stats.embeddings.pending_percent =
+        totalObjects > 0 ? (pending / totalObjects) * 100 : 0;
+      if (vectorCount > totalObjects) {
         warnings.push(
-          `vector stats are global (count=${vectorCount}) and exceed current objects (${totalObjects}); showing pending as not annotated`
+          `vector stats are global (count=${vectorCount}) and exceed current objects (${totalObjects}); clamped to visible objects`
         );
       }
     } catch (error) {

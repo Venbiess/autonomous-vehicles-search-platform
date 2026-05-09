@@ -3,6 +3,37 @@
 import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 
+interface RuntimeServiceData {
+  name?: string;
+  endpoint?: string;
+  reachable?: boolean;
+  status?: string;
+  model?: string;
+  device?: string;
+  runtime?: {
+    configured_device?: string;
+    selected_device?: string;
+    torch_cuda_available?: boolean;
+    torch_mps_available?: boolean;
+    cuda_device_count?: number;
+    cuda_device_name?: string | null;
+    dtype?: string;
+  };
+  memory?: {
+    process_rss_mb?: number;
+    gpu_allocated_mb?: number;
+    gpu_reserved_mb?: number;
+    gpu_total_mb?: number;
+    gpu_free_mb?: number;
+  };
+  counters?: {
+    received?: number;
+    completed?: number;
+    in_progress?: number;
+  };
+  error?: string;
+}
+
 interface SystemInfo {
   cpu: {
     usage_percent: number;
@@ -38,66 +69,8 @@ interface SystemInfo {
     error?: string;
   };
   services?: {
-    embedder?: {
-      name?: string;
-      endpoint?: string;
-      reachable?: boolean;
-      status?: string;
-      model?: string;
-      device?: string;
-      runtime?: {
-        configured_device?: string;
-        selected_device?: string;
-        torch_cuda_available?: boolean;
-        torch_mps_available?: boolean;
-        cuda_device_count?: number;
-        cuda_device_name?: string | null;
-        dtype?: string;
-      };
-      memory?: {
-        process_rss_mb?: number;
-        gpu_allocated_mb?: number;
-        gpu_reserved_mb?: number;
-        gpu_total_mb?: number;
-        gpu_free_mb?: number;
-      };
-      counters?: {
-        received?: number;
-        completed?: number;
-        in_progress?: number;
-      };
-      error?: string;
-    };
-    vlm?: {
-      name?: string;
-      endpoint?: string;
-      reachable?: boolean;
-      status?: string;
-      model?: string;
-      device?: string;
-      runtime?: {
-        configured_device?: string;
-        selected_device?: string;
-        torch_cuda_available?: boolean;
-        torch_mps_available?: boolean;
-        cuda_device_count?: number;
-        cuda_device_name?: string | null;
-        dtype?: string;
-      };
-      memory?: {
-        process_rss_mb?: number;
-        gpu_allocated_mb?: number;
-        gpu_reserved_mb?: number;
-        gpu_total_mb?: number;
-        gpu_free_mb?: number;
-      };
-      counters?: {
-        received?: number;
-        completed?: number;
-        in_progress?: number;
-      };
-      error?: string;
-    };
+    embedder?: RuntimeServiceData;
+    vlm?: RuntimeServiceData;
   };
   uptime_seconds: number;
   timestamp: string;
@@ -150,7 +123,8 @@ interface LogViewerState {
   title: string;
   content: string;
   jobId?: string;
-  source?: "job" | "error";
+  source?: "job" | "error" | "model";
+  modelService?: "embedder" | "vlm";
 }
 
 interface ConfigViewerState {
@@ -165,6 +139,9 @@ interface WaymoAuthStartResponse {
   status?: string;
   error?: string;
 }
+
+type ModelServiceKey = "embedder" | "vlm";
+type RuntimeServiceStatus = "online" | "starting" | "offline";
 
 export default function SystemMonitor({
   showRuntimePanels = false,
@@ -189,6 +166,12 @@ export default function SystemMonitor({
   const [waymoAuthError, setWaymoAuthError] = useState<string | null>(null);
   const [waymoAuthSuccess, setWaymoAuthSuccess] = useState<string | null>(null);
   const [waymoAuthPromptedJobIds, setWaymoAuthPromptedJobIds] = useState<string[]>([]);
+  const [modelLogMeta, setModelLogMeta] = useState<
+    Record<ModelServiceKey, { exists: boolean; updated_at?: string | null }>
+  >({
+    embedder: { exists: false, updated_at: null },
+    vlm: { exists: false, updated_at: null },
+  });
 
   const fetchSystemInfo = async () => {
     try {
@@ -210,19 +193,58 @@ export default function SystemMonitor({
     }
   };
 
+  const fetchModelLogMeta = async () => {
+    try {
+      const [embedderResponse, vlmResponse] = await Promise.all([
+        axios.get("/api/model-logs", {
+          params: { service: "embedder", meta_only: "1" },
+        }),
+        axios.get("/api/model-logs", {
+          params: { service: "vlm", meta_only: "1" },
+        }),
+      ]);
+      setModelLogMeta({
+        embedder: {
+          exists: Boolean(embedderResponse.data?.exists),
+          updated_at:
+            typeof embedderResponse.data?.updated_at === "string"
+              ? embedderResponse.data.updated_at
+              : null,
+        },
+        vlm: {
+          exists: Boolean(vlmResponse.data?.exists),
+          updated_at:
+            typeof vlmResponse.data?.updated_at === "string"
+              ? vlmResponse.data.updated_at
+              : null,
+        },
+      });
+    } catch (err) {
+      console.error("Failed to fetch model log metadata:", err);
+    }
+  };
+
   useEffect(() => {
     const loadData = async () => {
       setIsLoading(true);
-      await Promise.all([fetchSystemInfo(), fetchJobs()]);
+      await Promise.all([fetchSystemInfo(), fetchJobs(), fetchModelLogMeta()]);
       setIsLoading(false);
     };
     
     loadData();
-    const interval = setInterval(() => {
+    const coreInterval = setInterval(() => {
       fetchSystemInfo();
       fetchJobs();
     }, 5000);
-    return () => clearInterval(interval);
+
+    const modelLogInterval = setInterval(() => {
+      fetchModelLogMeta();
+    }, 10000);
+
+    return () => {
+      clearInterval(coreInterval);
+      clearInterval(modelLogInterval);
+    };
   }, []);
 
   useEffect(() => {
@@ -256,8 +278,38 @@ export default function SystemMonitor({
     return `${safe.toFixed(2)} MB`;
   };
 
-  const serviceStatusBadge = (reachable?: boolean): string => {
-    return reachable ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700";
+  const serviceStatusBadge = (status: RuntimeServiceStatus): string => {
+    if (status === "online") return "bg-emerald-100 text-emerald-700";
+    if (status === "starting") return "bg-blue-100 text-blue-700";
+    return "bg-rose-100 text-rose-700";
+  };
+
+  const getServiceStatusLabel = (status: RuntimeServiceStatus): string => {
+    if (status === "online") return "online";
+    if (status === "starting") return "starting";
+    return "offline";
+  };
+
+  const getServiceUiStatus = (
+    serviceKey: ModelServiceKey,
+    serviceData: RuntimeServiceData | undefined
+  ): RuntimeServiceStatus => {
+    if (serviceData?.reachable) {
+      return "online";
+    }
+    const statusRaw = String(serviceData?.status || "").toLowerCase();
+    if (statusRaw === "starting" || statusRaw === "initializing" || statusRaw === "loading") {
+      return "starting";
+    }
+    const meta = modelLogMeta[serviceKey];
+    if (meta?.exists) {
+      const updatedAtMs = meta.updated_at ? Date.parse(meta.updated_at) : NaN;
+      const ageMs = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Number.POSITIVE_INFINITY;
+      if (ageMs <= 20 * 60 * 1000) {
+        return "starting";
+      }
+    }
+    return "offline";
   };
 
   const getJobStatusColor = (status: string): { bg: string; text: string } => {
@@ -623,7 +675,7 @@ export default function SystemMonitor({
   }, [waymoAuthModalOpen, waymoAuthSessionId, waymoAuthBusy]);
 
   useEffect(() => {
-    if (!logViewer?.jobId || !logViewer.source) {
+    if (!logViewer?.jobId || !logViewer.source || logViewer.source === "model") {
       return;
     }
     const job = jobs.find((item) => item.job_id === logViewer.jobId);
@@ -657,6 +709,64 @@ export default function SystemMonitor({
     getJobMainLog,
     getJobErrorLog,
   ]);
+
+  useEffect(() => {
+    if (logViewer?.source !== "model" || !logViewer.modelService) {
+      return;
+    }
+
+    let active = true;
+    const service = logViewer.modelService;
+    const loadLogs = async () => {
+      try {
+        const response = await axios.get("/api/model-logs", {
+          params: { service, tail: 1200 },
+        });
+        const updatedAtRaw = String(response.data?.updated_at || "").trim();
+        const updatedAtLabel = updatedAtRaw
+          ? new Date(updatedAtRaw).toLocaleTimeString("ru-RU")
+          : "—";
+        const content =
+          typeof response.data?.content === "string" && response.data.content.trim()
+            ? response.data.content
+            : "No startup logs yet.";
+        if (!active) {
+          return;
+        }
+        setLogViewer((current) => {
+          if (!current || current.source !== "model" || current.modelService !== service) {
+            return current;
+          }
+          return {
+            ...current,
+            title: `${service.toUpperCase()} startup logs (updated ${updatedAtLabel})`,
+            content,
+          };
+        });
+      } catch (err) {
+        if (!active) {
+          return;
+        }
+        const message = err instanceof Error ? err.message : "Failed to load model logs";
+        setLogViewer((current) => {
+          if (!current || current.source !== "model" || current.modelService !== service) {
+            return current;
+          }
+          return {
+            ...current,
+            content: `Failed to load logs: ${message}`,
+          };
+        });
+      }
+    };
+
+    loadLogs();
+    const interval = setInterval(loadLogs, 2500);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [logViewer?.source, logViewer?.modelService]);
 
   useEffect(() => {
     if (!logViewer && !configViewer && !cancelDialogJob && !waymoAuthModalOpen) {
@@ -709,7 +819,7 @@ export default function SystemMonitor({
     return null;
   }
 
-  const serviceEntries = [
+  const serviceEntries: Array<{ key: ModelServiceKey; label: string; data: RuntimeServiceData | undefined }> = [
     { key: "embedder", label: "Embedder", data: systemInfo.services?.embedder },
     { key: "vlm", label: "VLM", data: systemInfo.services?.vlm },
   ];
@@ -836,19 +946,37 @@ export default function SystemMonitor({
                   const runtime = service.data?.runtime ?? {};
                   const memory = service.data?.memory ?? {};
                   const counters = service.data?.counters ?? {};
+                  const uiStatus = getServiceUiStatus(service.key, service.data);
+                  const canOpenStartupLogs =
+                    uiStatus === "starting" || Boolean(modelLogMeta[service.key]?.exists);
                   const selectedDevice =
                     String(runtime.selected_device || service.data?.device || "unknown");
                   return (
                     <div key={service.key} className="bg-slate-50 rounded-lg border border-slate-200 p-4">
                       <div className="flex items-center justify-between">
                         <h4 className="text-base font-semibold text-slate-800">{service.label}</h4>
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-xs font-semibold ${serviceStatusBadge(
-                            service.data?.reachable
-                          )}`}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setLogViewer({
+                              title: `${service.label} startup logs`,
+                              content: "Loading startup logs...",
+                              source: "model",
+                              modelService: service.key,
+                            })
+                          }
+                          className={`rounded-full px-2 py-0.5 text-xs font-semibold transition hover:opacity-90 ${
+                            serviceStatusBadge(uiStatus)
+                          } ${canOpenStartupLogs ? "underline decoration-current underline-offset-2" : "cursor-default"}`}
+                          disabled={!canOpenStartupLogs}
+                          title={
+                            canOpenStartupLogs
+                              ? "Open startup logs"
+                              : "No startup logs available yet"
+                          }
                         >
-                          {service.data?.reachable ? "online" : "offline"}
-                        </span>
+                          {getServiceStatusLabel(uiStatus)}
+                        </button>
                       </div>
                       <div className="mt-2 space-y-1 text-sm text-slate-700">
                         <div>
@@ -1552,6 +1680,9 @@ export default function SystemMonitor({
                 <div className="text-sm font-semibold text-slate-900">
                   {logViewer.title}
                 </div>
+                {logViewer.source === "model" ? (
+                  <div className="text-xs text-slate-500">Live refresh: every 2.5s</div>
+                ) : null}
               </div>
               <button
                 type="button"

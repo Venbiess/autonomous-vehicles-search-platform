@@ -51,7 +51,19 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management
-    container_name: "rabbitmq-${USER}"
+    container_name: "avsp-rabbitmq-${USER}"
+    user: "0:0"
+    environment:
+      RABBITMQ_NODENAME: rabbit@localhost
+    tmpfs:
+      - /var/lib/rabbitmq
+    volumes:
+      - ./rabbitmq/conf.d/20-logging.conf:/etc/rabbitmq/conf.d/20-logging.conf:ro
+    entrypoint: >
+      /bin/sh -c "
+      chown -R rabbitmq:rabbitmq /var/lib/rabbitmq &&
+      exec docker-entrypoint.sh rabbitmq-server
+      "
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -133,8 +145,46 @@ services:
     networks:
       - avsp-net
 
+  embedder:
+    build:
+      context: ..
+      dockerfile: docker/models/models.Dockerfile
+    container_name: "embedder-${USER}"
+    profiles: ["model-http"]
+    volumes:
+      - ../:/app
+    environment:
+      HF_HOME: /app/.cache/huggingface
+    ports:
+      - "8000:8000"
+    networks:
+      - avsp-net
+
+  vlm:
+    build:
+      context: ..
+      dockerfile: docker/models/models.Dockerfile
+    container_name: "vlm-${USER}"
+    profiles: ["model-http"]
+    volumes:
+      - ../:/app
+    environment:
+      HF_HOME: /app/.cache/huggingface
+    command: >
+      /bin/sh -c "
+      uvicorn backend.models.vlm.vlm:app
+      --host 0.0.0.0
+      --port 8001
+      --log-level debug
+      "
+    ports:
+      - "8001:8001"
+    networks:
+      - avsp-net
+
   embedder-worker:
-    image: avsp-models-cpu
+    image: avsp-embedder-worker
+    container_name: "avsp-embedder-worker-${USER}"
     build:
       context: ..
       dockerfile: docker/models/models.Dockerfile
@@ -146,7 +196,7 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-    restart: unless-stopped
+    restart: ${EMBEDDER_WORKER_RESTART_POLICY:-no}
     command: >
       /bin/sh -c "
       python -m backend.models.queue_worker --worker embedder
@@ -159,6 +209,10 @@ services:
     environment:
       EMBEDDER_PORT: 8000
       WORKER_METRICS_PORT: 9108
+      WORKER_HTTP_ENABLED: 1
+      HF_HOME: /app/.cache/huggingface
+      HF_HUB_DISABLE_PROGRESS_BARS: "0"
+      TQDM_POSITION: "-1"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
@@ -167,7 +221,8 @@ services:
       - avsp-net
 
   vlm-worker:
-    image: avsp-models-cpu
+    image: avsp-vlm-worker
+    container_name: "avsp-vlm-worker-${USER}"
     build:
       context: ..
       dockerfile: docker/models/models.Dockerfile
@@ -179,7 +234,7 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-    restart: unless-stopped
+    restart: ${VLM_WORKER_RESTART_POLICY:-no}
     command: >
       /bin/sh -c "
       python -m backend.models.queue_worker --worker vlm
@@ -192,6 +247,10 @@ services:
     environment:
       VLM_PORT: 8001
       WORKER_METRICS_PORT: 9109
+      WORKER_HTTP_ENABLED: 1
+      HF_HOME: /app/.cache/huggingface
+      HF_HUB_DISABLE_PROGRESS_BARS: "0"
+      TQDM_POSITION: "-1"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
@@ -251,6 +310,7 @@ services:
       --reload
       "
     environment:
+      PYTHONWARNINGS: "ignore::FutureWarning:google.api_core._python_version_support"
       S3_ENDPOINT_URL: http://minio:9000
       S3_ACCESS_KEY_ID: minioadmin
       S3_SECRET_ACCESS_KEY: minioadmin

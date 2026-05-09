@@ -1,8 +1,11 @@
-transformers>=4.51.0,<4.58.0
+transformers>=4.57.0,<4.58.0
+sentence-transformers[image]>=5.4.0
 huggingface_hub
 safetensors
 accelerate
 sentencepiece
+torchvision
+qwen-vl-utils
 
 pillow
 numpy

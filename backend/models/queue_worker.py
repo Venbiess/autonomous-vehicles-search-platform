@@ -8,16 +8,32 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict
+import traceback
+from typing import Any
+from typing import Dict
 
 import pika
 import uvicorn
 from PIL import Image
 
-from backend.observability.worker_metrics import observe_job, start_metrics_server
+from backend.models.common.startup_logs import setup_worker_startup_logging
+from backend.observability.worker_metrics import observe_job
+from backend.observability.worker_metrics import start_metrics_server
 
 logger = logging.getLogger("avsp.model-worker")
 logging.basicConfig(level=logging.INFO)
+
+
+class _HealthcheckAccessFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return "/health" not in message
+
+
+def _suppress_healthcheck_access_logs() -> None:
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, _HealthcheckAccessFilter) for item in access_logger.filters):
+        access_logger.addFilter(_HealthcheckAccessFilter())
 
 
 def _connect_with_retry(params: pika.URLParameters) -> pika.BlockingConnection:
@@ -43,14 +59,25 @@ def _connect_with_retry(params: pika.URLParameters) -> pika.BlockingConnection:
 
 
 def _start_http_server(worker_type: str) -> threading.Thread | None:
-    if worker_type != "embedder":
+    if str(os.getenv("WORKER_HTTP_ENABLED", "1")).strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
         return None
 
-    from backend.models.embedder.embedder import app as model_app
+    if worker_type == "embedder":
+        from backend.models.embedder.embedder import app as model_app
 
-    port = int(os.getenv("EMBEDDER_PORT", "8000"))
+        port = int(os.getenv("EMBEDDER_PORT", "8000"))
+    else:
+        from backend.models.vlm.vlm import app as model_app
+
+        port = int(os.getenv("VLM_PORT", "8001"))
 
     log_level = str(os.getenv("WORKER_HTTP_LOG_LEVEL", "info")).strip().lower() or "info"
+    _suppress_healthcheck_access_logs()
 
     def _run() -> None:
         logger.info(
@@ -117,7 +144,8 @@ def _consume_with_http_priority(
 
 
 def run_embedder_worker(ch, queue_name: str) -> None:
-    from backend.models.embedder.embedder import get_embedding, has_active_http_requests
+    from backend.models.embedder.embedder import get_embedding
+    from backend.models.embedder.embedder import has_active_http_requests
 
     def _handle_message(channel, method, props, body):
         started_at = time.monotonic()
@@ -141,8 +169,12 @@ def run_embedder_worker(ch, queue_name: str) -> None:
                 status = "ok"
             else:
                 response = {"ok": False, "error": f"unknown embedder task: {task}"}
-        except Exception as exc:
-            response = {"ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            response = {
+                "ok": False,
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+            }
         _reply(channel, props, response)
         channel.basic_ack(delivery_tag=method.delivery_tag)
         observe_job("embedder", task_name, status, time.monotonic() - started_at)
@@ -154,10 +186,11 @@ def run_embedder_worker(ch, queue_name: str) -> None:
         has_active_http_requests,
         "embedder",
     )
-    return
+
 
 def run_vlm_worker(ch, queue_name: str) -> None:
     from backend.models.vlm.vlm import _generate_text
+    from backend.models.vlm.vlm import has_active_http_requests
 
     def _handle_message(channel, method, props, body):
         started_at = time.monotonic()
@@ -177,22 +210,42 @@ def run_vlm_worker(ch, queue_name: str) -> None:
             generated = _generate_text(image, prompt, max_new_tokens)
             response = {"ok": True, "response": generated}
             status = "ok"
-        except Exception as exc:
-            response = {"ok": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            response = {
+                "ok": False,
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+            }
         _reply(channel, props, response)
         channel.basic_ack(delivery_tag=method.delivery_tag)
         observe_job("vlm", task_name, status, time.monotonic() - started_at)
 
-    ch.basic_qos(prefetch_count=int(os.getenv("RABBITMQ_PREFETCH", "1")))
-    ch.basic_consume(queue=queue_name, on_message_callback=_handle_message)
-    logger.info("vlm worker consuming queue=%s", queue_name)
-    ch.start_consuming()
+    _consume_with_http_priority(
+        ch,
+        queue_name,
+        _handle_message,
+        has_active_http_requests,
+        "vlm",
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run RabbitMQ model worker")
     parser.add_argument("--worker", choices=["embedder", "vlm"], required=True)
     args = parser.parse_args()
+    startup_log = setup_worker_startup_logging(args.worker)
+    root_logger = logging.getLogger()
+    if not any(
+        isinstance(handler, logging.FileHandler)
+        and getattr(handler, "baseFilename", "").endswith(f"{startup_log.worker}.log")
+        for handler in root_logger.handlers
+    ):
+        file_handler = logging.FileHandler(startup_log.path, encoding="utf-8")
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s:%(name)s:%(message)s")
+        )
+        root_logger.addHandler(file_handler)
+    logger.info("startup logs enabled: worker=%s path=%s", startup_log.worker, startup_log.path)
 
     rabbit_url = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/%2f")
     embedder_queue = os.getenv("RABBITMQ_EMBEDDER_QUEUE", "avsp.embedder.tasks")
