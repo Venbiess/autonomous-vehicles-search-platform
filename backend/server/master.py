@@ -26,8 +26,10 @@ from configs.common import (
     STORAGE_SERVER_ENDPOINT,
     STORAGE_SERVER_TIMEOUT_SEC,
     STORAGE_WRITE_TOKEN,
+    VLM_ENDPOINT,
     VLM_TIMEOUT_SEC,
 )
+from configs.hw_settings import EMBEDDER_CONFIG, VLM_CONFIG
 from backend.server.analytics_api import AnalyticsAPI
 from backend.server.dataset_visibility import load_hidden_datasets
 from backend.server.model_bus import ModelGateway
@@ -551,20 +553,71 @@ def _is_storage_query_unavailable_error(exc: Exception) -> bool:
     return False
 
 
-def _search_dependencies_ready() -> tuple[bool, str]:
-    normalized_embedder_endpoint = str(EMBEDDER_ENDPOINT or "").strip().rstrip("/")
-    if normalized_embedder_endpoint:
+def _search_dependencies_ready(
+    *,
+    require_embedder: bool = True,
+    require_vlm: bool = True,
+    allow_embedder_http_fallback: bool = False,
+) -> tuple[bool, str]:
+    def _embedder_http_ready() -> bool:
+        endpoint = str(EMBEDDER_ENDPOINT or "").strip().rstrip("/")
+        if not endpoint:
+            return False
+        timeout = httpx.Timeout(min(10.0, max(1.0, float(EMBEDDER_TIMEOUT_SEC))))
         try:
-            timeout = httpx.Timeout(min(max(EMBEDDER_TIMEOUT_SEC, 1), 5))
             with httpx.Client(timeout=timeout) as client:
-                response = client.get(f"{normalized_embedder_endpoint}/health")
-            if not response.is_success:
-                return False, f"embedder HTTP health failed: status={response.status_code}"
-        except Exception as exc:
-            return False, f"embedder HTTP health failed: {exc}"
-    else:
-        model_health = model_gateway.health()
-        if str(model_health.get("status", "")).lower() != "ok":
+                response = client.get(f"{endpoint}/health")
+            if response.status_code >= 400:
+                return False
+            payload = response.json()
+            return str(payload.get("status", "")).lower() == "ok"
+        except Exception:
+            return False
+
+    model_health = model_gateway.health()
+    if str(model_health.get("status", "")).lower() != "ok":
+        mode = str(model_health.get("mode", "")).strip().lower()
+        if mode == "rabbitmq":
+            rabbitmq = model_health.get("rabbitmq", {})
+            queues = rabbitmq.get("queues", {}) if isinstance(rabbitmq, dict) else {}
+            embedder_queue = os.getenv("RABBITMQ_EMBEDDER_QUEUE", "avsp.embedder.tasks")
+            vlm_queue = os.getenv("RABBITMQ_VLM_QUEUE", "avsp.vlm.tasks")
+            required_queues: List[str] = []
+            if require_embedder:
+                required_queues.append(embedder_queue)
+            if require_vlm:
+                required_queues.append(vlm_queue)
+            missing_required: List[str] = []
+            for queue_name in required_queues:
+                stats = queues.get(queue_name, {}) if isinstance(queues, dict) else {}
+                if int(stats.get("consumers", 0)) <= 0:
+                    missing_required.append(queue_name)
+            if not missing_required and required_queues:
+                # Non-required queue is down; allow request/job that doesn't use it.
+                pass
+            else:
+                if (
+                    allow_embedder_http_fallback
+                    and require_embedder
+                    and not require_vlm
+                    and _embedder_http_ready()
+                ):
+                    pass
+                else:
+                    if missing_required:
+                        model_health = {
+                            **model_health,
+                            "missing_required_consumers": missing_required,
+                        }
+                    return False, f"model backend not ready: {model_health}"
+        elif (
+            allow_embedder_http_fallback
+            and require_embedder
+            and not require_vlm
+            and _embedder_http_ready()
+        ):
+            pass
+        else:
             return False, f"model backend not ready: {model_health}"
     try:
         storage_health = storage_api.health()
@@ -581,6 +634,10 @@ def _embed_image(client: httpx.Client, image_bytes: bytes) -> Tuple[List[float],
 
 def _embed_text(client: httpx.Client, text: str) -> Tuple[List[float], int]:
     return model_gateway.embed_text(client, EMBEDDER_ENDPOINT, text)
+
+
+def _embed_images(client: httpx.Client, images_bytes: List[bytes]) -> Tuple[List[List[float]], int]:
+    return model_gateway.embed_images(client, EMBEDDER_ENDPOINT, images_bytes)
 
 
 def _embed_image_direct(client: httpx.Client, image_bytes: bytes) -> Tuple[List[float], int]:
@@ -686,6 +743,43 @@ def _append_job_log(job: Dict[str, Any], message: str) -> None:
             logger.exception("Failed to write job log file for job_id=%s", job_id)
 
 
+def _record_job_error(
+    job_id: str,
+    errors: List[Dict[str, str]],
+    error_item: Dict[str, str],
+    *,
+    log_message: Optional[str] = None,
+) -> None:
+    errors.append(error_item)
+    with jobs_lock:
+        job = jobs_store.get(job_id)
+        if not job:
+            return
+        job["errors"] = list(errors)
+        job["updated_at"] = time.time()
+        if log_message:
+            _append_job_log(job, log_message)
+        detail_log = str(error_item.get("log", "")).strip()
+        if detail_log:
+            _append_job_log(job, detail_log)
+
+
+def _current_model_health_text() -> str:
+    try:
+        return str(model_gateway.health())
+    except Exception as exc:  # noqa: BLE001
+        return f"health check failed: {exc}"
+
+
+def _build_error_item(exc: Exception, object_id: Optional[str] = None) -> Dict[str, str]:
+    item: Dict[str, str] = {"error": str(exc), "log": traceback.format_exc().strip()}
+    if object_id:
+        item["object_id"] = object_id
+    if "rpc timeout waiting for queue=" in str(exc).lower():
+        item["model_health"] = _current_model_health_text()
+    return item
+
+
 def _embed_install_queue_worker(
     job_id: str,
     object_queue: "queue.Queue[Optional[str]]",
@@ -729,6 +823,8 @@ def _embed_install_queue_worker(
                 item.get("object_id"): item for item in batch_payload if item.get("object_id")
             }
             rows: List[EmbedResult] = []
+            valid_ids: List[str] = []
+            valid_images: List[bytes] = []
 
             for object_id in batch_ids:
                 if _job_cancel_requested(job_id):
@@ -742,36 +838,113 @@ def _embed_install_queue_worker(
                     image_bytes = batch_item.get("content", b"")
                     if not image_bytes:
                         raise ValueError("empty content")
-                    embedding, dim = _embed_image(client, image_bytes)
-                    rows.append(
-                        EmbedResult(
-                            object_id=object_id,
-                            embedding=embedding,
-                            dim=dim,
-                        )
-                    )
-                except Exception as exc:
+                    valid_ids.append(object_id)
+                    valid_images.append(image_bytes)
+                except Exception as exc:  # noqa: BLE001
                     logger.exception("Auto-embedding failed for object_id=%s", object_id)
-                    errors.append({"object_id": object_id, "error": str(exc)})
+                    error_item = _build_error_item(exc, object_id)
+                    timeout_note = ""
+                    if error_item.get("model_health"):
+                        timeout_note = f" | model_health={error_item['model_health']}"
+                    _record_job_error(
+                        job_id,
+                        errors,
+                        error_item,
+                        log_message=f"Embedding error: object_id={object_id} | {exc}{timeout_note}",
+                    )
+
+            if valid_images:
+                if len(valid_images) == 1:
+                    object_id = valid_ids[0]
+                    image_bytes = valid_images[0]
+                    try:
+                        embedding, dim = _embed_image(client, image_bytes)
+                        rows.append(
+                            EmbedResult(
+                                object_id=object_id,
+                                embedding=embedding,
+                                dim=dim,
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception("Auto-embedding failed for single object_id=%s", object_id)
+                        error_item = _build_error_item(exc, object_id)
+                        timeout_note = ""
+                        if error_item.get("model_health"):
+                            timeout_note = f" | model_health={error_item['model_health']}"
+                        _record_job_error(
+                            job_id,
+                            errors,
+                            error_item,
+                            log_message=f"Embedding error: object_id={object_id} | {exc}{timeout_note}",
+                        )
+                else:
+                    try:
+                        embeddings, dim = _embed_images(client, valid_images)
+                        if len(embeddings) != len(valid_ids):
+                            raise ValueError(
+                                f"batch embedding size mismatch: expected={len(valid_ids)} actual={len(embeddings)}"
+                            )
+                        rows.extend(
+                            EmbedResult(
+                                object_id=object_id,
+                                embedding=embedding,
+                                dim=dim,
+                            )
+                            for object_id, embedding in zip(valid_ids, embeddings)
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Auto-embedding batch failed (size=%s), falling back to per-item",
+                            len(valid_ids),
+                        )
+                        for object_id, image_bytes in zip(valid_ids, valid_images):
+                            try:
+                                embedding, dim = _embed_image(client, image_bytes)
+                                rows.append(
+                                    EmbedResult(
+                                        object_id=object_id,
+                                        embedding=embedding,
+                                        dim=dim,
+                                    )
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.exception("Auto-embedding fallback failed for object_id=%s", object_id)
+                                error_item = _build_error_item(exc, object_id)
+                                timeout_note = ""
+                                if error_item.get("model_health"):
+                                    timeout_note = f" | model_health={error_item['model_health']}"
+                                _record_job_error(
+                                    job_id,
+                                    errors,
+                                    error_item,
+                                    log_message=f"Embedding fallback error: object_id={object_id} | {exc}{timeout_note}",
+                                )
 
             upserted = 0
             if rows:
                 try:
                     upserted = _storage_vector_upsert_batch(rows)
                     if upserted != len(rows):
-                        errors.append(
-                            {
-                                "error": (
-                                    f"auto-embedding upsert mismatch: expected={len(rows)} "
-                                    f"actual={upserted}"
-                                )
-                            }
+                        mismatch_error = (
+                            f"auto-embedding upsert mismatch: expected={len(rows)} actual={upserted}"
+                        )
+                        _record_job_error(
+                            job_id,
+                            errors,
+                            {"error": mismatch_error},
+                            log_message=f"Embedding upsert mismatch: {mismatch_error}",
                         )
                 except Exception as exc:
                     logger.exception(
                         "Auto-embedding vector upsert failed for rows=%s", len(rows)
                     )
-                    errors.append({"error": str(exc)})
+                    _record_job_error(
+                        job_id,
+                        errors,
+                        {"error": str(exc)},
+                        log_message=f"Embedding upsert error: {exc}",
+                    )
 
             with jobs_lock:
                 job = jobs_store.get(job_id)
@@ -813,6 +986,74 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
     inserted_object_ids_seen: set[str] = set()
     last_progress_log_bucket = -1
     last_progress_log_at = time.monotonic()
+    upsert_flush_size = max(
+        1,
+        int(
+            os.getenv(
+                "EMBEDDINGS_BACKFILL_UPSERT_FLUSH_SIZE",
+                str(min(max(payload.batch_size, 1), 4)),
+            )
+        ),
+    )
+
+    def _update_backfill_progress(
+        seen_count: int,
+        inserted_count: int,
+        current_object_id: Optional[str] = None,
+    ) -> int:
+        progress_value = min(int((seen_count / max(planned_total, 1)) * 100), 100)
+        with jobs_lock:
+            if job_id in jobs_store:
+                payload_update: Dict[str, Any] = {
+                    "progress": progress_value,
+                    "total_seen": seen_count,
+                    "total_inserted": inserted_count,
+                    "errors": errors,
+                    "updated_at": time.time(),
+                }
+                if current_object_id:
+                    payload_update["current_object_id"] = current_object_id
+                jobs_store[job_id].update(payload_update)
+        return progress_value
+
+    def _flush_rows(rows_buffer: List[EmbedResult]) -> bool:
+        nonlocal total_inserted
+        if not rows_buffer or payload.dry_run:
+            rows_buffer.clear()
+            return True
+        try:
+            upserted = _storage_vector_upsert_batch(rows_buffer)
+            total_inserted += upserted
+            for row in rows_buffer[: max(0, upserted)]:
+                if row.object_id not in inserted_object_ids_seen:
+                    inserted_object_ids_seen.add(row.object_id)
+                    inserted_object_ids.append(row.object_id)
+            if upserted != len(rows_buffer):
+                mismatch_error = (
+                    f"vector upsert mismatch: expected={len(rows_buffer)} actual={upserted}"
+                )
+                _record_job_error(
+                    job_id,
+                    errors,
+                    {"error": mismatch_error},
+                    log_message=f"Backfill upsert mismatch: {mismatch_error}",
+                )
+                rows_buffer.clear()
+                return False
+            rows_buffer.clear()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Batch vector upsert failed for rows=%s", len(rows_buffer)
+            )
+            _record_job_error(
+                job_id,
+                errors,
+                {"error": str(exc)},
+                log_message=f"Backfill upsert error: {exc}",
+            )
+            rows_buffer.clear()
+            return False
 
     def _cancel_backfill_job() -> None:
         cleanup_mode = _job_install_cleanup_mode(job_id)
@@ -850,6 +1091,20 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                 )
 
     try:
+        ready, reason = _search_dependencies_ready(require_embedder=True, require_vlm=False)
+        if not ready:
+            with jobs_lock:
+                if job_id in jobs_store:
+                    jobs_store[job_id].update(
+                        {
+                            "status": JobStatus.ERROR.value,
+                            "errors": [{"error": reason}],
+                            "updated_at": time.time(),
+                        }
+                    )
+                    _append_job_log(jobs_store[job_id], f"Failed preflight: {reason}")
+            return
+
         logger.info(
             "Backfill embeddings job %s started: limit=%s batch_size=%s dry_run=%s dataset=%s",
             job_id,
@@ -903,6 +1158,8 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                 by_object_id = {
                     item.get("object_id"): item for item in batch_payload if item.get("object_id")
                 }
+                valid_ids: List[str] = []
+                valid_images: List[bytes] = []
 
                 for object_id in batch_ids:
                     if _job_cancel_requested(job_id):
@@ -917,65 +1174,152 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                         image_bytes = batch_item.get("content", b"")
                         if not image_bytes:
                             raise ValueError("empty content")
-                        embedding, dim = _embed_image(client, image_bytes)
-                        rows.append(
-                            EmbedResult(
-                                object_id=object_id,
-                                embedding=embedding,
-                                dim=dim,
-                            )
-                        )
-                    except Exception as exc:
+                        valid_ids.append(object_id)
+                        valid_images.append(image_bytes)
+                    except Exception as exc:  # noqa: BLE001
                         logger.exception("Embedding failed for object_id=%s", object_id)
-                        errors.append(
-                            {"object_id": object_id, "error": str(exc)}
+                        error_item = _build_error_item(exc, object_id)
+                        timeout_note = ""
+                        if error_item.get("model_health"):
+                            timeout_note = f" | model_health={error_item['model_health']}"
+                        _record_job_error(
+                            job_id,
+                            errors,
+                            error_item,
+                            log_message=f"Embedding error: object_id={object_id} | {exc}{timeout_note}",
                         )
                         processed_in_batch += 1
+                        interim_seen = total_seen + processed_in_batch
+                        _update_backfill_progress(interim_seen, total_inserted, current_object_id=object_id)
                         if payload.stop_on_error:
                             break
                     else:
-                        processed_in_batch += 1
+                        continue
+
+                if valid_images and not (payload.stop_on_error and errors):
+                    if len(valid_ids) == 1:
+                        object_id = valid_ids[0]
+                        image_bytes = valid_images[0]
+                        try:
+                            embedding, dim = _embed_image(client, image_bytes)
+                            rows.append(
+                                EmbedResult(
+                                    object_id=object_id,
+                                    embedding=embedding,
+                                    dim=dim,
+                                )
+                            )
+                            processed_in_batch += 1
+                            interim_seen = total_seen + processed_in_batch
+                            _update_backfill_progress(
+                                interim_seen,
+                                total_inserted,
+                                current_object_id=object_id,
+                            )
+                            if len(rows) >= upsert_flush_size:
+                                flushed_ok = _flush_rows(rows)
+                                _update_backfill_progress(interim_seen, total_inserted, current_object_id=object_id)
+                                if payload.stop_on_error and (not flushed_ok or errors):
+                                    break
+                        except Exception as exc:  # noqa: BLE001
+                            logger.exception("Embedding failed for single object_id=%s", object_id)
+                            error_item = _build_error_item(exc, object_id)
+                            timeout_note = ""
+                            if error_item.get("model_health"):
+                                timeout_note = f" | model_health={error_item['model_health']}"
+                            _record_job_error(
+                                job_id,
+                                errors,
+                                error_item,
+                                log_message=f"Embedding error: object_id={object_id} | {exc}{timeout_note}",
+                            )
+                            processed_in_batch += 1
+                            interim_seen = total_seen + processed_in_batch
+                            _update_backfill_progress(
+                                interim_seen,
+                                total_inserted,
+                                current_object_id=object_id,
+                            )
+                    else:
+                        try:
+                            embeddings, dim = _embed_images(client, valid_images)
+                            if len(embeddings) != len(valid_ids):
+                                raise ValueError(
+                                    f"batch embedding size mismatch: expected={len(valid_ids)} actual={len(embeddings)}"
+                                )
+
+                            for object_id, embedding in zip(valid_ids, embeddings):
+                                rows.append(
+                                    EmbedResult(
+                                        object_id=object_id,
+                                        embedding=embedding,
+                                        dim=dim,
+                                    )
+                                )
+                                processed_in_batch += 1
+                                interim_seen = total_seen + processed_in_batch
+                                _update_backfill_progress(
+                                    interim_seen,
+                                    total_inserted,
+                                    current_object_id=object_id,
+                                )
+                                if len(rows) >= upsert_flush_size:
+                                    flushed_ok = _flush_rows(rows)
+                                    _update_backfill_progress(interim_seen, total_inserted, current_object_id=object_id)
+                                    if payload.stop_on_error and (not flushed_ok or errors):
+                                        break
+                        except Exception:
+                            logger.exception(
+                                "Batch embedding failed for batch_size=%s, falling back to per-item",
+                                len(valid_ids),
+                            )
+                            for object_id, image_bytes in zip(valid_ids, valid_images):
+                                if _job_cancel_requested(job_id):
+                                    _cancel_backfill_job()
+                                    return
+                                try:
+                                    embedding, dim = _embed_image(client, image_bytes)
+                                    rows.append(
+                                        EmbedResult(
+                                            object_id=object_id,
+                                            embedding=embedding,
+                                            dim=dim,
+                                        )
+                                    )
+                                    if len(rows) >= upsert_flush_size:
+                                        flushed_ok = _flush_rows(rows)
+                                        if payload.stop_on_error and (not flushed_ok or errors):
+                                            break
+                                except Exception as exc:  # noqa: BLE001
+                                    logger.exception("Embedding fallback failed for object_id=%s", object_id)
+                                    error_item = _build_error_item(exc, object_id)
+                                    timeout_note = ""
+                                    if error_item.get("model_health"):
+                                        timeout_note = f" | model_health={error_item['model_health']}"
+                                    _record_job_error(
+                                        job_id,
+                                        errors,
+                                        error_item,
+                                        log_message=f"Embedding fallback error: object_id={object_id} | {exc}{timeout_note}",
+                                    )
+                                finally:
+                                    processed_in_batch += 1
+                                    interim_seen = total_seen + processed_in_batch
+                                    _update_backfill_progress(
+                                        interim_seen,
+                                        total_inserted,
+                                        current_object_id=object_id,
+                                    )
+                                if payload.stop_on_error and errors:
+                                    break
 
                 total_seen += processed_in_batch
-                if rows and not payload.dry_run:
-                    try:
-                        upserted = _storage_vector_upsert_batch(rows)
-                        total_inserted += upserted
-                        for row in rows[: max(0, upserted)]:
-                            if row.object_id not in inserted_object_ids_seen:
-                                inserted_object_ids_seen.add(row.object_id)
-                                inserted_object_ids.append(row.object_id)
-                        if upserted != len(rows):
-                            errors.append(
-                                {
-                                    "error": (
-                                        f"vector upsert mismatch: expected={len(rows)} "
-                                        f"actual={upserted}"
-                                    )
-                                }
-                            )
-                            if payload.stop_on_error:
-                                break
-                    except Exception as exc:
-                        logger.exception(
-                            "Batch vector upsert failed for rows=%s", len(rows)
-                        )
-                        errors.append({"error": str(exc)})
-                        if payload.stop_on_error:
-                            break
+                if rows:
+                    flushed_ok = _flush_rows(rows)
+                    if payload.stop_on_error and (not flushed_ok or errors):
+                        break
 
-                progress = min(int((total_seen / max(planned_total, 1)) * 100), 100)
-                with jobs_lock:
-                    if job_id in jobs_store:
-                        jobs_store[job_id].update(
-                            {
-                                "progress": progress,
-                                "total_seen": total_seen,
-                                "total_inserted": total_inserted,
-                                "errors": errors,
-                                "updated_at": time.time(),
-                            }
-                        )
+                progress = _update_backfill_progress(total_seen, total_inserted)
                 current_bucket = progress // 10
                 now_mono = time.monotonic()
                 should_log_progress = False
@@ -1394,14 +1738,28 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
     embed_worker_stopped = False
 
     if embed_on_install:
-        embed_queue = queue.Queue(maxsize=4096)
-        with jobs_lock:
-            job = jobs_store.get(job_id)
-            if job:
-                _append_job_log(
-                    job,
-                    "Auto-embedding enabled, running in streaming mode during install.",
-                )
+        ready, reason = _search_dependencies_ready(require_embedder=True, require_vlm=False)
+        if not ready:
+            errors.append({"error": f"auto-embedding preflight failed: {reason}"})
+            embed_on_install = False
+            with jobs_lock:
+                job = jobs_store.get(job_id)
+                if job:
+                    job["embed_on_install"] = False
+                    job["embedding_worker_running"] = False
+                    _append_job_log(
+                        job,
+                        f"Auto-embedding disabled for this run: {reason}",
+                    )
+        if embed_on_install:
+            embed_queue = queue.Queue(maxsize=4096)
+            with jobs_lock:
+                job = jobs_store.get(job_id)
+                if job:
+                    _append_job_log(
+                        job,
+                        "Auto-embedding enabled, running in streaming mode during install.",
+                    )
 
         def _embed_worker_runner() -> None:
             try:
@@ -1431,12 +1789,13 @@ def _run_dataset_install_job(job_id: str, dataset_key: str, dataset_cfg: Dict[st
                         job["embedding_worker_running"] = False
                         job["updated_at"] = time.time()
 
-        embed_thread = threading.Thread(
-            target=_embed_worker_runner,
-            name=f"embed-install-{job_id[:8]}",
-            daemon=True,
-        )
-        embed_thread.start()
+        if embed_on_install:
+            embed_thread = threading.Thread(
+                target=_embed_worker_runner,
+                name=f"embed-install-{job_id[:8]}",
+                daemon=True,
+            )
+            embed_thread.start()
 
     def _stop_embedding_worker(wait: bool = True) -> None:
         nonlocal embed_worker_stopped
@@ -1946,16 +2305,32 @@ def _collect_nvidia_info() -> Dict[str, Any]:
         return out
 
 
-def _fetch_model_runtime(name: str, endpoint: str, timeout_sec: int = 3) -> Dict[str, Any]:
+def _fetch_model_runtime(
+    name: str,
+    endpoint: str,
+    timeout_sec: int = 3,
+    *,
+    fallback_model: str = "",
+    fallback_device: str = "",
+    fallback_dtype: str = "",
+    fallback_attn_type: str = "",
+) -> Dict[str, Any]:
     normalized_endpoint = endpoint.rstrip("/")
+    configured_device = str(fallback_device).strip().lower()
+    configured_dtype = str(fallback_dtype).strip()
+    configured_attn_type = str(fallback_attn_type).strip()
     result: Dict[str, Any] = {
         "name": name,
         "endpoint": normalized_endpoint,
         "reachable": False,
         "status": "unavailable",
-        "model": "",
-        "device": "",
-        "runtime": {},
+        "model": str(fallback_model).strip(),
+        "device": configured_device,
+        "runtime": {
+            "configured_device": configured_device,
+            "dtype": configured_dtype,
+            "attn_type": configured_attn_type,
+        },
         "memory": {},
         "counters": {},
         "error": "",
@@ -1995,23 +2370,95 @@ def _fetch_model_runtime(name: str, endpoint: str, timeout_sec: int = 3) -> Dict
             }
         )
         return result
-    except Exception as exc:
-        result["error"] = str(exc)
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc).strip()
+        lowered = message.lower()
+        if (
+            "connection refused" in lowered
+            or "all connection attempts failed" in lowered
+            or "timed out" in lowered
+        ):
+            # Service is booting; keep config values and avoid noisy transport errors.
+            result["status"] = "starting"
+            result["error"] = ""
+            return result
+        result["error"] = message
         return result
 
 
-def _queue_only_runtime(name: str, reason: str) -> Dict[str, Any]:
+def _sample_existing_embedding_dim(max_objects_scan: int = 512) -> Optional[int]:
+    cursor = ""
+    scanned = 0
+    page_limit = 128
+
+    while scanned < max_objects_scan:
+        limit = min(page_limit, max_objects_scan - scanned)
+        payload = storage_api.list_objects(limit=limit, cursor=cursor or None)
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        if not isinstance(items, list) or len(items) == 0:
+            return None
+
+        object_ids = [
+            str(item.get("object_id", "")).strip()
+            for item in items
+            if isinstance(item, dict) and str(item.get("object_id", "")).strip()
+        ]
+        scanned += len(object_ids)
+        if object_ids:
+            completed = storage_api.completed_vector_object_ids(object_ids)
+            if completed:
+                vectors = storage_api.get_vectors(completed[:1])
+                if vectors:
+                    embedding = vectors[0].get("embedding", []) if isinstance(vectors[0], dict) else []
+                    if isinstance(embedding, list) and embedding:
+                        return len(embedding)
+
+        next_cursor = str(payload.get("next_cursor", "")).strip() if isinstance(payload, dict) else ""
+        if not next_cursor:
+            break
+        cursor = next_cursor
+    return None
+
+
+def _build_embedding_dim_warning(query_embedding: List[float], source: str) -> Optional[Dict[str, Any]]:
+    query_dim = len(query_embedding)
+    if query_dim <= 0:
+        return None
+    try:
+        total_vectors = max(0, int(storage_api.count_vectors()))
+        if total_vectors == 0:
+            return None
+        stored_dim = _sample_existing_embedding_dim()
+        if stored_dim is None or stored_dim <= 0 or stored_dim == query_dim:
+            return None
+        return {
+            "code": "embedding_dim_mismatch",
+            "source": source,
+            "query_dim": query_dim,
+            "stored_dim": int(stored_dim),
+            "message": (
+                f"Embedding dimension mismatch: query_dim={query_dim}, stored_dim={stored_dim}. "
+                "Search results may be empty until embeddings are rebuilt."
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to detect embedding dimension mismatch: %s", exc)
+        return None
+
+
+def _build_search_backend_unavailable_warning(reason: str, source: str) -> Dict[str, Any]:
+    normalized = str(reason).strip()
+    lowered = normalized.lower()
+    is_model_unavailable = "model backend not ready" in lowered
     return {
-        "name": name,
-        "endpoint": "",
-        "reachable": False,
-        "status": "queue_only",
-        "model": "",
-        "device": "",
-        "runtime": {},
-        "memory": {},
-        "counters": {},
-        "error": reason,
+        "code": "model_unavailable" if is_model_unavailable else "search_backend_unavailable",
+        "source": source,
+        "message": (
+            "Модель сейчас недоступна (starting/offline). Дождитесь статуса online в Job Monitor."
+            if is_model_unavailable
+            else f"Search backend is unavailable: {normalized}"
+        ),
+        "reason": normalized,
     }
 
 
@@ -2023,10 +2470,45 @@ def get_system_info():
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage("/")
         uptime_seconds = int(time.time() - psutil.boot_time())
-        embedder_runtime = _fetch_model_runtime("embedder", EMBEDDER_ENDPOINT)
-        vlm_runtime = _queue_only_runtime(
+        embedder_runtime = _fetch_model_runtime(
+            "embedder",
+            EMBEDDER_ENDPOINT,
+            fallback_model=os.getenv(
+                "EMBEDDER_MODEL_NAME",
+                str(getattr(EMBEDDER_CONFIG, "MODEL_NAME", "") or ""),
+            ),
+            fallback_device=os.getenv(
+                "EMBEDDER_DEVICE",
+                str(getattr(EMBEDDER_CONFIG, "DEVICE", "") or ""),
+            ),
+            fallback_dtype=os.getenv(
+                "EMBEDDER_TORCH_DTYPE",
+                str(getattr(EMBEDDER_CONFIG, "TORCH_DTYPE", "") or ""),
+            ),
+            fallback_attn_type=os.getenv(
+                "EMBEDDER_ATTN_IMPLEMENTATION",
+                str(getattr(EMBEDDER_CONFIG, "ATTN_IMPLEMENTATION", "") or ""),
+            ),
+        )
+        vlm_runtime = _fetch_model_runtime(
             "vlm",
-            "vlm worker is queue-only and does not expose an HTTP runtime endpoint",
+            VLM_ENDPOINT,
+            fallback_model=os.getenv(
+                "VLM_MODEL_NAME",
+                str(getattr(VLM_CONFIG, "MODEL_NAME", "") or ""),
+            ),
+            fallback_device=os.getenv(
+                "VLM_DEVICE",
+                str(getattr(VLM_CONFIG, "DEVICE", "") or ""),
+            ),
+            fallback_dtype=os.getenv(
+                "VLM_TORCH_DTYPE",
+                str(getattr(VLM_CONFIG, "TORCH_DTYPE", "") or ""),
+            ),
+            fallback_attn_type=os.getenv(
+                "VLM_ATTN_IMPLEMENTATION",
+                str(getattr(VLM_CONFIG, "ATTN_IMPLEMENTATION", "") or ""),
+            ),
         )
         gpu_info = _collect_nvidia_info()
 
@@ -2081,10 +2563,7 @@ def get_system_info():
             },
             "services": {
                 "embedder": _fetch_model_runtime("embedder", EMBEDDER_ENDPOINT),
-                "vlm": _queue_only_runtime(
-                    "vlm",
-                    "vlm worker is queue-only and does not expose an HTTP runtime endpoint",
-                ),
+                "vlm": _fetch_model_runtime("vlm", VLM_ENDPOINT),
             },
             "uptime_seconds": 0,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -2095,6 +2574,38 @@ def get_system_info():
 def backfill_embeddings(payload: BackfillRequest):
     job_id = _start_backfill_embeddings_job(payload)
     return {"job_id": job_id, "status": "started"}
+
+
+@app.get("/embeddings/dimensions")
+def embeddings_dimensions():
+    ready, reason = _search_dependencies_ready(
+        require_embedder=True,
+        require_vlm=False,
+        allow_embedder_http_fallback=True,
+    )
+    if not ready:
+        return {
+            "status": "unavailable",
+            "reason": reason,
+            "query_dim": None,
+            "stored_dim": None,
+            "mismatch": None,
+        }
+
+    timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
+    with httpx.Client(timeout=timeout) as client:
+        query_embedding, _ = _embed_text(client, "embedding-dimension-check")
+    query_dim = len(query_embedding)
+    stored_dim = _sample_existing_embedding_dim()
+    mismatch = (
+        bool(stored_dim is not None and stored_dim > 0 and query_dim > 0 and int(stored_dim) != int(query_dim))
+    )
+    return {
+        "status": "ok",
+        "query_dim": query_dim if query_dim > 0 else None,
+        "stored_dim": int(stored_dim) if stored_dim is not None and stored_dim > 0 else None,
+        "mismatch": mismatch,
+    }
 
 
 @app.post("/datasets/install")
@@ -2269,12 +2780,17 @@ def complete_waymo_auth(payload: WaymoAuthCompleteRequest):
 @app.post("/search/text")
 def search_text(payload: TextSearchRequest):
     try:
-        ready, reason = _search_dependencies_ready()
+        ready, reason = _search_dependencies_ready(
+            require_embedder=True,
+            require_vlm=False,
+            allow_embedder_http_fallback=True,
+        )
         if not ready:
             logger.warning("search_text dependencies unavailable; returning empty results: %s", reason)
             return {
                 "mode": "vector_server",
                 "results": [],
+                "warning": _build_search_backend_unavailable_warning(reason, source="text"),
             }
 
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
@@ -2294,6 +2810,7 @@ def search_text(payload: TextSearchRequest):
                 str(exc),
             )
             results = []
+        warning = _build_embedding_dim_warning(query_embedding, source="text") if not results else None
         query_elapsed_ms = (time.perf_counter() - query_started_at) * 1000
         total_elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.info(
@@ -2311,6 +2828,7 @@ def search_text(payload: TextSearchRequest):
     return {
         "mode": "vector_server",
         "results": results,
+        "warning": warning,
     }
 
 
@@ -2326,7 +2844,11 @@ async def search_image_bytes(
         raise HTTPException(status_code=400, detail="Image bytes are required")
 
     try:
-        ready, reason = _search_dependencies_ready()
+        ready, reason = _search_dependencies_ready(
+            require_embedder=True,
+            require_vlm=False,
+            allow_embedder_http_fallback=True,
+        )
         if not ready:
             logger.warning(
                 "search_image_bytes dependencies unavailable; returning empty results: %s",
@@ -2335,6 +2857,7 @@ async def search_image_bytes(
             return {
                 "mode": "vector_server",
                 "results": [],
+                "warning": _build_search_backend_unavailable_warning(reason, source="image"),
             }
 
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
@@ -2354,6 +2877,7 @@ async def search_image_bytes(
                 str(exc),
             )
             results = []
+        warning = _build_embedding_dim_warning(query_embedding, source="image") if not results else None
         query_elapsed_ms = (time.perf_counter() - query_started_at) * 1000
         total_elapsed_ms = (time.perf_counter() - started_at) * 1000
         logger.info(
@@ -2371,6 +2895,7 @@ async def search_image_bytes(
     return {
         "mode": "vector_server",
         "results": results,
+        "warning": warning,
     }
 
 

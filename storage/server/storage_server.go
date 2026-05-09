@@ -160,20 +160,25 @@ func (s *StorageServer) ListObjects(ctx context.Context, limit int, cursor strin
 	}
 	defer rows.Close()
 
-	out := make([]ObjectMetadata, 0, limit)
-	nextCursor := ""
+	out := make([]ObjectMetadata, 0, limit+1)
 	for rows.Next() {
 		var m ObjectMetadata
 		if err := rows.Scan(&m.ObjectID, &m.StoragePath, &m.Bucket, &m.Key, &m.SizeBytes, &m.ContentType, &m.CreatedAt); err != nil {
 			return nil, "", err
 		}
-		if len(out) == limit {
-			nextCursor = m.ObjectID
-			break
-		}
 		out = append(out, m)
 	}
-	return out, nextCursor, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+
+	nextCursor := ""
+	if len(out) > limit {
+		// Continue from the last returned object id so no rows are skipped.
+		nextCursor = out[limit-1].ObjectID
+		out = out[:limit]
+	}
+	return out, nextCursor, nil
 }
 
 func (s *StorageServer) GetContent(ctx context.Context, objectID string) ([]byte, string, error) {
@@ -365,10 +370,73 @@ func (s *StorageServer) DeleteVectors(ctx context.Context, objectIDs []string) (
 	if len(normalized) == 0 {
 		return 0, nil
 	}
+	deleted := len(normalized)
+	if lookup, ok := s.vectorAdapter.(infra.VectorExistingLookup); ok {
+		existing, err := lookup.ExistingObjectIDs(ctx, normalized)
+		if err != nil {
+			return 0, err
+		}
+		deleted = len(existing)
+		if deleted == 0 {
+			return 0, nil
+		}
+	}
 	if err := s.vectorAdapter.Delete(ctx, normalized); err != nil {
 		return 0, err
 	}
-	return len(normalized), nil
+	return deleted, nil
+}
+
+func (s *StorageServer) ClearVectors(ctx context.Context, pageSize int) (int, error) {
+	limit := pageSize
+	if limit <= 0 {
+		limit = 1000
+	}
+	if limit > 5000 {
+		limit = 5000
+	}
+
+	totalDeleted := 0
+	cursor := ""
+	for {
+		items, nextCursor, err := s.ListObjects(ctx, limit, cursor)
+		if err != nil {
+			return totalDeleted, err
+		}
+		if len(items) == 0 {
+			break
+		}
+
+		objectIDs := make([]string, 0, len(items))
+		for _, item := range items {
+			objectID := strings.TrimSpace(item.ObjectID)
+			if objectID != "" {
+				objectIDs = append(objectIDs, objectID)
+			}
+		}
+		if len(objectIDs) > 0 {
+			deleted, err := s.DeleteVectors(ctx, objectIDs)
+			if err != nil {
+				return totalDeleted, err
+			}
+			totalDeleted += deleted
+		}
+
+		if strings.TrimSpace(nextCursor) == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+
+	return totalDeleted, nil
+}
+
+func (s *StorageServer) CleanupOrphanVectors(ctx context.Context) (int, error) {
+	cleaner, ok := s.vectorAdapter.(infra.VectorOrphanCleaner)
+	if !ok {
+		return 0, errors.New("vector backend does not support orphan cleanup")
+	}
+	return cleaner.CleanupOrphaned(ctx, s.cfg.MetadataSchema, s.cfg.MetadataTable)
 }
 
 func (s *StorageServer) ensureMetadataTable(ctx context.Context) error {

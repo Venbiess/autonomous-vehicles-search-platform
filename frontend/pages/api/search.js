@@ -185,13 +185,17 @@ export default async function handler(req, res) {
         return res.status(502).json({ error: text });
       }
       const payload = await response.json();
+      const warning = payload?.warning && typeof payload.warning === "object" ? payload.warning : null;
       return res
         .status(200)
-        .json(await normalizeResults(payload.results, defaultBucket));
+        .json({
+          items: await normalizeResults(payload.results, defaultBucket),
+          warning,
+        });
     }
 
     if (!query || query.trim().length === 0) {
-      return res.status(200).json([]);
+      return res.status(200).json({ items: [] });
     }
 
     const response = await fetch(`${masterEndpoint}/search/text`, {
@@ -204,9 +208,13 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: text });
     }
     const payload = await response.json();
+    const warning = payload?.warning && typeof payload.warning === "object" ? payload.warning : null;
     return res
       .status(200)
-      .json(await normalizeResults(payload.results, defaultBucket));
+      .json({
+        items: await normalizeResults(payload.results, defaultBucket),
+        warning,
+      });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

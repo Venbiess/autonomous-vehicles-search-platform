@@ -48,6 +48,8 @@ export default async function handler(req, res) {
     }
 
     return res.status(errors.length ? 207 : 200).json({
+      requested_count: count,
+      available_images: scoped.length,
       selected_images: selected.length,
       deleted_images: deletedImages,
       deleted_source_rows: 0,

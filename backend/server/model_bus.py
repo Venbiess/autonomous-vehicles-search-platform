@@ -112,7 +112,11 @@ class RabbitRPCClient:
             response = responses.pop(corr_id, None)
             if response is not None:
                 if not response.get("ok", False):
-                    raise RabbitRPCError(str(response.get("error", "worker error")))
+                    error_message = str(response.get("error", "worker error"))
+                    worker_traceback = str(response.get("traceback", "")).strip()
+                    if worker_traceback:
+                        raise RabbitRPCError(f"{error_message}\n--- worker traceback ---\n{worker_traceback}")
+                    raise RabbitRPCError(error_message)
                 return response
             conn.process_data_events(time_limit=0.2)
 
@@ -227,6 +231,32 @@ class ModelGateway:
         payload = response.json()
         return payload["embedding"], payload["dim"]
 
+    def embed_images_http(self, http_client, embedder_endpoint: str, images_bytes: list[bytes]):
+        embeddings: list[list[float]] = []
+        dim: Optional[int] = None
+        for image_bytes in images_bytes:
+            embedding, item_dim = self.embed_image_http(http_client, embedder_endpoint, image_bytes)
+            embeddings.append(embedding)
+            if dim is None:
+                dim = int(item_dim)
+        return embeddings, int(dim or 0)
+
+    def run_vlm_http(self, http_client, vlm_endpoint: str, *, image_bytes: bytes, prompt: str, max_new_tokens: int, metadata: Dict[str, Any]) -> str:
+        response = http_client.post(
+            f"{vlm_endpoint}/generate",
+            data={
+                "prompt": prompt,
+                "max_new_tokens": str(max_new_tokens),
+                "job_id": str(metadata.get("job_id") or ""),
+                "task_index": str(metadata.get("task_index")) if metadata.get("task_index") is not None else "",
+                "task_total": str(metadata.get("task_total")) if metadata.get("task_total") is not None else "",
+                "field_name": str(metadata.get("field_name") or ""),
+                "object_id": str(metadata.get("object_id") or ""),
+            },
+            files={"file": ("image.jpg", image_bytes, "image/jpeg")},
+        )
+        response.raise_for_status()
+        return response.json()["response"].strip()
     def embed_image(self, http_client, embedder_endpoint: str, image_bytes: bytes):
         if self._rpc is None:
             raise RuntimeError("rabbitmq RPC client is not initialized")
@@ -246,6 +276,20 @@ class ModelGateway:
         }
         result = self._rpc.call(self._rpc.cfg.embedder_queue, payload)
         return result["embedding"], int(result["dim"])
+
+    def embed_images(self, http_client, embedder_endpoint: str, images_bytes: list[bytes]):
+        if self.mode != "rabbitmq" or self._rpc is None:
+            return self.embed_images_http(http_client, embedder_endpoint, images_bytes)
+        payload = {
+            "task": "embed_image_batch",
+            "images_base64": [base64.b64encode(item).decode("ascii") for item in images_bytes],
+        }
+        result = self._rpc.call(self._rpc.cfg.embedder_queue, payload)
+        embeddings = result.get("embeddings", [])
+        dim = int(result.get("dim", 0))
+        if not isinstance(embeddings, list):
+            raise RabbitRPCError("invalid embed_image_batch response: embeddings is not a list")
+        return embeddings, dim
 
     def run_vlm(
         self,

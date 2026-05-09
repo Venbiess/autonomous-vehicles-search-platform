@@ -61,6 +61,8 @@ func (h *StorageHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/vectors/get", h.handleVectorGet)
 	mux.HandleFunc("/vectors/query", h.handleVectorQuery)
 	mux.HandleFunc("/vectors/count", h.handleVectorCount)
+	mux.HandleFunc("/vectors/clear", h.handleVectorClear)
+	mux.HandleFunc("/vectors/cleanup-orphans", h.handleVectorCleanupOrphans)
 	mux.HandleFunc("/vectors/completed-object-ids", h.handleVectorsCompletedObjectIDs)
 	mux.HandleFunc("/fields", h.handleAnalyticsFields)
 	mux.HandleFunc("/annotations/upsert", h.handleAnalyticsAnnotationsUpsert)
@@ -259,6 +261,10 @@ type storageUpsertVectorsRequest struct {
 
 type storageDeleteVectorsRequest struct {
 	ObjectIDs []string `json:"object_ids"`
+}
+
+type storageClearVectorsRequest struct {
+	PageSize int `json:"page_size"`
 }
 
 type storageQueryVectorsRequest struct {
@@ -484,7 +490,50 @@ func (h *StorageHandler) handleVectorDelete(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	h.invalidateVectorCountCache()
-	writeJSON(w, http.StatusOK, map[string]int{"requested": deleted})
+	writeJSON(w, http.StatusOK, map[string]int{"deleted": deleted, "requested": deleted})
+}
+
+func (h *StorageHandler) handleVectorClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	if err := h.authorizeWrite(r); err != nil {
+		writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
+		return
+	}
+	var req storageClearVectorsRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	deleted, err := h.svc.ClearVectors(r.Context(), req.PageSize)
+	if err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	h.invalidateVectorCountCache()
+	writeJSON(w, http.StatusOK, map[string]int{"deleted": deleted, "requested": deleted})
+}
+
+func (h *StorageHandler) handleVectorCleanupOrphans(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	if err := h.authorizeWrite(r); err != nil {
+		writeTypedError(w, r, http.StatusForbidden, "forbidden", err)
+		return
+	}
+	deleted, err := h.svc.CleanupOrphanVectors(r.Context())
+	if err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	h.invalidateVectorCountCache()
+	writeJSON(w, http.StatusOK, map[string]int{"deleted": deleted, "requested": deleted})
 }
 
 func (h *StorageHandler) handleObjectByID(w http.ResponseWriter, r *http.Request) {

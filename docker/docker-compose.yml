@@ -19,6 +19,7 @@ services:
     container_name: "grafana-${USER}"
     depends_on:
       - prometheus
+      - loki
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
@@ -36,11 +37,16 @@ services:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     container_name: "cadvisor-${USER}"
     privileged: true
+    command:
+      - --docker_only=true
+      - --store_container_labels=true
+      - --containerd=/run/containerd/containerd.sock
     devices:
       - /dev/kmsg:/dev/kmsg
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:ro
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
       - /sys:/sys:ro
       - /var/lib/docker:/var/lib/docker:ro
       - /dev/disk:/dev/disk:ro
@@ -49,9 +55,47 @@ services:
     networks:
       - avsp-net
 
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: "loki-${USER}"
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./server/observability/loki/loki-config.yml:/etc/loki/config.yml:ro
+    ports:
+      - "3100:3100"
+    networks:
+      - avsp-net
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: "promtail-${USER}"
+    depends_on:
+      - loki
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./server/observability/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+    networks:
+      - avsp-net
+
   rabbitmq:
     image: rabbitmq:3.13-management
-    container_name: "rabbitmq-${USER}"
+    container_name: "avsp-rabbitmq-${USER}"
+    hostname: rabbitmq
+    user: "0:0"
+    restart: unless-stopped
+    environment:
+      RABBITMQ_NODENAME: rabbit@rabbitmq
+    tmpfs:
+      - /var/lib/rabbitmq
+    volumes:
+      - ./rabbitmq/conf.d/20-logging.conf:/etc/rabbitmq/conf.d/20-logging.conf:ro
+    entrypoint: >
+      /bin/sh -c "
+      chown -R rabbitmq:rabbitmq /var/lib/rabbitmq &&
+      exec docker-entrypoint.sh rabbitmq-server
+      "
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -96,7 +140,13 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./server/postgres-init:/docker-entrypoint-initdb.d
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d avsp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     networks:
       - avsp-net
 
@@ -133,11 +183,55 @@ services:
     networks:
       - avsp-net
 
-  embedder-worker:
-    image: avsp-models-cpu
+  embedder:
     build:
       context: ..
       dockerfile: docker/models/models.Dockerfile
+      args:
+        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
+    container_name: "embedder-${USER}"
+    profiles: ["model-http"]
+    volumes:
+      - ../:/app
+    environment:
+      HF_HOME: /app/.cache/huggingface
+    ports:
+      - "8000:8000"
+    networks:
+      - avsp-net
+
+  vlm:
+    build:
+      context: ..
+      dockerfile: docker/models/models.Dockerfile
+      args:
+        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
+    container_name: "vlm-${USER}"
+    profiles: ["model-http"]
+    volumes:
+      - ../:/app
+    environment:
+      HF_HOME: /app/.cache/huggingface
+    command: >
+      /bin/sh -c "
+      uvicorn backend.models.vlm.vlm:app
+      --host 0.0.0.0
+      --port 8001
+      --log-level debug
+      "
+    ports:
+      - "8001:8001"
+    networks:
+      - avsp-net
+
+  embedder-worker:
+    image: avsp-embedder-worker
+    container_name: "avsp-embedder-worker-${USER}"
+    build:
+      context: ..
+      dockerfile: docker/models/models.Dockerfile
+      args:
+        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
     healthcheck:
       test: ["CMD", "true"]
       interval: 30s
@@ -146,7 +240,7 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-    restart: unless-stopped
+    restart: ${EMBEDDER_WORKER_RESTART_POLICY:-no}
     command: >
       /bin/sh -c "
       python -m backend.models.queue_worker --worker embedder
@@ -159,18 +253,28 @@ services:
     environment:
       EMBEDDER_PORT: 8000
       WORKER_METRICS_PORT: 9108
+      WORKER_HTTP_ENABLED: 1
+      LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/site-packages/nvidia/nccl/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvjitlink/lib
+      HF_HOME: /app/.cache/huggingface
+      HF_HUB_DISABLE_PROGRESS_BARS: "0"
+      TQDM_POSITION: "-1"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
       RABBITMQ_PREFETCH: 1
+      RABBITMQ_HEARTBEAT_SEC: 900
+      RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SEC: 960
     networks:
       - avsp-net
 
   vlm-worker:
-    image: avsp-models-cpu
+    image: avsp-vlm-worker
+    container_name: "avsp-vlm-worker-${USER}"
     build:
       context: ..
       dockerfile: docker/models/models.Dockerfile
+      args:
+        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
     healthcheck:
       test: ["CMD", "true"]
       interval: 30s
@@ -179,7 +283,7 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-    restart: unless-stopped
+    restart: ${VLM_WORKER_RESTART_POLICY:-no}
     command: >
       /bin/sh -c "
       python -m backend.models.queue_worker --worker vlm
@@ -192,10 +296,17 @@ services:
     environment:
       VLM_PORT: 8001
       WORKER_METRICS_PORT: 9109
+      WORKER_HTTP_ENABLED: 1
+      LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/site-packages/nvidia/nccl/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvjitlink/lib
+      HF_HOME: /app/.cache/huggingface
+      HF_HUB_DISABLE_PROGRESS_BARS: "0"
+      TQDM_POSITION: "-1"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
       RABBITMQ_PREFETCH: 1
+      RABBITMQ_HEARTBEAT_SEC: 900
+      RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SEC: 960
     networks:
       - avsp-net
 
@@ -207,13 +318,14 @@ services:
     container_name: "avsp-storage-${USER}"
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy
       minio:
         condition: service_started
       minio-init:
         condition: service_completed_successfully
       clickhouse:
         condition: service_healthy
+    restart: unless-stopped
     environment:
       STORAGE_CONFIG_PATH: /app/storage/config/storage.yaml
     volumes:
@@ -251,6 +363,8 @@ services:
       --reload
       "
     environment:
+      PYTHONWARNINGS: "ignore::FutureWarning:google.api_core._python_version_support"
+      CUDA_VISIBLE_DEVICES: ""
       S3_ENDPOINT_URL: http://minio:9000
       S3_ACCESS_KEY_ID: minioadmin
       S3_SECRET_ACCESS_KEY: minioadmin
@@ -260,12 +374,13 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       EMBEDDER_ENDPOINT: http://embedder-worker:8000
+      VLM_ENDPOINT: http://vlm-worker:8001
       EMBEDDER_ENDPOINTS: http://embedder-worker:8000
       MODEL_EXECUTION_MODE: rabbitmq
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
-      RABBITMQ_RPC_TIMEOUT_SEC: 120
+      RABBITMQ_RPC_TIMEOUT_SEC: 900
       ANALYTICS_SERVER_ENDPOINT: http://storage-server:9012
       ANALYTICS_SERVER_TIMEOUT_SEC: 30
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012

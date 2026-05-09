@@ -95,3 +95,7 @@ Build containers with GPUs
 cd docker/
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 ```
+Check
+```
+docker exec -it avsp-embedder-worker-$USER python -c "import torch; print(f'{torch.__version__=};\n{torch.version.cuda=};\n{torch.cuda.is_available()=};\n{torch.cuda.device_count()=}')"
+```

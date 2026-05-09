@@ -93,6 +93,24 @@ class StorageAPI:
         payload = response.json()
         return payload.get("results", [])
 
+    def count_vectors(self) -> int:
+        response = self._client.get(f"{self.endpoint}/vectors/count")
+        response.raise_for_status()
+        payload = response.json()
+        return int(payload.get("count", 0))
+
+    def get_vectors(self, object_ids: List[str]) -> List[Dict[str, Any]]:
+        if not object_ids:
+            return []
+        response = self._client.post(
+            f"{self.endpoint}/vectors/get",
+            json={"object_ids": object_ids},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        items = payload.get("items", [])
+        return items if isinstance(items, list) else []
+
     def health(self) -> Dict[str, Any]:
         response = self._client.get(f"{self.endpoint}/health")
         response.raise_for_status()
@@ -145,7 +163,16 @@ class StorageAPI:
         )
         response.raise_for_status()
         payload = response.json()
-        return int(payload.get("requested", 0))
+        return int(payload.get("deleted", payload.get("requested", 0)))
+
+    def cleanup_orphan_vectors(self) -> int:
+        response = self._client.post(
+            f"{self.endpoint}/vectors/cleanup-orphans",
+            headers=self.write_headers,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return int(payload.get("deleted", payload.get("requested", 0)))
 
     def delete_object(self, object_id: str) -> Dict[str, Any]:
         if self.write_headers:

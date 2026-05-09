@@ -47,6 +47,24 @@ function moveSyntheticToEnd(methods: PreprocessorMethod[]): PreprocessorMethod[]
   return [...regular, ...synthetic];
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientFetchFailure(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false;
+  const message = String(error.message || "").toLowerCase();
+  const detail = String(error.response?.data?.detail || error.response?.data?.error || "").toLowerCase();
+  return (
+    message.includes("fetch failed") ||
+    message.includes("network error") ||
+    message.includes("timeout") ||
+    detail.includes("fetch failed") ||
+    detail.includes("connection refused") ||
+    detail.includes("bad gateway")
+  );
+}
+
 interface WaymoAuthStartResponse {
   session_id?: string;
   auth_url?: string;
@@ -59,6 +77,12 @@ interface WaymoAuthStatusResponse {
   authenticated?: boolean;
   reason?: string;
   error?: string;
+}
+
+interface EmbeddingMismatchDialogState {
+  queryDim: number;
+  storedDim: number;
+  message: string;
 }
 
 interface PendingInstallPayload {
@@ -174,6 +198,9 @@ export default function AnnotationPanel({
   const [isUploadingLocalImage, setIsUploadingLocalImage] = useState(false);
   const [localUploadError, setLocalUploadError] = useState<string | null>(null);
   const [localUploadSuccess, setLocalUploadSuccess] = useState<string | null>(null);
+  const [embeddingMismatchDialog, setEmbeddingMismatchDialog] =
+    useState<EmbeddingMismatchDialogState | null>(null);
+  const [isRebuildingEmbeddings, setIsRebuildingEmbeddings] = useState(false);
   const [localUploadForm, setLocalUploadForm] = useState<LocalUploadFormState>({
     bucket: "manual",
     datasetType: "local_upload",
@@ -234,9 +261,7 @@ export default function AnnotationPanel({
         const datasetNames: string[] = rows
           .map((item) => String(item?.dataset || "").trim())
           .filter((name: string): name is string => Boolean(name));
-        const unique = Array.from(new Set<string>(datasetNames)).sort((a, b) =>
-          a.localeCompare(b)
-        );
+        const unique = Array.from(new Set(datasetNames)).sort((a, b) => a.localeCompare(b));
         setAvailableDatasets(unique);
       } catch {
         setAvailableDatasets([]);
@@ -246,67 +271,85 @@ export default function AnnotationPanel({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     const loadPreprocessorMethods = async () => {
-      try {
-        const response = await axios.get("/api/storage/preprocessors");
-        const items: unknown[] = Array.isArray(response.data?.items)
-          ? response.data.items
-          : [];
-        const methods: PreprocessorMethod[] = items
-          .map((rawItem) => {
-            const item =
-              rawItem && typeof rawItem === "object"
-                ? (rawItem as Record<string, unknown>)
-                : {};
-            return {
-              key: String(item.key ?? "").trim(),
-              label: String(item.label ?? "").trim(),
-              description:
-                typeof item.description === "string"
-                  ? item.description.trim()
-                  : undefined,
-              default_config: {
-                embed_on_install: false,
-                ...(item.default_config &&
-                typeof item.default_config === "object" &&
-                !Array.isArray(item.default_config)
-                  ? (item.default_config as Record<string, unknown>)
-                  : {}),
-              },
-            };
-          })
-          .filter((item: PreprocessorMethod) => item.key && item.label);
-        const orderedMethods = moveSyntheticToEnd(methods);
-        setPreprocessorMethods(orderedMethods);
-        setInstallDatasets(
-          orderedMethods.reduce<Record<string, boolean>>((acc, item) => {
-            acc[item.key] = false;
-            return acc;
-          }, {})
-        );
-        setDatasetConfigText(
-          orderedMethods.reduce<Record<string, string>>((acc, item) => {
-            acc[item.key] = JSON.stringify(item.default_config ?? {}, null, 2);
-            return acc;
-          }, {})
-        );
-        setPreprocessorMethodsError(null);
-      } catch (error: unknown) {
-        const message =
-          axios.isAxiosError(error) && error.response?.data?.detail
-            ? String(error.response.data.detail)
-            : axios.isAxiosError(error) && error.response?.data?.error
-              ? String(error.response.data.error)
-              : error instanceof Error
-                ? error.message
-                : "Failed to load preprocessor methods from storage API. Check storage-server logs for YAML/config parse errors.";
-        setPreprocessorMethods([]);
-        setInstallDatasets({});
-        setDatasetConfigText({});
-        setPreprocessorMethodsError(message);
+      const maxAttempts = 4;
+      let lastError: unknown = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          const response = await axios.get("/api/storage/preprocessors");
+          if (cancelled) return;
+          const items: unknown[] = Array.isArray(response.data?.items)
+            ? response.data.items
+            : [];
+          const methods: PreprocessorMethod[] = items
+            .map((rawItem) => {
+              const item =
+                rawItem && typeof rawItem === "object"
+                  ? (rawItem as Record<string, unknown>)
+                  : {};
+              return {
+                key: String(item.key ?? "").trim(),
+                label: String(item.label ?? "").trim(),
+                description:
+                  typeof item.description === "string"
+                    ? item.description.trim()
+                    : undefined,
+                default_config: {
+                  embed_on_install: false,
+                  ...(item.default_config &&
+                  typeof item.default_config === "object" &&
+                  !Array.isArray(item.default_config)
+                    ? (item.default_config as Record<string, unknown>)
+                    : {}),
+                },
+              };
+            })
+            .filter((item: PreprocessorMethod) => item.key && item.label);
+          const orderedMethods = moveSyntheticToEnd(methods);
+          setPreprocessorMethods(orderedMethods);
+          setInstallDatasets(
+            orderedMethods.reduce<Record<string, boolean>>((acc, item) => {
+              acc[item.key] = false;
+              return acc;
+            }, {})
+          );
+          setDatasetConfigText(
+            orderedMethods.reduce<Record<string, string>>((acc, item) => {
+              acc[item.key] = JSON.stringify(item.default_config ?? {}, null, 2);
+              return acc;
+            }, {})
+          );
+          setPreprocessorMethodsError(null);
+          return;
+        } catch (error: unknown) {
+          lastError = error;
+          if (!isTransientFetchFailure(error) || attempt === maxAttempts) {
+            break;
+          }
+          await sleep(600 * attempt);
+        }
       }
+      if (cancelled) return;
+      const message =
+        axios.isAxiosError(lastError) && lastError.response?.data?.detail
+          ? String(lastError.response.data.detail)
+          : axios.isAxiosError(lastError) && lastError.response?.data?.error
+            ? String(lastError.response.data.error)
+            : isTransientFetchFailure(lastError)
+              ? "Storage server is starting up. Retry in a few seconds."
+              : lastError instanceof Error
+                ? lastError.message
+                : "Failed to load preprocessor methods from storage API. Check storage-server logs for YAML/config parse errors.";
+      setPreprocessorMethods([]);
+      setInstallDatasets({});
+      setDatasetConfigText({});
+      setPreprocessorMethodsError(message);
     };
     loadPreprocessorMethods();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -350,6 +393,26 @@ export default function AnnotationPanel({
     setShowJobsLink(false);
 
     try {
+      try {
+        const dimResponse = await axios.get("/api/embeddings/dimensions");
+        const payload = dimResponse.data || {};
+        if (payload?.status === "ok" && payload?.mismatch === true) {
+          const queryDim = Number(payload?.query_dim || 0);
+          const storedDim = Number(payload?.stored_dim || 0);
+          setEmbeddingMismatchDialog({
+            queryDim,
+            storedDim,
+            message:
+              queryDim > 0 && storedDim > 0
+                ? `Размерность нового embedder (${queryDim}) не совпадает с текущей разметкой storage (${storedDim}).`
+                : "Размерность нового embedder не совпадает с текущей разметкой storage.",
+          });
+          return;
+        }
+      } catch {
+        // If dimensions endpoint is unavailable, continue with current flow.
+      }
+
       const statsResponse = await axios.get("/api/storage/stats", {
         params: { include_storage_details: 0 },
       });
@@ -381,6 +444,51 @@ export default function AnnotationPanel({
       setErrorMessage(message);
     } finally {
       setIsStartingJob(false);
+    }
+  };
+
+  const rebuildEmbeddingsAndStartBackfill = async () => {
+    try {
+      setIsRebuildingEmbeddings(true);
+      setStatusMessage(null);
+      setWarningMessage(null);
+      setErrorMessage(null);
+      setShowJobsLink(false);
+
+      const resetResponse = await axios.post("/api/storage/clear-embeddings", {
+        confirm: true,
+        page_size: 1000,
+      });
+      const resetEmbeddings = Number(resetResponse.data?.reset_embeddings || 0);
+
+      const statsResponse = await axios.get("/api/storage/stats", {
+        params: { include_storage_details: 0 },
+      });
+      const pendingRows = Number(statsResponse.data?.embeddings?.pending_rows ?? 0);
+      const response = await axios.post("/api/backfill", {
+        limit: Math.max(1, Math.max(Math.floor(pendingRows || 0), limit)),
+        batch_size: Math.max(1, batchSize),
+        stop_on_error: stopOnError,
+        dataset: embeddingDataset === "all" ? null : embeddingDataset,
+      });
+
+      setEmbeddingMismatchDialog(null);
+      setStatusMessage(
+        `Embeddings reset: ${resetEmbeddings}. Embedding backfill started. Job ID: ${response.data.job_id}.`
+      );
+      setShowJobsLink(true);
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && error.response?.data?.detail
+          ? error.response.data.detail
+          : axios.isAxiosError(error) && error.response?.data?.error
+            ? error.response.data.error
+            : error instanceof Error
+              ? error.message
+              : "Failed to rebuild embeddings";
+      setErrorMessage(message);
+    } finally {
+      setIsRebuildingEmbeddings(false);
     }
   };
 
@@ -737,9 +845,7 @@ export default function AnnotationPanel({
     localUploadFileInputRef.current?.click();
   };
 
-  const handleLocalImageSelected = (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
+  const handleLocalImageSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
     if (!file) return;
     setLocalUploadFile(file);
@@ -1139,6 +1245,57 @@ export default function AnnotationPanel({
                   className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isUploadingLocalImage ? "Uploading..." : "Upload"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {embeddingMismatchDialog && (
+          <div
+            className="fixed inset-0 z-[80] flex items-center justify-center bg-black/45 p-4"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget && !isRebuildingEmbeddings) {
+                setEmbeddingMismatchDialog(null);
+              }
+            }}
+          >
+            <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+              <div className="border-b border-slate-200 px-5 py-4">
+                <div className="text-base font-semibold text-slate-900">
+                  Несовместимая размерность embeddings
+                </div>
+                <div className="mt-1 text-sm text-slate-600">{embeddingMismatchDialog.message}</div>
+              </div>
+              <div className="space-y-3 px-5 py-4 text-sm text-slate-700">
+                <div>
+                  Текущий embedder: <span className="font-semibold">{embeddingMismatchDialog.queryDim || "—"}</span>
+                </div>
+                <div>
+                  Разметка в storage: <span className="font-semibold">{embeddingMismatchDialog.storedDim || "—"}</span>
+                </div>
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
+                  Возможно стоит пересоздать embedding storage под новую размерность и запустить разметку заново либо вернуть прежнюю модель.
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+                <button
+                  type="button"
+                  onClick={() => setEmbeddingMismatchDialog(null)}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                  disabled={isRebuildingEmbeddings}
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  onClick={rebuildEmbeddingsAndStartBackfill}
+                  className={`rounded-lg px-3 py-2 text-sm font-semibold text-white ${
+                    isRebuildingEmbeddings ? "cursor-not-allowed bg-slate-400" : "bg-blue-600 hover:bg-blue-700"
+                  }`}
+                  disabled={isRebuildingEmbeddings}
+                >
+                  {isRebuildingEmbeddings ? "Пересоздаю embeddings..." : "Пересоздать и разметить заново"}
                 </button>
               </div>
             </div>

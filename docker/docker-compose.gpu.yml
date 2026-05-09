@@ -1,6 +1,9 @@
 services:
   avsp-server:
     gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
     deploy:
       resources:
         reservations:

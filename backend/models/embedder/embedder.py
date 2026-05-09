@@ -1,104 +1,99 @@
+from __future__ import annotations
+
 import io
-import time
-import threading
 import os
-import resource
-from fastapi import FastAPI
-from fastapi import Request
-from PIL import Image
-from transformers import AlignProcessor, AlignModel
-from configs.hw_settings import EMBEDDER_CONFIG
-import torch
-from transformers import logging
+import threading
+import time
 from typing import Literal
+from typing import Optional
 
-logging.disable_progress_bar()
+from fastapi import FastAPI
+from fastapi import File
+from fastapi import Request
+from fastapi import UploadFile
+from PIL import Image
 
-app = FastAPI(title="Align Text Embedding API")
-inference_lock = threading.Lock()
+from backend.models.common.hf import configure_hf_download_logging
+from backend.models.common.runtime import resolve_bool_flag
+from backend.models.common.runtime import resolve_torch_dtype
+from backend.models.embedder.base import resolve_device
+from backend.models.embedder.base import runtime_payload
+from backend.models.embedder.factory import create_embedder
+from configs.hw_settings import EMBEDDER_CONFIG
+from configs.hw_settings import TORCH_CONFIG
+
+app = FastAPI(title="Embedder API")
+
 request_lock = threading.Lock()
 requests_in_progress = 0
 last_request_finished_at = 0.0
 
-cfg_device = EMBEDDER_CONFIG.DEVICE.lower()
-if cfg_device == "cuda" and torch.cuda.is_available():
-    device = "cuda"
-elif cfg_device == "mps" and torch.backends.mps.is_available():
-    device = "mps"
-else:
-    device = "cpu"
+cfg_device = str(EMBEDDER_CONFIG.DEVICE).lower()
+device = resolve_device(cfg_device)
+embedder_backend = os.getenv(
+    "EMBEDDER_BACKEND",
+    str(getattr(EMBEDDER_CONFIG, "BACKEND", "ALIGN")),
+)
+embedder_model_name = os.getenv(
+    "EMBEDDER_MODEL_NAME",
+    getattr(EMBEDDER_CONFIG, "MODEL_NAME", None),
+)
+embedder_torch_dtype_raw = os.getenv(
+    "EMBEDDER_TORCH_DTYPE",
+    getattr(EMBEDDER_CONFIG, "TORCH_DTYPE", None),
+)
+embedder_torch_dtype, embedder_dtype_label = resolve_torch_dtype(
+    embedder_torch_dtype_raw,
+    device=device,
+    default_cuda="float32",
+    default_other="float32",
+)
+embedder_attn_implementation_raw = os.getenv(
+    "EMBEDDER_ATTN_IMPLEMENTATION",
+    getattr(EMBEDDER_CONFIG, "ATTN_IMPLEMENTATION", None),
+)
+embedder_attn_implementation: Optional[str] = (
+    str(embedder_attn_implementation_raw).strip() if embedder_attn_implementation_raw else None
+)
+if embedder_attn_implementation == "":
+    embedder_attn_implementation = None
+hf_download_progress = resolve_bool_flag(
+    os.getenv(
+        "EMBEDDER_HF_DOWNLOAD_PROGRESS",
+        os.getenv(
+            "HF_DOWNLOAD_PROGRESS",
+            getattr(TORCH_CONFIG, "HF_DOWNLOAD_PROGRESS", True),
+        ),
+    ),
+    default=True,
+    name="HF_DOWNLOAD_PROGRESS",
+)
 
-processor = AlignProcessor.from_pretrained("kakaobrain/align-base")
-model = AlignModel.from_pretrained("kakaobrain/align-base").to(device)
-model.eval()
+configure_hf_download_logging(hf_download_progress)
+
+embedder = create_embedder(
+    backend_name=embedder_backend,
+    model_name=embedder_model_name,
+    device=device,
+    torch_dtype=embedder_torch_dtype,
+    dtype_label=embedder_dtype_label,
+    attn_implementation=embedder_attn_implementation,
+)
 print(
-    f"Embedder has been successfully initialized.",
+    "Embedder has been successfully initialized.",
+    f"Backend: {embedder.backend_name}.",
+    f"Model: {embedder.model_name}.",
+    f"DType: {embedder.dtype_label}.",
+    f"Attention: {getattr(embedder, 'attn_type', embedder_attn_implementation or 'default')}.",
+    f"HFDownloadProgress: {hf_download_progress}.",
     f"Device: {device}.",
-    f"Port: {EMBEDDER_CONFIG.PORT}"
+    f"Port: {EMBEDDER_CONFIG.PORT}",
 )
 if cfg_device != device:
     print(
-        f"Your config device was: {device}, but currently is used {device}.",
-        f"Check your {cfg_device} availability"
+        f"Your config device was: {cfg_device}, but currently is used {device}.",
+        f"Check your {cfg_device} availability",
     )
-
-
-def _process_rss_mb() -> float:
-    try:
-        with open("/proc/self/statm", "r", encoding="utf-8") as fp:
-            parts = fp.read().strip().split()
-        if len(parts) >= 2:
-            resident_pages = int(parts[1])
-            page_size = os.sysconf("SC_PAGE_SIZE")
-            return round((resident_pages * page_size) / (1024 ** 2), 2)
-    except Exception:
-        pass
-
-    try:
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        rss = float(usage.ru_maxrss)
-        if rss > 10 ** 8:
-            return round(rss / (1024 ** 2), 2)
-        return round(rss / 1024.0, 2)
-    except Exception:
-        return 0.0
-
-
-def _runtime_payload() -> dict:
-    payload = {
-        "configured_device": cfg_device,
-        "selected_device": device,
-        "torch_cuda_available": bool(torch.cuda.is_available()),
-        "torch_mps_available": bool(torch.backends.mps.is_available()),
-        "cuda_device_count": int(torch.cuda.device_count() if torch.cuda.is_available() else 0),
-        "cuda_device_name": None,
-    }
-
-    memory = {
-        "process_rss_mb": _process_rss_mb(),
-        "gpu_allocated_mb": 0.0,
-        "gpu_reserved_mb": 0.0,
-        "gpu_total_mb": 0.0,
-        "gpu_free_mb": 0.0,
-    }
-
-    if device == "cuda" and torch.cuda.is_available():
-        try:
-            current = torch.cuda.current_device()
-            payload["cuda_device_name"] = torch.cuda.get_device_name(current)
-            memory["gpu_allocated_mb"] = round(
-                torch.cuda.memory_allocated(current) / (1024 ** 2), 2
-            )
-            memory["gpu_reserved_mb"] = round(
-                torch.cuda.memory_reserved(current) / (1024 ** 2), 2
-            )
-            free_bytes, total_bytes = torch.cuda.mem_get_info(current)
-            memory["gpu_total_mb"] = round(total_bytes / (1024 ** 2), 2)
-            memory["gpu_free_mb"] = round(free_bytes / (1024 ** 2), 2)
-        except Exception:
-            pass
-
-    return {"runtime": payload, "memory": memory}
 
 
 @app.middleware("http")
@@ -122,35 +117,20 @@ def has_active_http_requests(grace_period_sec: float = 0.0) -> bool:
             return False
         return (time.monotonic() - last_request_finished_at) < grace_period_sec
 
-def get_embedding(inputs, type: Literal["text", "image"] = "image") -> torch.Tensor:
-    with inference_lock, torch.no_grad():
-        if type == "text":
-            text_inputs = processor.tokenizer(
-                inputs,
-                return_tensors="pt",
-                padding=True
-            ).to(device)
 
-            outputs = model.get_text_features(
-                input_ids=text_inputs['input_ids'],
-                attention_mask=text_inputs['attention_mask'],
-                token_type_ids=text_inputs['token_type_ids']
-            )
-        elif type == "image":
-            image_inputs = processor(
-                images=inputs,
-                return_tensors="pt"
-            ).to(device)
+def get_embedding(inputs, type: Literal["text", "image"] = "image") -> list[float]:
+    return embedder.get_embedding(inputs=inputs, input_type=type)
 
-            outputs = model.get_image_features(pixel_values=image_inputs['pixel_values'])
-    
-    if hasattr(outputs, "pooler_output"):
-        outputs = outputs.pooler_output
 
-    embedding = outputs / outputs.norm(dim=-1, keepdim=True)
-    embedding = embedding.cpu().tolist()[0]
+def get_embeddings(inputs, type: Literal["text", "image"] = "image") -> list[list[float]]:
+    return embedder.get_embeddings(inputs=inputs, input_type=type)
 
-    return embedding
+
+def _runtime_payload() -> dict:
+    payload = runtime_payload(configured_device=cfg_device, selected_device=device)
+    payload["runtime"]["dtype"] = embedder.dtype_label
+    payload["runtime"]["attn_type"] = getattr(embedder, "attn_type", embedder_attn_implementation or "default")
+    return payload
 
 
 @app.post("/embedding/text")
@@ -160,8 +140,23 @@ async def inference_text(text: str):
     return {
         "text": text,
         "embedding": embedding,
-        "dim": len(embedding)
+        "dim": len(embedding),
     }
+
+
+@app.post("/embedding/image")
+async def inference_image(file: UploadFile = File(...)):
+    image_bytes = file.file.read()
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    embedding = get_embedding(image, type="image")
+
+    return {
+        "filename": file.filename,
+        "image_shape": image.size,
+        "embedding": embedding,
+        "dim": len(embedding),
+    }
+
 
 @app.post("/embedding/image_bytes")
 async def embedding_image_bytes(request: Request):
@@ -172,7 +167,7 @@ async def embedding_image_bytes(request: Request):
     return {
         "image_shape": image.size,
         "embedding": embedding,
-        "dim": len(embedding)
+        "dim": len(embedding),
     }
 
 
@@ -182,6 +177,7 @@ def healthcheck():
     return {
         "status": "ok",
         "service": "embedder",
-        "model": "kakaobrain/align-base",
+        "backend": embedder.backend_name,
+        "model": embedder.model_name,
         **runtime,
     }

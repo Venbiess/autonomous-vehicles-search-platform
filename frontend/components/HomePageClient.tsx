@@ -30,7 +30,22 @@ interface UISettings {
   showSnapshotSection: boolean;
   showSyntheticInAnnotation: boolean;
   showSearchMeta: boolean;
-  showJobMonitorRuntime: boolean;
+  showJobMonitorModels: boolean;
+  showJobMonitorGpu: boolean;
+}
+
+interface SearchWarningPayload {
+  code?: string;
+  source?: string;
+  query_dim?: number;
+  stored_dim?: number;
+  message?: string;
+}
+
+interface EmbeddingMismatchDialogState {
+  queryDim: number;
+  storedDim: number;
+  message: string;
 }
 
 const IMAGES_PER_PAGE_OPTIONS = [6, 9, 12, 18, 24];
@@ -41,7 +56,8 @@ const DEFAULT_UI_SETTINGS: UISettings = {
   showSnapshotSection: true,
   showSyntheticInAnnotation: true,
   showSearchMeta: false,
-  showJobMonitorRuntime: true,
+  showJobMonitorModels: true,
+  showJobMonitorGpu: false,
 };
 
 function parseStoragePathMeta(storagePath?: string): {
@@ -107,6 +123,7 @@ export default function HomePageClient({
   const [images, setImages] = useState<ImageResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [searchWarningMessage, setSearchWarningMessage] = useState<string | null>(null);
   const [sourceWarning, setSourceWarning] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
@@ -117,6 +134,9 @@ export default function HomePageClient({
   const [maxScoreInput, setMaxScoreInput] = useState("");
   const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [embeddingMismatchDialog, setEmbeddingMismatchDialog] =
+    useState<EmbeddingMismatchDialogState | null>(null);
+  const [isRebuildingEmbeddings, setIsRebuildingEmbeddings] = useState(false);
   const settingsPopoverRef = useRef<HTMLDivElement | null>(null);
 
   const minScore = minScoreInput.trim() === "" ? null : Number(minScoreInput);
@@ -201,31 +221,60 @@ export default function HomePageClient({
   }, [searchMode]);
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(UI_SETTINGS_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as Partial<UISettings>;
-      setUiSettings({
-        showSnapshotSection:
-          typeof parsed?.showSnapshotSection === "boolean"
-            ? parsed.showSnapshotSection
-            : DEFAULT_UI_SETTINGS.showSnapshotSection,
-        showSyntheticInAnnotation:
-          typeof parsed?.showSyntheticInAnnotation === "boolean"
-            ? parsed.showSyntheticInAnnotation
-            : DEFAULT_UI_SETTINGS.showSyntheticInAnnotation,
-        showSearchMeta:
-          typeof parsed?.showSearchMeta === "boolean"
-            ? parsed.showSearchMeta
-            : DEFAULT_UI_SETTINGS.showSearchMeta,
-        showJobMonitorRuntime:
+    const loadSettings = async () => {
+      let gpuAvailableByDefault = false;
+      try {
+        const systemInfo = await axios.get("/api/system-info");
+        gpuAvailableByDefault = Boolean(systemInfo.data?.gpu?.available);
+      } catch {
+        gpuAvailableByDefault = false;
+      }
+
+      try {
+        const raw = window.localStorage.getItem(UI_SETTINGS_STORAGE_KEY);
+        if (!raw) {
+          setUiSettings({
+            ...DEFAULT_UI_SETTINGS,
+            showJobMonitorGpu: gpuAvailableByDefault,
+          });
+          return;
+        }
+        const parsed = JSON.parse(raw) as Partial<UISettings> & { showJobMonitorRuntime?: boolean };
+        const legacyRuntimeToggle =
           typeof parsed?.showJobMonitorRuntime === "boolean"
             ? parsed.showJobMonitorRuntime
-            : DEFAULT_UI_SETTINGS.showJobMonitorRuntime,
-      });
-    } catch {
-      setUiSettings(DEFAULT_UI_SETTINGS);
-    }
+            : undefined;
+
+        setUiSettings({
+          showSnapshotSection:
+            typeof parsed?.showSnapshotSection === "boolean"
+              ? parsed.showSnapshotSection
+              : DEFAULT_UI_SETTINGS.showSnapshotSection,
+          showSyntheticInAnnotation:
+            typeof parsed?.showSyntheticInAnnotation === "boolean"
+              ? parsed.showSyntheticInAnnotation
+              : DEFAULT_UI_SETTINGS.showSyntheticInAnnotation,
+          showSearchMeta:
+            typeof parsed?.showSearchMeta === "boolean"
+              ? parsed.showSearchMeta
+              : DEFAULT_UI_SETTINGS.showSearchMeta,
+          showJobMonitorModels:
+            typeof parsed?.showJobMonitorModels === "boolean"
+              ? parsed.showJobMonitorModels
+              : legacyRuntimeToggle ?? DEFAULT_UI_SETTINGS.showJobMonitorModels,
+          showJobMonitorGpu:
+            typeof parsed?.showJobMonitorGpu === "boolean"
+              ? parsed.showJobMonitorGpu
+              : legacyRuntimeToggle ?? gpuAvailableByDefault,
+        });
+      } catch {
+        setUiSettings({
+          ...DEFAULT_UI_SETTINGS,
+          showJobMonitorGpu: gpuAvailableByDefault,
+        });
+      }
+    };
+    loadSettings();
   }, []);
 
   useEffect(() => {
@@ -268,6 +317,7 @@ export default function HomePageClient({
 
     setIsLoading(true);
     setErrorMessage(null);
+    setSearchWarningMessage(null);
     setLastQuery(cleanedQuery || (imageFile ? "image search" : ""));
     try {
       const response = imageFile
@@ -279,7 +329,37 @@ export default function HomePageClient({
         : await axios.get("/api/search", {
             params: { q: cleanedQuery, limit: 100 },
           });
-      setImages(response.data ?? []);
+      const payload = response.data;
+      const items = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.items)
+          ? payload.items
+          : [];
+      const warning =
+        !Array.isArray(payload) && payload?.warning && typeof payload.warning === "object"
+          ? (payload.warning as SearchWarningPayload)
+          : null;
+      if (warning?.code === "embedding_dim_mismatch") {
+        const queryDim = Number(warning.query_dim || 0);
+        const storedDim = Number(warning.stored_dim || 0);
+        const warningMessage =
+          queryDim > 0 && storedDim > 0
+            ? `Размерность нового embedder (${queryDim}) не совпадает с текущей разметкой storage (${storedDim}). Поиск будет возвращать пустой результат, пока не пересоздать embeddings.`
+            : "Размерность нового embedder не совпадает с текущей разметкой storage. Поиск может возвращать пустой результат.";
+        setSearchWarningMessage(warningMessage);
+        setEmbeddingMismatchDialog({
+          queryDim,
+          storedDim,
+          message: warningMessage,
+        });
+      } else if (warning?.code === "model_unavailable" || warning?.code === "search_backend_unavailable") {
+        const warningMessage =
+          typeof warning.message === "string" && warning.message.trim().length > 0
+            ? warning.message.trim()
+            : "Search backend недоступен. Дождитесь запуска модели.";
+        setSearchWarningMessage(warningMessage);
+      }
+      setImages(items);
       setCurrentPage(1);
     } catch (error) {
       const message = axios.isAxiosError(error)
@@ -288,10 +368,61 @@ export default function HomePageClient({
           ? error.message
           : "Не удалось выполнить поиск";
       setErrorMessage(message);
+      setSearchWarningMessage(null);
       setImages([]);
       setCurrentPage(1);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const rebuildEmbeddingsAndStartBackfill = async () => {
+    try {
+      setIsRebuildingEmbeddings(true);
+      setErrorMessage(null);
+
+      let limit = 1_000_000;
+      try {
+        const statsResponse = await axios.get("/api/storage/stats", {
+          params: { include_storage_details: 0 },
+        });
+        const pendingRows = Number(statsResponse.data?.embeddings?.pending_rows ?? 0);
+        if (Number.isFinite(pendingRows) && pendingRows > 0) {
+          limit = Math.max(1000, Math.floor(pendingRows));
+        }
+      } catch {
+        // Keep fallback limit when stats request is unavailable.
+      }
+
+      const resetResponse = await axios.post("/api/storage/clear-embeddings", {
+        confirm: true,
+        page_size: 1000,
+      });
+      const resetEmbeddings = Number(resetResponse.data?.reset_embeddings || 0);
+
+      const backfillResponse = await axios.post("/api/backfill", {
+        limit,
+        batch_size: 50,
+        stop_on_error: false,
+        dry_run: false,
+      });
+
+      setEmbeddingMismatchDialog(null);
+      setSearchWarningMessage(
+        `Embeddings reset: ${resetEmbeddings}. Backfill job started: ${String(
+          backfillResponse.data?.job_id || ""
+        )}.`
+      );
+      setSearchMode("Job Monitor");
+    } catch (error) {
+      const message = axios.isAxiosError(error)
+        ? error.response?.data?.error || error.message
+        : error instanceof Error
+          ? error.message
+          : "Не удалось пересоздать embeddings";
+      setErrorMessage(message);
+    } finally {
+      setIsRebuildingEmbeddings(false);
     }
   };
 
@@ -421,13 +552,25 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">Show Job Monitor Runtime</div>
-                    <div className="text-xs text-slate-500">GPU host and model runtime blocks</div>
+                    <div className="text-sm font-medium text-slate-800">Show Job Monitor Models</div>
+                    <div className="text-xs text-slate-500">Model runtime block</div>
                   </div>
                   <IOSSwitch
-                    checked={uiSettings.showJobMonitorRuntime}
+                    checked={uiSettings.showJobMonitorModels}
                     onChange={(next) =>
-                      setUiSettings((prev) => ({ ...prev, showJobMonitorRuntime: next }))
+                      setUiSettings((prev) => ({ ...prev, showJobMonitorModels: next }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">Show Job Monitor GPU</div>
+                    <div className="text-xs text-slate-500">GPU host block</div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showJobMonitorGpu}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({ ...prev, showJobMonitorGpu: next }))
                     }
                   />
                 </div>
@@ -505,7 +648,10 @@ export default function HomePageClient({
 
       {searchMode === "Job Monitor" ? (
         <section className="px-6 pt-8 pb-16">
-          <SystemMonitor showRuntimePanels={uiSettings.showJobMonitorRuntime} />
+          <SystemMonitor
+            showModelsPanel={uiSettings.showJobMonitorModels}
+            showGpuPanel={uiSettings.showJobMonitorGpu}
+          />
         </section>
       ) : searchMode === "VLM" ? (
         <VlmPanel />
@@ -542,6 +688,12 @@ export default function HomePageClient({
                 </div>
               )}
 
+              {searchWarningMessage && (
+                <div className="w-full rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 text-left">
+                  {searchWarningMessage}
+                </div>
+              )}
+
               {errorMessage && (
                 <div className="text-sm text-red-600">{errorMessage}</div>
               )}
@@ -553,7 +705,7 @@ export default function HomePageClient({
               {isLoading && (
                 <div className="text-sm text-gray-500">Ищем подходящие кадры...</div>
               )}
-              {!isLoading && images.length === 0 && lastQuery && !errorMessage && (
+              {!isLoading && images.length === 0 && lastQuery && !errorMessage && !searchWarningMessage && (
                 <div className="text-sm text-gray-500">
                   {lastQuery === "image search"
                     ? "Ничего не найдено по загруженному изображению."
@@ -669,6 +821,64 @@ export default function HomePageClient({
         </>
       )}
       <TransferToast onOpenTransfer={openTransferSnapshotSection} />
+
+      {embeddingMismatchDialog && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/45 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !isRebuildingEmbeddings) {
+              setEmbeddingMismatchDialog(null);
+            }
+          }}
+        >
+          <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <div className="text-base font-semibold text-slate-900">
+                Несовместимая размерность embeddings
+              </div>
+              <div className="mt-1 text-sm text-slate-600">
+                {embeddingMismatchDialog.message}
+              </div>
+            </div>
+            <div className="space-y-3 px-5 py-4 text-sm text-slate-700">
+              <div>
+                Текущий запрос embedder: <span className="font-semibold">{embeddingMismatchDialog.queryDim || "—"}</span>
+              </div>
+              <div>
+                Разметка в storage: <span className="font-semibold">{embeddingMismatchDialog.storedDim || "—"}</span>
+              </div>
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
+                Стоит пересоздать embedding storage под новую размерность и заново запустить embedding backfill, либо вернуть прежнюю модель.
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setEmbeddingMismatchDialog(null);
+                  setSearchMode("ANNOTATION");
+                }}
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                disabled={isRebuildingEmbeddings}
+              >
+                Открыть ANNOTATION
+              </button>
+              <button
+                type="button"
+                onClick={rebuildEmbeddingsAndStartBackfill}
+                className={`rounded-lg px-3 py-2 text-sm font-semibold text-white ${
+                  isRebuildingEmbeddings ? "cursor-not-allowed bg-slate-400" : "bg-blue-600 hover:bg-blue-700"
+                }`}
+                disabled={isRebuildingEmbeddings}
+              >
+                {isRebuildingEmbeddings
+                  ? "Пересоздаю embeddings..."
+                  : "Пересоздать и запустить backfill"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

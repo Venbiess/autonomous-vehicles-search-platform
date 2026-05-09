@@ -15,6 +15,13 @@ interface AnnotationStats {
   pending_rows: number;
   annotated_percent: number;
   pending_percent: number;
+  dimensions?: {
+    status?: string;
+    query_dim?: number | null;
+    stored_dim?: number | null;
+    mismatch?: boolean | null;
+    reason?: string | null;
+  };
 }
 
 interface VlmStats extends AnnotationStats {
@@ -190,6 +197,20 @@ function toErrorMessage(value: unknown): string {
     }
   }
   return "";
+}
+
+function isTransientFetchFailure(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false;
+  const message = String(error.message || "").toLowerCase();
+  const detail = String(error.response?.data?.detail || error.response?.data?.error || "").toLowerCase();
+  return (
+    message.includes("fetch failed") ||
+    message.includes("network error") ||
+    message.includes("timeout") ||
+    detail.includes("fetch failed") ||
+    detail.includes("connection refused") ||
+    detail.includes("bad gateway")
+  );
 }
 
 function formatNumber(value: number): string {
@@ -991,14 +1012,27 @@ export default function StoragePanel({
       setIsRefreshing(true);
     }
     try {
-      const response = await axios.get("/api/storage/stats");
-      setStats(response.data);
-      setErrorMessage(null);
-    } catch (error) {
-      const message = extractAxiosErrorMessage(
-        error,
-        "Failed to load storage stats"
-      );
+      const maxAttempts = showLoader ? 4 : 1;
+      let lastError: unknown = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          const response = await axios.get("/api/storage/stats");
+          setStats(response.data);
+          setErrorMessage(null);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (!isTransientFetchFailure(error) || attempt === maxAttempts) {
+            break;
+          }
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 500 * attempt);
+          });
+        }
+      }
+      const message = isTransientFetchFailure(lastError)
+        ? "Storage server is starting up. Retry in a few seconds."
+        : extractAxiosErrorMessage(lastError, "Failed to load storage stats");
       setErrorMessage(message);
     } finally {
       setIsLoading(false);
@@ -1333,9 +1367,22 @@ export default function StoragePanel({
             dataset,
             confirm: true,
           });
+          const requested = Number(response.data?.requested_count || count);
+          const available = Number(response.data?.available_embeddings || 0);
           const selected = Number(response.data?.selected_images || 0);
           const reset = Number(response.data?.reset_embeddings || 0);
-          setCleanupStatusMessage(`Сброшены embeddings: ${reset} из ${selected} выбранных сцен.`);
+          const orphanRemoved = Number(response.data?.orphan_embeddings_removed || 0);
+          const shortageNote =
+            selected < requested
+              ? ` (доступно embeddings: ${available}, запрошено: ${requested})`
+              : "";
+          const orphanNote =
+            orphanRemoved > 0
+              ? `; удалено orphan embeddings: ${orphanRemoved}`
+              : "";
+          setCleanupStatusMessage(
+            `Сброшены embeddings: ${reset} из ${requested} выбранных сцен${shortageNote}${orphanNote}.`
+          );
           await loadStats(false);
         });
       },
@@ -1356,9 +1403,17 @@ export default function StoragePanel({
             dataset,
             confirm: true,
           });
+          const requested = Number(response.data?.requested_count || count);
+          const available = Number(response.data?.available_vlm_annotations || 0);
           const selected = Number(response.data?.selected_images || 0);
           const reset = Number(response.data?.reset_vlm_annotations || 0);
-          setCleanupStatusMessage(`Сброшены VLM-аннотации: ${reset} из ${selected} выбранных сцен.`);
+          const shortageNote =
+            selected < requested
+              ? ` (доступно VLM-аннотаций: ${available}, запрошено: ${requested})`
+              : "";
+          setCleanupStatusMessage(
+            `Сброшены VLM-аннотации: ${reset} из ${requested} выбранных сцен${shortageNote}.`
+          );
           await loadStats(false);
         });
       },
@@ -1407,11 +1462,17 @@ export default function StoragePanel({
             dataset,
             confirm: true,
           });
+          const requested = Number(response.data?.requested_count || count);
+          const available = Number(response.data?.available_images || 0);
           const selected = Number(response.data?.selected_images || 0);
           const deleted = Number(response.data?.deleted_images || 0);
           const failed = Number(response.data?.failed_images || 0);
+          const shortageNote =
+            selected < requested
+              ? ` (доступно сцен: ${available}, запрошено: ${requested})`
+              : "";
           setCleanupStatusMessage(
-            `Полное удаление сцен: выбранo ${selected}, удалено ${deleted}, ошибок ${failed}.`
+            `Полное удаление сцен: выбрано ${selected} из ${requested}, удалено ${deleted}, ошибок ${failed}${shortageNote}.`
           );
           await Promise.all([
             loadStats(false),
@@ -2316,6 +2377,16 @@ export default function StoragePanel({
               <div className="mt-3">Осталось: {formatNumber(stats.embeddings.pending_rows)}</div>
               <div>Размечено: {formatNumber(stats.embeddings.annotated_rows)}</div>
               <div>Не размечено: {pct(stats.embeddings.pending_percent)}</div>
+              <div>
+                Размерность: query{" "}
+                {stats.embeddings.dimensions?.query_dim ?? "?"} / stored{" "}
+                {stats.embeddings.dimensions?.stored_dim ?? "?"}
+              </div>
+              {stats.embeddings.dimensions?.mismatch ? (
+                <div className="text-xs text-amber-700">
+                  Внимание: mismatch размерности эмбеддингов.
+                </div>
+              ) : null}
               <div className="mt-2 text-xs text-slate-500">
                 Оценка оставшегося объёма: {formatBytes(embeddingsRemainingBytes)}
               </div>

@@ -104,6 +104,23 @@ func (p *PgVectorAdapter) ensureTable(ctx context.Context) error {
 
 func (p *PgVectorAdapter) ensureVectorDimensions(ctx context.Context) error {
 	if p.vectorSize <= 0 {
+		_, hasDimensions, err := p.currentVectorDimensions(ctx)
+		if err != nil {
+			return err
+		}
+		if !hasDimensions {
+			return nil
+		}
+		// Allow mixed embedding dimensions when vector_size is unset.
+		// This is useful when users switch embedder models (e.g. 640 -> 2048)
+		// and rebuild vectors without recreating metadata storage.
+		query := fmt.Sprintf(
+			"ALTER TABLE %s ALTER COLUMN embedding TYPE vector USING embedding::vector",
+			p.qualifiedTable(),
+		)
+		if _, err := p.db.ExecContext(ctx, query); err != nil {
+			return err
+		}
 		return nil
 	}
 	currentSize, hasDimensions, err := p.currentVectorDimensions(ctx)
@@ -131,6 +148,9 @@ func (p *PgVectorAdapter) ensureANNIndexes(ctx context.Context) error {
 		return err
 	}
 	if !hasDimensions {
+		if err := p.dropANNIndexes(ctx); err != nil {
+			return err
+		}
 		log.Printf("pgvector: ANN index skipped for %s.%s (embedding column has no fixed dimensions)", p.schema, p.tableName)
 		return nil
 	}
@@ -158,6 +178,20 @@ func (p *PgVectorAdapter) ensureANNIndexes(ctx context.Context) error {
 		return nil
 	}
 	log.Printf("pgvector: ivfflat index creation skipped")
+	return nil
+}
+
+func (p *PgVectorAdapter) dropANNIndexes(ctx context.Context) error {
+	for _, suffix := range []string{"embedding_hnsw_idx", "embedding_ivfflat_idx"} {
+		query := fmt.Sprintf(
+			"DROP INDEX IF EXISTS %s.%s",
+			pqIdent(p.schema),
+			p.indexName(suffix),
+		)
+		if _, err := p.db.ExecContext(ctx, query); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -298,6 +332,38 @@ func (p *PgVectorAdapter) Delete(ctx context.Context, objectIDs []string) error 
 	query := fmt.Sprintf("DELETE FROM %s WHERE object_id IN (%s)", p.qualifiedTable(), strings.Join(args, ","))
 	_, err := p.db.ExecContext(ctx, query, vals...)
 	return err
+}
+
+func (p *PgVectorAdapter) CleanupOrphaned(ctx context.Context, metadataSchema string, metadataTable string) (int, error) {
+	schema := strings.TrimSpace(metadataSchema)
+	table := strings.TrimSpace(metadataTable)
+	if schema == "" {
+		schema = "public"
+	}
+	if table == "" {
+		table = "objects"
+	}
+	query := fmt.Sprintf(
+		`DELETE FROM %s AS v
+		 WHERE NOT EXISTS (
+		   SELECT 1 FROM %s.%s AS o WHERE o.object_id = v.object_id
+		 )`,
+		p.qualifiedTable(),
+		pqIdent(schema),
+		pqIdent(table),
+	)
+	result, err := p.db.ExecContext(ctx, query)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if affected < 0 {
+		return 0, nil
+	}
+	return int(affected), nil
 }
 
 func (p *PgVectorAdapter) Count(ctx context.Context) (int64, error) {

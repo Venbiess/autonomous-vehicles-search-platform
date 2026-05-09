@@ -3,6 +3,38 @@
 import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 
+interface RuntimeServiceData {
+  name?: string;
+  endpoint?: string;
+  reachable?: boolean;
+  status?: string;
+  model?: string;
+  device?: string;
+  runtime?: {
+    configured_device?: string;
+    selected_device?: string;
+    torch_cuda_available?: boolean;
+    torch_mps_available?: boolean;
+    cuda_device_count?: number;
+    cuda_device_name?: string | null;
+    dtype?: string;
+    attn_type?: string;
+  };
+  memory?: {
+    process_rss_mb?: number;
+    gpu_allocated_mb?: number;
+    gpu_reserved_mb?: number;
+    gpu_total_mb?: number;
+    gpu_free_mb?: number;
+  };
+  counters?: {
+    received?: number;
+    completed?: number;
+    in_progress?: number;
+  };
+  error?: string;
+}
+
 interface SystemInfo {
   cpu: {
     usage_percent: number;
@@ -38,66 +70,8 @@ interface SystemInfo {
     error?: string;
   };
   services?: {
-    embedder?: {
-      name?: string;
-      endpoint?: string;
-      reachable?: boolean;
-      status?: string;
-      model?: string;
-      device?: string;
-      runtime?: {
-        configured_device?: string;
-        selected_device?: string;
-        torch_cuda_available?: boolean;
-        torch_mps_available?: boolean;
-        cuda_device_count?: number;
-        cuda_device_name?: string | null;
-        dtype?: string;
-      };
-      memory?: {
-        process_rss_mb?: number;
-        gpu_allocated_mb?: number;
-        gpu_reserved_mb?: number;
-        gpu_total_mb?: number;
-        gpu_free_mb?: number;
-      };
-      counters?: {
-        received?: number;
-        completed?: number;
-        in_progress?: number;
-      };
-      error?: string;
-    };
-    vlm?: {
-      name?: string;
-      endpoint?: string;
-      reachable?: boolean;
-      status?: string;
-      model?: string;
-      device?: string;
-      runtime?: {
-        configured_device?: string;
-        selected_device?: string;
-        torch_cuda_available?: boolean;
-        torch_mps_available?: boolean;
-        cuda_device_count?: number;
-        cuda_device_name?: string | null;
-        dtype?: string;
-      };
-      memory?: {
-        process_rss_mb?: number;
-        gpu_allocated_mb?: number;
-        gpu_reserved_mb?: number;
-        gpu_total_mb?: number;
-        gpu_free_mb?: number;
-      };
-      counters?: {
-        received?: number;
-        completed?: number;
-        in_progress?: number;
-      };
-      error?: string;
-    };
+    embedder?: RuntimeServiceData;
+    vlm?: RuntimeServiceData;
   };
   uptime_seconds: number;
   timestamp: string;
@@ -150,7 +124,8 @@ interface LogViewerState {
   title: string;
   content: string;
   jobId?: string;
-  source?: "job" | "error";
+  source?: "job" | "error" | "model";
+  modelService?: "embedder" | "vlm";
 }
 
 interface ConfigViewerState {
@@ -166,10 +141,15 @@ interface WaymoAuthStartResponse {
   error?: string;
 }
 
+type ModelServiceKey = "embedder" | "vlm";
+type RuntimeServiceStatus = "online" | "starting" | "offline";
+
 export default function SystemMonitor({
-  showRuntimePanels = false,
+  showModelsPanel = true,
+  showGpuPanel = true,
 }: {
-  showRuntimePanels?: boolean;
+  showModelsPanel?: boolean;
+  showGpuPanel?: boolean;
 }) {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -189,6 +169,12 @@ export default function SystemMonitor({
   const [waymoAuthError, setWaymoAuthError] = useState<string | null>(null);
   const [waymoAuthSuccess, setWaymoAuthSuccess] = useState<string | null>(null);
   const [waymoAuthPromptedJobIds, setWaymoAuthPromptedJobIds] = useState<string[]>([]);
+  const [modelLogMeta, setModelLogMeta] = useState<
+    Record<ModelServiceKey, { exists: boolean; updated_at?: string | null }>
+  >({
+    embedder: { exists: false, updated_at: null },
+    vlm: { exists: false, updated_at: null },
+  });
 
   const fetchSystemInfo = async () => {
     try {
@@ -210,19 +196,58 @@ export default function SystemMonitor({
     }
   };
 
+  const fetchModelLogMeta = async () => {
+    try {
+      const [embedderResponse, vlmResponse] = await Promise.all([
+        axios.get("/api/model-logs", {
+          params: { service: "embedder", meta_only: "1" },
+        }),
+        axios.get("/api/model-logs", {
+          params: { service: "vlm", meta_only: "1" },
+        }),
+      ]);
+      setModelLogMeta({
+        embedder: {
+          exists: Boolean(embedderResponse.data?.exists),
+          updated_at:
+            typeof embedderResponse.data?.updated_at === "string"
+              ? embedderResponse.data.updated_at
+              : null,
+        },
+        vlm: {
+          exists: Boolean(vlmResponse.data?.exists),
+          updated_at:
+            typeof vlmResponse.data?.updated_at === "string"
+              ? vlmResponse.data.updated_at
+              : null,
+        },
+      });
+    } catch (err) {
+      console.error("Failed to fetch model log metadata:", err);
+    }
+  };
+
   useEffect(() => {
     const loadData = async () => {
       setIsLoading(true);
-      await Promise.all([fetchSystemInfo(), fetchJobs()]);
+      await Promise.all([fetchSystemInfo(), fetchJobs(), fetchModelLogMeta()]);
       setIsLoading(false);
     };
     
     loadData();
-    const interval = setInterval(() => {
+    const coreInterval = setInterval(() => {
       fetchSystemInfo();
       fetchJobs();
     }, 5000);
-    return () => clearInterval(interval);
+
+    const modelLogInterval = setInterval(() => {
+      fetchModelLogMeta();
+    }, 10000);
+
+    return () => {
+      clearInterval(coreInterval);
+      clearInterval(modelLogInterval);
+    };
   }, []);
 
   useEffect(() => {
@@ -256,8 +281,38 @@ export default function SystemMonitor({
     return `${safe.toFixed(2)} MB`;
   };
 
-  const serviceStatusBadge = (reachable?: boolean): string => {
-    return reachable ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700";
+  const serviceStatusBadge = (status: RuntimeServiceStatus): string => {
+    if (status === "online") return "bg-emerald-100 text-emerald-700";
+    if (status === "starting") return "bg-blue-100 text-blue-700";
+    return "bg-rose-100 text-rose-700";
+  };
+
+  const getServiceStatusLabel = (status: RuntimeServiceStatus): string => {
+    if (status === "online") return "online";
+    if (status === "starting") return "starting";
+    return "offline";
+  };
+
+  const getServiceUiStatus = (
+    serviceKey: ModelServiceKey,
+    serviceData: RuntimeServiceData | undefined
+  ): RuntimeServiceStatus => {
+    if (serviceData?.reachable) {
+      return "online";
+    }
+    const statusRaw = String(serviceData?.status || "").toLowerCase();
+    if (statusRaw === "starting" || statusRaw === "initializing" || statusRaw === "loading") {
+      return "starting";
+    }
+    const meta = modelLogMeta[serviceKey];
+    if (meta?.exists) {
+      const updatedAtMs = meta.updated_at ? Date.parse(meta.updated_at) : NaN;
+      const ageMs = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : Number.POSITIVE_INFINITY;
+      if (ageMs <= 20 * 60 * 1000) {
+        return "starting";
+      }
+    }
+    return "offline";
   };
 
   const getJobStatusColor = (status: string): { bg: string; text: string } => {
@@ -623,7 +678,7 @@ export default function SystemMonitor({
   }, [waymoAuthModalOpen, waymoAuthSessionId, waymoAuthBusy]);
 
   useEffect(() => {
-    if (!logViewer?.jobId || !logViewer.source) {
+    if (!logViewer?.jobId || !logViewer.source || logViewer.source === "model") {
       return;
     }
     const job = jobs.find((item) => item.job_id === logViewer.jobId);
@@ -657,6 +712,64 @@ export default function SystemMonitor({
     getJobMainLog,
     getJobErrorLog,
   ]);
+
+  useEffect(() => {
+    if (logViewer?.source !== "model" || !logViewer.modelService) {
+      return;
+    }
+
+    let active = true;
+    const service = logViewer.modelService;
+    const loadLogs = async () => {
+      try {
+        const response = await axios.get("/api/model-logs", {
+          params: { service, tail: 1200 },
+        });
+        const updatedAtRaw = String(response.data?.updated_at || "").trim();
+        const updatedAtLabel = updatedAtRaw
+          ? new Date(updatedAtRaw).toLocaleTimeString("ru-RU")
+          : "—";
+        const content =
+          typeof response.data?.content === "string" && response.data.content.trim()
+            ? response.data.content
+            : "No startup logs yet.";
+        if (!active) {
+          return;
+        }
+        setLogViewer((current) => {
+          if (!current || current.source !== "model" || current.modelService !== service) {
+            return current;
+          }
+          return {
+            ...current,
+            title: `${service.toUpperCase()} startup logs (updated ${updatedAtLabel})`,
+            content,
+          };
+        });
+      } catch (err) {
+        if (!active) {
+          return;
+        }
+        const message = err instanceof Error ? err.message : "Failed to load model logs";
+        setLogViewer((current) => {
+          if (!current || current.source !== "model" || current.modelService !== service) {
+            return current;
+          }
+          return {
+            ...current,
+            content: `Failed to load logs: ${message}`,
+          };
+        });
+      }
+    };
+
+    loadLogs();
+    const interval = setInterval(loadLogs, 2500);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [logViewer?.source, logViewer?.modelService]);
 
   useEffect(() => {
     if (!logViewer && !configViewer && !cancelDialogJob && !waymoAuthModalOpen) {
@@ -709,7 +822,7 @@ export default function SystemMonitor({
     return null;
   }
 
-  const serviceEntries = [
+  const serviceEntries: Array<{ key: ModelServiceKey; label: string; data: RuntimeServiceData | undefined }> = [
     { key: "embedder", label: "Embedder", data: systemInfo.services?.embedder },
     { key: "vlm", label: "VLM", data: systemInfo.services?.vlm },
   ];
@@ -825,142 +938,169 @@ export default function SystemMonitor({
           </div>
         </div>
 
-        {showRuntimePanels && (
+        {(showModelsPanel || showGpuPanel) && (
           <>
-            <div className="mt-6">
-              <h3 className="text-lg font-semibold text-gray-800 mb-3">
-                Модели и устройства
-              </h3>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {serviceEntries.map((service) => {
-                  const runtime = service.data?.runtime ?? {};
-                  const memory = service.data?.memory ?? {};
-                  const counters = service.data?.counters ?? {};
-                  const selectedDevice =
-                    String(runtime.selected_device || service.data?.device || "unknown");
-                  return (
-                    <div key={service.key} className="bg-slate-50 rounded-lg border border-slate-200 p-4">
-                      <div className="flex items-center justify-between">
-                        <h4 className="text-base font-semibold text-slate-800">{service.label}</h4>
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-xs font-semibold ${serviceStatusBadge(
-                            service.data?.reachable
-                          )}`}
-                        >
-                          {service.data?.reachable ? "online" : "offline"}
-                        </span>
-                      </div>
-                      <div className="mt-2 space-y-1 text-sm text-slate-700">
-                        <div>
-                          <span className="text-slate-500">Модель: </span>
-                          <span className="font-medium">{service.data?.model || "—"}</span>
+            {showModelsPanel && (
+              <div className="mt-6">
+                <h3 className="text-lg font-semibold text-gray-800 mb-3">
+                  Модели и устройства
+                </h3>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {serviceEntries.map((service) => {
+                    const runtime = service.data?.runtime ?? {};
+                    const memory = service.data?.memory ?? {};
+                    const counters = service.data?.counters ?? {};
+                    const uiStatus = getServiceUiStatus(service.key, service.data);
+                    const canOpenStartupLogs =
+                      uiStatus === "starting" || Boolean(modelLogMeta[service.key]?.exists);
+                    const selectedDevice =
+                      String(runtime.selected_device || service.data?.device || "unknown");
+                    return (
+                      <div key={service.key} className="bg-slate-50 rounded-lg border border-slate-200 p-4">
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-base font-semibold text-slate-800">{service.label}</h4>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLogViewer({
+                                title: `${service.label} startup logs`,
+                                content: "Loading startup logs...",
+                                source: "model",
+                                modelService: service.key,
+                              })
+                            }
+                            className={`rounded-full px-2 py-0.5 text-xs font-semibold transition hover:opacity-90 ${
+                              serviceStatusBadge(uiStatus)
+                            } ${canOpenStartupLogs ? "underline decoration-current underline-offset-2" : "cursor-default"}`}
+                            disabled={!canOpenStartupLogs}
+                            title={
+                              canOpenStartupLogs
+                                ? "Open startup logs"
+                                : "No startup logs available yet"
+                            }
+                          >
+                            {getServiceStatusLabel(uiStatus)}
+                          </button>
                         </div>
-                        <div>
-                          <span className="text-slate-500">Endpoint: </span>
-                          <span className="font-mono text-xs">{service.data?.endpoint || "—"}</span>
-                        </div>
-                        <div>
-                          <span className="text-slate-500">Устройство: </span>
-                          <span className="font-semibold">{selectedDevice}</span>
-                          {runtime.cuda_device_name ? (
-                            <span className="text-xs text-slate-500">{` (${runtime.cuda_device_name})`}</span>
+                        <div className="mt-2 space-y-1 text-sm text-slate-700">
+                          <div>
+                            <span className="text-slate-500">Модель: </span>
+                            <span className="font-medium">{service.data?.model || "—"}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Endpoint: </span>
+                            <span className="font-mono text-xs">{service.data?.endpoint || "—"}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Устройство: </span>
+                            <span className="font-semibold">{selectedDevice}</span>
+                            {runtime.cuda_device_name ? (
+                              <span className="text-xs text-slate-500">{` (${runtime.cuda_device_name})`}</span>
+                            ) : null}
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Конфиг: </span>
+                            <span>{String(runtime.configured_device || "—")}</span>
+                            {runtime.dtype ? (
+                              <span className="text-xs text-slate-500">{` · dtype=${runtime.dtype}`}</span>
+                            ) : null}
+                            {runtime.attn_type ? (
+                              <span className="text-xs text-slate-500">{` · attn=${runtime.attn_type}`}</span>
+                            ) : null}
+                          </div>
+                          <div>
+                            <span className="text-slate-500">RAM процесса: </span>
+                            <span>{formatMb(memory.process_rss_mb)}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">GPU память: </span>
+                            <span>
+                              {`${formatMb(memory.gpu_allocated_mb)} alloc / ${formatMb(
+                                memory.gpu_reserved_mb
+                              )} reserved`}
+                            </span>
+                          </div>
+                          {(memory.gpu_total_mb ?? 0) > 0 ? (
+                            <div>
+                              <span className="text-slate-500">GPU всего/свободно: </span>
+                              <span>{`${formatMb(memory.gpu_total_mb)} / ${formatMb(
+                                memory.gpu_free_mb
+                              )}`}</span>
+                            </div>
+                          ) : null}
+                          {typeof counters.in_progress === "number" ? (
+                            <div>
+                              <span className="text-slate-500">Запросы: </span>
+                              <span>{`in_progress=${counters.in_progress}, completed=${counters.completed ?? 0}, received=${counters.received ?? 0}`}</span>
+                            </div>
+                          ) : null}
+                          {service.data?.error ? (
+                            uiStatus === "starting" ? null : (
+                              <div className="text-xs text-rose-600">{service.data.error}</div>
+                            )
                           ) : null}
                         </div>
-                        <div>
-                          <span className="text-slate-500">Конфиг: </span>
-                          <span>{String(runtime.configured_device || "—")}</span>
-                          {runtime.dtype ? (
-                            <span className="text-xs text-slate-500">{` · dtype=${runtime.dtype}`}</span>
-                          ) : null}
-                        </div>
-                        <div>
-                          <span className="text-slate-500">RAM процесса: </span>
-                          <span>{formatMb(memory.process_rss_mb)}</span>
-                        </div>
-                        <div>
-                          <span className="text-slate-500">GPU память: </span>
-                          <span>
-                            {`${formatMb(memory.gpu_allocated_mb)} alloc / ${formatMb(
-                              memory.gpu_reserved_mb
-                            )} reserved`}
-                          </span>
-                        </div>
-                        {(memory.gpu_total_mb ?? 0) > 0 ? (
-                          <div>
-                            <span className="text-slate-500">GPU всего/свободно: </span>
-                            <span>{`${formatMb(memory.gpu_total_mb)} / ${formatMb(
-                              memory.gpu_free_mb
-                            )}`}</span>
-                          </div>
-                        ) : null}
-                        {typeof counters.in_progress === "number" ? (
-                          <div>
-                            <span className="text-slate-500">Запросы: </span>
-                            <span>{`in_progress=${counters.in_progress}, completed=${counters.completed ?? 0}, received=${counters.received ?? 0}`}</span>
-                          </div>
-                        ) : null}
-                        {service.data?.error ? (
-                          <div className="text-xs text-rose-600">{service.data.error}</div>
-                        ) : null}
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
-            </div>
+            )}
 
-            <div className="mt-6">
-              <h3 className="text-lg font-semibold text-gray-800 mb-3">GPU хоста</h3>
-              {gpuList.length === 0 ? (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-                  {systemInfo.gpu?.error
-                    ? `GPU недоступен: ${systemInfo.gpu.error}`
-                    : "GPU не обнаружен на текущем хосте master-сервиса."}
-                </div>
-              ) : (
-                <div className="overflow-x-auto rounded-lg border border-slate-200">
-                  <table className="min-w-full divide-y divide-slate-200 bg-white">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          GPU
-                        </th>
-                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Util
-                        </th>
-                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Memory
-                        </th>
-                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Temp
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200">
-                      {gpuList.map((gpu) => (
-                        <tr key={`${gpu.index}-${gpu.uuid || gpu.name}`}>
-                          <td className="px-3 py-2 text-sm text-slate-700">
-                            <div className="font-medium">{`#${gpu.index} ${gpu.name}`}</div>
-                            {gpu.uuid ? <div className="text-xs text-slate-500">{gpu.uuid}</div> : null}
-                          </td>
-                          <td className="px-3 py-2 text-sm text-slate-700">
-                            {`${Number(gpu.utilization_percent ?? 0).toFixed(1)}%`}
-                          </td>
-                          <td className="px-3 py-2 text-sm text-slate-700">
-                            {`${formatMb(gpu.memory_used_mb)} / ${formatMb(gpu.memory_total_mb)} (${Number(
-                              gpu.memory_used_percent ?? 0
-                            ).toFixed(1)}%)`}
-                          </td>
-                          <td className="px-3 py-2 text-sm text-slate-700">
-                            {`${Number(gpu.temperature_c ?? 0).toFixed(0)}°C`}
-                          </td>
+            {showGpuPanel && (
+              <div className="mt-6">
+                <h3 className="text-lg font-semibold text-gray-800 mb-3">GPU хоста</h3>
+                {gpuList.length === 0 ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                    {systemInfo.gpu?.error
+                      ? `GPU недоступен: ${systemInfo.gpu.error}`
+                      : "GPU не обнаружен на текущем хосте master-сервиса."}
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto rounded-lg border border-slate-200">
+                    <table className="min-w-full divide-y divide-slate-200 bg-white">
+                      <thead className="bg-slate-50">
+                        <tr>
+                          <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                            GPU
+                          </th>
+                          <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                            Util
+                          </th>
+                          <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                            Memory
+                          </th>
+                          <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                            Temp
+                          </th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200">
+                        {gpuList.map((gpu) => (
+                          <tr key={`${gpu.index}-${gpu.uuid || gpu.name}`}>
+                            <td className="px-3 py-2 text-sm text-slate-700">
+                              <div className="font-medium">{`#${gpu.index} ${gpu.name}`}</div>
+                              {gpu.uuid ? <div className="text-xs text-slate-500">{gpu.uuid}</div> : null}
+                            </td>
+                            <td className="px-3 py-2 text-sm text-slate-700">
+                              {`${Number(gpu.utilization_percent ?? 0).toFixed(1)}%`}
+                            </td>
+                            <td className="px-3 py-2 text-sm text-slate-700">
+                              {`${formatMb(gpu.memory_used_mb)} / ${formatMb(gpu.memory_total_mb)} (${Number(
+                                gpu.memory_used_percent ?? 0
+                              ).toFixed(1)}%)`}
+                            </td>
+                            <td className="px-3 py-2 text-sm text-slate-700">
+                              {`${Number(gpu.temperature_c ?? 0).toFixed(0)}°C`}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1552,6 +1692,9 @@ export default function SystemMonitor({
                 <div className="text-sm font-semibold text-slate-900">
                   {logViewer.title}
                 </div>
+                {logViewer.source === "model" ? (
+                  <div className="text-xs text-slate-500">Live refresh: every 2.5s</div>
+                ) : null}
               </div>
               <button
                 type="button"
