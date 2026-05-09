@@ -382,3 +382,38 @@ class ModelGateway:
         }
         result = self._rpc.call(self._rpc.cfg.vlm_queue, payload)
         return str(result.get("response", "")).strip()
+
+    def run_vlm_batch(
+        self,
+        http_client,
+        *,
+        items: list[Dict[str, Any]],
+        max_new_tokens: int,
+    ) -> list[str]:
+        if self._rpc is None:
+            raise RuntimeError("rabbitmq RPC client is not initialized")
+        if not items:
+            return []
+        payload_items = [
+            {
+                "image_base64": base64.b64encode(item["image_bytes"]).decode("ascii"),
+                "prompt": str(item.get("prompt", "")),
+                "metadata": item.get("metadata", {}),
+            }
+            for item in items
+        ]
+        payload = {
+            "task": "generate_vlm_batch",
+            "items": payload_items,
+            "max_new_tokens": int(max_new_tokens),
+        }
+        result = self._rpc.call(self._rpc.cfg.vlm_queue, payload)
+        responses = result.get("responses", [])
+        if not isinstance(responses, list):
+            raise RabbitRPCError("invalid generate_vlm_batch response: responses is not a list")
+        if len(responses) != len(items):
+            raise RabbitRPCError(
+                "invalid generate_vlm_batch response: "
+                f"expected={len(items)} actual={len(responses)}"
+            )
+        return [str(item).strip() for item in responses]

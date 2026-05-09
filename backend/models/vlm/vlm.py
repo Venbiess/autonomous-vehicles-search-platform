@@ -5,6 +5,7 @@ import logging
 import os
 import threading
 import time
+from typing import List
 from typing import Optional
 
 from fastapi import FastAPI
@@ -141,6 +142,18 @@ def has_active_http_requests(grace_period_sec: float = 0.0) -> bool:
 
 def _generate_text(image: Image.Image, prompt_text: str, max_new_tokens: int) -> str:
     return vlm.generate_text(image=image, prompt_text=prompt_text, max_new_tokens=max_new_tokens)
+
+
+def _generate_text_batch(
+    images: List[Image.Image],
+    prompt_texts: List[str],
+    max_new_tokens: int,
+) -> List[str]:
+    return vlm.generate_text_batch(
+        images=images,
+        prompt_texts=prompt_texts,
+        max_new_tokens=max_new_tokens,
+    )
 
 
 @app.get("/health")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
+from typing import List
 
 import torch
 from PIL import Image
@@ -28,9 +29,39 @@ class BaseVLM(ABC):
     def _generate(self, image: Image.Image, prompt_text: str, max_new_tokens: int) -> str:
         raise NotImplementedError
 
+    def _generate_batch(
+        self,
+        images: List[Image.Image],
+        prompt_texts: List[str],
+        max_new_tokens: int,
+    ) -> List[str]:
+        return [
+            self._generate(image=image, prompt_text=prompt_text, max_new_tokens=max_new_tokens)
+            for image, prompt_text in zip(images, prompt_texts)
+        ]
+
     def generate_text(self, image: Image.Image, prompt_text: str, max_new_tokens: int) -> str:
         with self._inference_lock, torch.inference_mode():
             return self._generate(image=image, prompt_text=prompt_text, max_new_tokens=max_new_tokens)
+
+    def generate_text_batch(
+        self,
+        images: List[Image.Image],
+        prompt_texts: List[str],
+        max_new_tokens: int,
+    ) -> List[str]:
+        if len(images) != len(prompt_texts):
+            raise ValueError(
+                f"batch size mismatch: images={len(images)} prompts={len(prompt_texts)}"
+            )
+        if not images:
+            return []
+        with self._inference_lock, torch.inference_mode():
+            return self._generate_batch(
+                images=images,
+                prompt_texts=prompt_texts,
+                max_new_tokens=max_new_tokens,
+            )
 
     def get_runtime_payload(self, configured_device: str) -> dict:
         payload = runtime_payload(configured_device=configured_device, selected_device=self.device)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import List
+
 from PIL import Image
 from transformers import AutoModelForImageTextToText
 from transformers import AutoProcessor
@@ -71,3 +73,48 @@ class SmolVLMBackend(BaseVLM):
             skip_special_tokens=True,
         )[0]
         return generated_text.strip()
+
+    def _generate_batch(
+        self,
+        images: List[Image.Image],
+        prompt_texts: List[str],
+        max_new_tokens: int,
+    ) -> List[str]:
+        messages = [
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": prompt_text},
+                    ],
+                }
+            ]
+            for prompt_text in prompt_texts
+        ]
+        prompts = [
+            self.processor.apply_chat_template(message, add_generation_prompt=True)
+            for message in messages
+        ]
+        inputs = self.processor(
+            text=prompts,
+            images=images,
+            return_tensors="pt",
+            padding=True,
+        )
+        inputs = {key: value.to(self.device) for key, value in inputs.items()}
+        generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+        attention_mask = inputs.get("attention_mask")
+        if attention_mask is None:
+            prompt_lengths = [int(inputs["input_ids"].shape[1])] * len(prompt_texts)
+        else:
+            prompt_lengths = [int(mask.sum().item()) for mask in attention_mask]
+        generated_only = [
+            output_ids[prompt_len:]
+            for output_ids, prompt_len in zip(generated_ids, prompt_lengths)
+        ]
+        generated_texts = self.processor.batch_decode(
+            generated_only,
+            skip_special_tokens=True,
+        )
+        return [text.strip() for text in generated_texts]

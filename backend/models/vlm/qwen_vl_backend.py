@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import List
+
 from PIL import Image
 from transformers import AutoProcessor
 from transformers import Qwen3VLForConditionalGeneration
@@ -80,3 +82,51 @@ class QwenVLMBackend(BaseVLM):
             clean_up_tokenization_spaces=False,
         )[0]
         return output_text.strip()
+
+    def _generate_batch(
+        self,
+        images: List[Image.Image],
+        prompt_texts: List[str],
+        max_new_tokens: int,
+    ) -> List[str]:
+        messages = [
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image},
+                        {"type": "text", "text": prompt_text},
+                    ],
+                }
+            ]
+            for image, prompt_text in zip(images, prompt_texts)
+        ]
+        # Qwen3-VL docs recommend left padding for batched generation.
+        self.processor.tokenizer.padding_side = "left"
+        inputs = self.processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+            padding=True,
+        )
+        inputs.pop("token_type_ids", None)
+        inputs = {key: value.to(self.device) for key, value in inputs.items()}
+
+        generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+        attention_mask = inputs.get("attention_mask")
+        if attention_mask is None:
+            prompt_lengths = [int(inputs["input_ids"].shape[1])] * len(prompt_texts)
+        else:
+            prompt_lengths = [int(mask.sum().item()) for mask in attention_mask]
+        generated_ids_trimmed = [
+            out_ids[prompt_len:]
+            for out_ids, prompt_len in zip(generated_ids, prompt_lengths)
+        ]
+        output_texts = self.processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+        return [text.strip() for text in output_texts]

@@ -271,6 +271,7 @@ def run_embedder_worker(ch, queue_name: str) -> None:
 
 def run_vlm_worker(ch, queue_name: str) -> None:
     from backend.models.vlm.vlm import _generate_text
+    from backend.models.vlm.vlm import _generate_text_batch
     from backend.models.vlm.vlm import has_active_http_requests
 
     def _handle_message(channel, method, props, body):
@@ -284,9 +285,7 @@ def run_vlm_worker(ch, queue_name: str) -> None:
             if task == "health":
                 response = {"ok": True, "worker": "vlm"}
                 status = "ok"
-            elif task != "generate_vlm":
-                raise ValueError(f"unknown vlm task: {task}")
-            else:
+            elif task == "generate_vlm":
                 encoded = str(payload.get("image_base64", "")).strip()
                 image_bytes = base64.b64decode(encoded)
                 image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -295,6 +294,31 @@ def run_vlm_worker(ch, queue_name: str) -> None:
                 generated = _generate_text(image, prompt, max_new_tokens)
                 response = {"ok": True, "response": generated}
                 status = "ok"
+            elif task == "generate_vlm_batch":
+                items = payload.get("items", [])
+                if not isinstance(items, list) or not items:
+                    raise ValueError("items must be a non-empty list")
+                images: list[Image.Image] = []
+                prompts: list[str] = []
+                max_new_tokens = int(payload.get("max_new_tokens", 64))
+                for item in items:
+                    if not isinstance(item, dict):
+                        raise ValueError("every item must be an object")
+                    encoded = str(item.get("image_base64", "")).strip()
+                    if not encoded:
+                        raise ValueError("image_base64 must be non-empty")
+                    image_bytes = base64.b64decode(encoded)
+                    images.append(Image.open(io.BytesIO(image_bytes)).convert("RGB"))
+                    prompts.append(str(item.get("prompt", "")))
+                generated = _generate_text_batch(
+                    images=images,
+                    prompt_texts=prompts,
+                    max_new_tokens=max_new_tokens,
+                )
+                response = {"ok": True, "responses": generated}
+                status = "ok"
+            else:
+                raise ValueError(f"unknown vlm task: {task}")
         except Exception as exc:  # noqa: BLE001
             response = {
                 "ok": False,

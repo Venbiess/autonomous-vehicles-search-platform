@@ -130,14 +130,36 @@ function normalizeFieldName(name: string): string {
   return /^[0-9]/.test(normalized) ? `field_${normalized}` : normalized;
 }
 
+function parseIntegerInput(
+  rawValue: string,
+  label: string,
+  { min = 1, max }: { min?: number; max?: number } = {}
+): number {
+  const value = String(rawValue ?? "").trim();
+  if (!value) {
+    throw new Error(`${label} is required.`);
+  }
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`${label} must be an integer.`);
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < min) {
+    throw new Error(`${label} must be >= ${min}.`);
+  }
+  if (typeof max === "number" && parsed > max) {
+    throw new Error(`${label} must be <= ${max}.`);
+  }
+  return parsed;
+}
+
 export default function AnnotationPanel({
   onOpenJobsMonitor,
   onOpenStorage,
   showSyntheticMethod = true,
 }: AnnotationPanelProps) {
   const localUploadFileInputRef = useRef<HTMLInputElement | null>(null);
-  const [limit, setLimit] = useState(1000);
-  const [batchSize, setBatchSize] = useState(50);
+  const [limitInput, setLimitInput] = useState("1000");
+  const [batchSizeInput, setBatchSizeInput] = useState("50");
   const [stopOnError, setStopOnError] = useState(false);
   const [isStartingJob, setIsStartingJob] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -151,9 +173,9 @@ export default function AnnotationPanel({
   const [vlmSchemaStatusMessage, setVlmSchemaStatusMessage] = useState<string | null>(
     null
   );
-  const [vlmBackfillLimit, setVlmBackfillLimit] = useState(200);
-  const [vlmBatchSize, setVlmBatchSize] = useState(10);
-  const [vlmMaxNewTokens, setVlmMaxNewTokens] = useState(64);
+  const [vlmBackfillLimitInput, setVlmBackfillLimitInput] = useState("200");
+  const [vlmBatchSizeInput, setVlmBatchSizeInput] = useState("10");
+  const [vlmMaxNewTokensInput, setVlmMaxNewTokensInput] = useState("64");
   const [isSavingVlmSchema, setIsSavingVlmSchema] = useState(false);
   const [isStartingVlmJob, setIsStartingVlmJob] = useState(false);
   const [schemaDeleteDialog, setSchemaDeleteDialog] = useState<{
@@ -394,6 +416,9 @@ export default function AnnotationPanel({
     setShowJobsLink(false);
 
     try {
+      const limit = parseIntegerInput(limitInput, "Limit", { min: 1 });
+      const batchSize = parseIntegerInput(batchSizeInput, "Batch size", { min: 1 });
+
       try {
         const dimResponse = await axios.get("/api/embeddings/dimensions");
         const payload = dimResponse.data || {};
@@ -426,8 +451,8 @@ export default function AnnotationPanel({
       }
 
       const response = await axios.post("/api/backfill", {
-        limit: Math.max(1, limit),
-        batch_size: Math.max(1, batchSize),
+        limit,
+        batch_size: batchSize,
         stop_on_error: stopOnError,
         dataset: embeddingDataset === "all" ? null : embeddingDataset,
       });
@@ -450,6 +475,8 @@ export default function AnnotationPanel({
 
   const rebuildEmbeddingsAndStartBackfill = async () => {
     try {
+      const limit = parseIntegerInput(limitInput, "Limit", { min: 1 });
+      const batchSize = parseIntegerInput(batchSizeInput, "Batch size", { min: 1 });
       setIsRebuildingEmbeddings(true);
       setStatusMessage(null);
       setWarningMessage(null);
@@ -468,7 +495,7 @@ export default function AnnotationPanel({
       const pendingRows = Number(statsResponse.data?.embeddings?.pending_rows ?? 0);
       const response = await axios.post("/api/backfill", {
         limit: Math.max(1, Math.max(Math.floor(pendingRows || 0), limit)),
-        batch_size: Math.max(1, batchSize),
+        batch_size: batchSize,
         stop_on_error: stopOnError,
         dataset: embeddingDataset === "all" ? null : embeddingDataset,
       });
@@ -609,6 +636,17 @@ export default function AnnotationPanel({
     setVlmErrorMessage(null);
 
     try {
+      const vlmBackfillLimit = parseIntegerInput(vlmBackfillLimitInput, "VLM limit", {
+        min: 1,
+      });
+      const vlmBatchSize = parseIntegerInput(vlmBatchSizeInput, "VLM batch size", {
+        min: 1,
+      });
+      const vlmMaxNewTokens = parseIntegerInput(vlmMaxNewTokensInput, "VLM max tokens", {
+        min: 1,
+        max: 512,
+      });
+
       const statsResponse = await axios.get("/api/storage/stats", {
         params: { include_storage_details: 0 },
       });
@@ -623,7 +661,7 @@ export default function AnnotationPanel({
       const response = await axios.post("/api/vlm/backfill", {
         field_names: vlmSavedFields.map((field) => field.field_name),
         limit: vlmBackfillLimit,
-        batch_size: Math.max(1, vlmBatchSize),
+        batch_size: vlmBatchSize,
         overwrite_existing: false,
         max_new_tokens: vlmMaxNewTokens,
         dataset: vlmDataset === "all" ? null : vlmDataset,
@@ -1326,8 +1364,8 @@ export default function AnnotationPanel({
               <input
                 type="number"
                 min={1}
-                value={limit}
-                onChange={(event) => setLimit(Number(event.target.value) || 1)}
+                value={limitInput}
+                onChange={(event) => setLimitInput(event.target.value)}
                 className="rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
               />
             </label>
@@ -1337,10 +1375,8 @@ export default function AnnotationPanel({
               <input
                 type="number"
                 min={1}
-                value={batchSize}
-                onChange={(event) =>
-                  setBatchSize(Number(event.target.value) || 1)
-                }
+                value={batchSizeInput}
+                onChange={(event) => setBatchSizeInput(event.target.value)}
                 className="rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
               />
             </label>
@@ -1527,10 +1563,8 @@ export default function AnnotationPanel({
                 <input
                   type="number"
                   min={1}
-                  value={vlmBackfillLimit}
-                  onChange={(event) =>
-                    setVlmBackfillLimit(Number(event.target.value) || 1)
-                  }
+                  value={vlmBackfillLimitInput}
+                  onChange={(event) => setVlmBackfillLimitInput(event.target.value)}
                   className="w-28 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
                 />
               </label>
@@ -1540,12 +1574,8 @@ export default function AnnotationPanel({
                   type="number"
                   min={1}
                   max={512}
-                  value={vlmMaxNewTokens}
-                  onChange={(event) =>
-                    setVlmMaxNewTokens(
-                      Math.max(1, Math.min(512, Number(event.target.value) || 1))
-                    )
-                  }
+                  value={vlmMaxNewTokensInput}
+                  onChange={(event) => setVlmMaxNewTokensInput(event.target.value)}
                   className="w-32 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
                 />
               </label>
@@ -1554,10 +1584,8 @@ export default function AnnotationPanel({
                 <input
                   type="number"
                   min={1}
-                  value={vlmBatchSize}
-                  onChange={(event) =>
-                    setVlmBatchSize(Math.max(1, Number(event.target.value) || 1))
-                  }
+                  value={vlmBatchSizeInput}
+                  onChange={(event) => setVlmBatchSizeInput(event.target.value)}
                   className="w-28 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
                 />
               </label>

@@ -750,6 +750,18 @@ def _run_vlm(
     )
 
 
+def _run_vlm_batch(
+    client: httpx.Client,
+    items: List[Dict[str, Any]],
+    max_new_tokens: int,
+) -> List[str]:
+    return model_gateway.run_vlm_batch(
+        client,
+        items=items,
+        max_new_tokens=max_new_tokens,
+    )
+
+
 def _job_cancel_requested(job_id: str) -> bool:
     with jobs_lock:
         job = jobs_store.get(job_id)
@@ -1624,13 +1636,14 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                 by_object_id = {
                     item.get("object_id"): item for item in batch_payload if item.get("object_id")
                 }
+                batch_entries: List[Dict[str, Any]] = []
+                batch_base_seen = total_seen
 
-                for object_id in batch_ids:
+                for local_index, object_id in enumerate(batch_ids):
                     if _job_cancel_requested(job_id):
                         _cancel_vlm_job()
                         return
-                    current_scene_tasks_total = len(fields)
-                    scene_tasks_completed = 0
+                    scene_index = batch_base_seen + local_index + 1
                     try:
                         batch_item = by_object_id.get(object_id)
                         if not batch_item:
@@ -1640,68 +1653,204 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                         image_bytes = batch_item.get("content", b"")
                         if not image_bytes:
                             raise ValueError("empty content")
-                        values: Dict[str, str] = {}
-                        current_scene_index = total_seen + 1
+                        batch_entries.append(
+                            {
+                                "object_id": object_id,
+                                "image_bytes": image_bytes,
+                                "scene_index": scene_index,
+                                "values": {},
+                                "scene_tasks_completed": 0,
+                                "failed": False,
+                            }
+                        )
+                    except Exception as exc:
+                        logger.exception("VLM failed for object_id=%s", object_id)
+                        errors.append({"object_id": object_id, "error": str(exc)})
+                        total_seen += 1
+                        progress = min(int((total_seen / max(len(object_ids), 1)) * 100), 100)
                         with jobs_lock:
                             if job_id in jobs_store:
                                 jobs_store[job_id].update(
                                     {
-                                        "current_scene_index": current_scene_index,
+                                        "progress": progress,
+                                        "total_seen": total_seen,
+                                        "total_inserted": total_inserted,
+                                        "total_tasks_completed": completed_tasks,
+                                        "total_tasks_planned": total_tasks_planned,
+                                        "current_scene_index": scene_index,
                                         "current_scene_tasks_completed": 0,
-                                        "current_scene_tasks_total": current_scene_tasks_total,
+                                        "current_scene_tasks_total": len(fields),
+                                        "errors": errors,
+                                        "field_names": field_names,
                                         "updated_at": time.time(),
                                     }
                                 )
-                        for field_index, field in enumerate(fields):
-                            if _job_cancel_requested(job_id):
-                                _cancel_vlm_job()
-                                return
-                            prompt = _build_vlm_prompt(field["prompt"], field["response_type"])
-                            task_index = completed_tasks + field_index + 1
-                            values[field["field_name"]] = _run_vlm(
+                        if payload.stop_on_error:
+                            break
+
+                if payload.stop_on_error and errors:
+                    break
+
+                for field in fields:
+                    if _job_cancel_requested(job_id):
+                        _cancel_vlm_job()
+                        return
+                    if payload.stop_on_error and errors:
+                        break
+
+                    prompt = _build_vlm_prompt(field["prompt"], field["response_type"])
+                    task_entries = [entry for entry in batch_entries if not entry["failed"]]
+                    if not task_entries:
+                        break
+
+                    task_items = [
+                        {
+                            "image_bytes": entry["image_bytes"],
+                            "prompt": prompt,
+                            "metadata": {
+                                "job_id": job_id,
+                                "task_index": completed_tasks + idx + 1,
+                                "task_total": total_tasks_planned if total_tasks_planned > 0 else None,
+                                "field_name": field["field_name"],
+                                "object_id": entry["object_id"],
+                            },
+                        }
+                        for idx, entry in enumerate(task_entries)
+                    ]
+
+                    try:
+                        responses = _run_vlm_batch(
+                            client,
+                            task_items,
+                            payload.max_new_tokens,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "VLM batch inference failed for field=%s batch_size=%s; falling back to per-item",
+                            field["field_name"],
+                            len(task_entries),
+                        )
+                        responses = None
+
+                    if responses is not None:
+                        for entry, response_text in zip(task_entries, responses):
+                            if entry["failed"]:
+                                continue
+                            try:
+                                entry["values"][field["field_name"]] = _normalize_vlm_response(
+                                    response_text,
+                                    field["response_type"],
+                                )
+                                entry["scene_tasks_completed"] += 1
+                                completed_tasks += 1
+                                with jobs_lock:
+                                    if job_id in jobs_store:
+                                        jobs_store[job_id].update(
+                                            {
+                                                "total_tasks_completed": completed_tasks,
+                                                "total_tasks_planned": total_tasks_planned,
+                                                "current_scene_index": entry["scene_index"],
+                                                "current_scene_tasks_completed": entry[
+                                                    "scene_tasks_completed"
+                                                ],
+                                                "current_scene_tasks_total": len(fields),
+                                                "updated_at": time.time(),
+                                            }
+                                        )
+                            except Exception as exc:
+                                logger.exception(
+                                    "VLM response normalize failed for object_id=%s field=%s",
+                                    entry["object_id"],
+                                    field["field_name"],
+                                )
+                                entry["failed"] = True
+                                errors.append(
+                                    {
+                                        "object_id": entry["object_id"],
+                                        "error": str(exc),
+                                    }
+                                )
+                                if payload.stop_on_error:
+                                    break
+                        if payload.stop_on_error and errors:
+                            break
+                        continue
+
+                    for entry in task_entries:
+                        if _job_cancel_requested(job_id):
+                            _cancel_vlm_job()
+                            return
+                        if entry["failed"]:
+                            continue
+                        try:
+                            response_text = _run_vlm(
                                 client,
-                                image_bytes,
+                                entry["image_bytes"],
                                 prompt,
                                 payload.max_new_tokens,
                                 job_id=job_id,
-                                task_index=task_index,
+                                task_index=completed_tasks + 1,
                                 task_total=total_tasks_planned if total_tasks_planned > 0 else None,
                                 field_name=field["field_name"],
-                                object_id=object_id,
+                                object_id=entry["object_id"],
                             )
-                            values[field["field_name"]] = _normalize_vlm_response(
-                                values[field["field_name"]],
+                            entry["values"][field["field_name"]] = _normalize_vlm_response(
+                                response_text,
                                 field["response_type"],
                             )
+                            entry["scene_tasks_completed"] += 1
                             completed_tasks += 1
-                            scene_tasks_completed = field_index + 1
                             with jobs_lock:
                                 if job_id in jobs_store:
                                     jobs_store[job_id].update(
                                         {
                                             "total_tasks_completed": completed_tasks,
                                             "total_tasks_planned": total_tasks_planned,
-                                            "current_scene_tasks_completed": scene_tasks_completed,
-                                            "current_scene_tasks_total": current_scene_tasks_total,
+                                            "current_scene_index": entry["scene_index"],
+                                            "current_scene_tasks_completed": entry[
+                                                "scene_tasks_completed"
+                                            ],
+                                            "current_scene_tasks_total": len(fields),
                                             "updated_at": time.time(),
                                         }
                                     )
+                        except Exception as exc:
+                            logger.exception(
+                                "VLM failed for object_id=%s field=%s",
+                                entry["object_id"],
+                                field["field_name"],
+                            )
+                            entry["failed"] = True
+                            errors.append({"object_id": entry["object_id"], "error": str(exc)})
+                            if payload.stop_on_error:
+                                break
+                    if payload.stop_on_error and errors:
+                        break
+
+                for entry in batch_entries:
+                    object_id = str(entry["object_id"])
+                    scene_tasks_completed = int(entry["scene_tasks_completed"])
+                    if not entry["failed"] and scene_tasks_completed == len(fields):
                         if not payload.dry_run:
                             upserted = _upsert_vlm_annotations(
-                                [{"object_id": object_id, "values": values}]
+                                [{"object_id": object_id, "values": dict(entry["values"])}]
                             )
                             total_inserted += upserted
                             if upserted > 0 and object_id not in annotated_object_ids_seen:
                                 annotated_object_ids_seen.add(object_id)
                                 annotated_object_ids.append(object_id)
-                        total_seen += 1
-                    except Exception as exc:
-                        logger.exception("VLM failed for object_id=%s", object_id)
-                        errors.append({"object_id": object_id, "error": str(exc)})
-                        total_seen += 1
-                        if payload.stop_on_error:
-                            break
-
+                    elif not entry["failed"]:
+                        entry["failed"] = True
+                        errors.append(
+                            {
+                                "object_id": object_id,
+                                "error": (
+                                    "incomplete annotation values generated "
+                                    f"({scene_tasks_completed}/{len(fields)})"
+                                ),
+                            }
+                        )
+                    total_seen += 1
                     progress = min(int((total_seen / max(len(object_ids), 1)) * 100), 100)
                     with jobs_lock:
                         if job_id in jobs_store:
@@ -1712,13 +1861,15 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                     "total_inserted": total_inserted,
                                     "total_tasks_completed": completed_tasks,
                                     "total_tasks_planned": total_tasks_planned,
+                                    "current_scene_index": entry["scene_index"],
                                     "current_scene_tasks_completed": scene_tasks_completed,
-                                    "current_scene_tasks_total": current_scene_tasks_total,
+                                    "current_scene_tasks_total": len(fields),
                                     "errors": errors,
                                     "field_names": field_names,
                                     "updated_at": time.time(),
                                 }
                             )
+
                     current_bucket = progress // 10
                     now_mono = time.monotonic()
                     should_log_progress = False
