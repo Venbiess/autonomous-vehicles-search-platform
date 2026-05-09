@@ -65,14 +65,17 @@ vlm_attn_implementation = os.getenv(
     "VLM_ATTN_IMPLEMENTATION",
     getattr(VLM_CONFIG, "ATTN_IMPLEMENTATION", None),
 )
+if isinstance(vlm_attn_implementation, str):
+    vlm_attn_implementation = vlm_attn_implementation.strip() or None
 
 init_started_at = time.time()
 logger.info(
-    "VLM init: loading backend=%s model=%s device=%s dtype=%s",
+    "VLM init: loading backend=%s model=%s device=%s dtype=%s attn=%s",
     vlm_backend,
     vlm_model_name,
     device,
     vlm_dtype_label,
+    vlm_attn_implementation or "default",
 )
 vlm = create_vlm(
     backend_name=vlm_backend,
@@ -89,6 +92,7 @@ print(
     f"Backend: {vlm.backend_name}.",
     f"Model: {vlm.model_name}.",
     f"DType: {vlm.dtype_label}.",
+    f"Attention: {getattr(vlm, 'attn_type', vlm_attn_implementation or 'default')}.",
     f"HFDownloadProgress: {hf_download_progress}.",
     f"Device: {vlm.device}.",
     f"Port: {VLM_CONFIG.PORT}",

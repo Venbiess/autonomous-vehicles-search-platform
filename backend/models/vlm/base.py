@@ -16,6 +16,7 @@ class BaseVLM(ABC):
         self.device = device
         self.torch_dtype = torch_dtype
         self.dtype_label = dtype_label
+        self.attn_type = "default"
         self._inference_lock = threading.Lock()
 
     @property
@@ -34,4 +35,5 @@ class BaseVLM(ABC):
     def get_runtime_payload(self, configured_device: str) -> dict:
         payload = runtime_payload(configured_device=configured_device, selected_device=self.device)
         payload["runtime"]["dtype"] = self.dtype_label
+        payload["runtime"]["attn_type"] = self.attn_type
         return payload

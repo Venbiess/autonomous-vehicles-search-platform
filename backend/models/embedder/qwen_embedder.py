@@ -22,17 +22,49 @@ class QwenEmbedder(BaseEmbedder):
         attn_implementation: Optional[str] = None,
     ) -> None:
         super().__init__(model_name=model_name, device=device, torch_dtype=torch_dtype, dtype_label=dtype_label)
+        requested_attn = str(attn_implementation).strip() if attn_implementation else ""
+        self.attn_type = requested_attn or "default"
         model_kwargs = {}
         if torch_dtype is not None:
             model_kwargs["torch_dtype"] = torch_dtype
-        if attn_implementation:
-            model_kwargs["attn_implementation"] = str(attn_implementation).strip()
-        self.model = SentenceTransformer(
-            model_name,
-            device=device,
-            trust_remote_code=True,
-            model_kwargs=model_kwargs or None,
-        )
+        if requested_attn:
+            model_kwargs["attn_implementation"] = requested_attn
+
+        try:
+            self.model = SentenceTransformer(
+                model_name,
+                device=device,
+                trust_remote_code=True,
+                model_kwargs=model_kwargs or None,
+            )
+        except ImportError as exc:
+            lowered = str(exc).lower()
+            if requested_attn == "flash_attention_2" and "flash_attn" in lowered:
+                fallback_kwargs = dict(model_kwargs)
+                fallback_kwargs["attn_implementation"] = "sdpa"
+                self.model = SentenceTransformer(
+                    model_name,
+                    device=device,
+                    trust_remote_code=True,
+                    model_kwargs=fallback_kwargs or None,
+                )
+                self.attn_type = "sdpa (flash_attention_2 requested, flash_attn missing)"
+            else:
+                raise
+        except TypeError as exc:
+            lowered = str(exc).lower()
+            if requested_attn and "attn_implementation" in lowered:
+                fallback_kwargs = dict(model_kwargs)
+                fallback_kwargs.pop("attn_implementation", None)
+                self.model = SentenceTransformer(
+                    model_name,
+                    device=device,
+                    trust_remote_code=True,
+                    model_kwargs=fallback_kwargs or None,
+                )
+                self.attn_type = "default (attn_implementation unsupported)"
+            else:
+                raise
 
     @property
     def backend_name(self) -> str:

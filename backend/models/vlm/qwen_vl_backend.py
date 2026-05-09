@@ -20,13 +20,28 @@ class QwenVLMBackend(BaseVLM):
         attn_implementation: str | None,
     ) -> None:
         super().__init__(model_name=model_name, device=device, torch_dtype=torch_dtype, dtype_label=dtype_label)
+        requested_attn = str(attn_implementation).strip() if attn_implementation else ""
+        self.attn_type = requested_attn or "default"
         model_kwargs = {
             "dtype": torch_dtype,
         }
-        if attn_implementation:
-            model_kwargs["attn_implementation"] = attn_implementation
+        if requested_attn:
+            model_kwargs["attn_implementation"] = requested_attn
 
-        self.model = Qwen3VLForConditionalGeneration.from_pretrained(model_name, **model_kwargs).to(device)
+        try:
+            self.model = Qwen3VLForConditionalGeneration.from_pretrained(model_name, **model_kwargs).to(device)
+        except ImportError as exc:
+            lowered = str(exc).lower()
+            if requested_attn == "flash_attention_2" and "flash_attn" in lowered:
+                fallback_kwargs = dict(model_kwargs)
+                fallback_kwargs["attn_implementation"] = "sdpa"
+                self.model = Qwen3VLForConditionalGeneration.from_pretrained(
+                    model_name,
+                    **fallback_kwargs,
+                ).to(device)
+                self.attn_type = "sdpa (flash_attention_2 requested, flash_attn missing)"
+            else:
+                raise
         self.model.eval()
         self.processor = AutoProcessor.from_pretrained(model_name)
 

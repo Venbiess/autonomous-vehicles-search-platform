@@ -19,6 +19,7 @@ class SmolVLMBackend(BaseVLM):
         }
         if device == "cuda":
             model_kwargs["_attn_implementation"] = "eager"
+            self.attn_type = "eager"
         self.model = AutoModelForImageTextToText.from_pretrained(model_name, **model_kwargs).to(device)
         self.model.eval()
 

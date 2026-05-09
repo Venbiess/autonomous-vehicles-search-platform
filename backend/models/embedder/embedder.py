@@ -84,7 +84,7 @@ print(
     f"Backend: {embedder.backend_name}.",
     f"Model: {embedder.model_name}.",
     f"DType: {embedder.dtype_label}.",
-    f"Attention: {embedder_attn_implementation or 'default'}.",
+    f"Attention: {getattr(embedder, 'attn_type', embedder_attn_implementation or 'default')}.",
     f"HFDownloadProgress: {hf_download_progress}.",
     f"Device: {device}.",
     f"Port: {EMBEDDER_CONFIG.PORT}",
@@ -129,6 +129,7 @@ def get_embeddings(inputs, type: Literal["text", "image"] = "image") -> list[lis
 def _runtime_payload() -> dict:
     payload = runtime_payload(configured_device=cfg_device, selected_device=device)
     payload["runtime"]["dtype"] = embedder.dtype_label
+    payload["runtime"]["attn_type"] = getattr(embedder, "attn_type", embedder_attn_implementation or "default")
     return payload
 
 

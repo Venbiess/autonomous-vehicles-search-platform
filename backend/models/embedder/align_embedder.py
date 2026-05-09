@@ -22,6 +22,7 @@ class AlignEmbedder(BaseEmbedder):
         attn_implementation: Optional[str] = None,
     ) -> None:
         super().__init__(model_name=model_name, device=device, torch_dtype=torch_dtype, dtype_label=dtype_label)
+        self.attn_type = str(attn_implementation).strip() if attn_implementation else "default"
         self.processor = AlignProcessor.from_pretrained(model_name)
         model_kwargs = {}
         if torch_dtype is not None:

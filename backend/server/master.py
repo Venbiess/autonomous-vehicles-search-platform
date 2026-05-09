@@ -2262,10 +2262,12 @@ def _fetch_model_runtime(
     fallback_model: str = "",
     fallback_device: str = "",
     fallback_dtype: str = "",
+    fallback_attn_type: str = "",
 ) -> Dict[str, Any]:
     normalized_endpoint = endpoint.rstrip("/")
     configured_device = str(fallback_device).strip().lower()
     configured_dtype = str(fallback_dtype).strip()
+    configured_attn_type = str(fallback_attn_type).strip()
     result: Dict[str, Any] = {
         "name": name,
         "endpoint": normalized_endpoint,
@@ -2276,6 +2278,7 @@ def _fetch_model_runtime(
         "runtime": {
             "configured_device": configured_device,
             "dtype": configured_dtype,
+            "attn_type": configured_attn_type,
         },
         "memory": {},
         "counters": {},
@@ -2431,6 +2434,10 @@ def get_system_info():
                 "EMBEDDER_TORCH_DTYPE",
                 str(getattr(EMBEDDER_CONFIG, "TORCH_DTYPE", "") or ""),
             ),
+            fallback_attn_type=os.getenv(
+                "EMBEDDER_ATTN_IMPLEMENTATION",
+                str(getattr(EMBEDDER_CONFIG, "ATTN_IMPLEMENTATION", "") or ""),
+            ),
         )
         vlm_runtime = _fetch_model_runtime(
             "vlm",
@@ -2446,6 +2453,10 @@ def get_system_info():
             fallback_dtype=os.getenv(
                 "VLM_TORCH_DTYPE",
                 str(getattr(VLM_CONFIG, "TORCH_DTYPE", "") or ""),
+            ),
+            fallback_attn_type=os.getenv(
+                "VLM_ATTN_IMPLEMENTATION",
+                str(getattr(VLM_CONFIG, "ATTN_IMPLEMENTATION", "") or ""),
             ),
         )
         gpu_info = _collect_nvidia_info()

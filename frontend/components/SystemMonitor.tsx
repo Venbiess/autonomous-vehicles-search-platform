@@ -18,6 +18,7 @@ interface RuntimeServiceData {
     cuda_device_count?: number;
     cuda_device_name?: string | null;
     dtype?: string;
+    attn_type?: string;
   };
   memory?: {
     process_rss_mb?: number;
@@ -1002,6 +1003,9 @@ export default function SystemMonitor({
                             <span>{String(runtime.configured_device || "—")}</span>
                             {runtime.dtype ? (
                               <span className="text-xs text-slate-500">{` · dtype=${runtime.dtype}`}</span>
+                            ) : null}
+                            {runtime.attn_type ? (
+                              <span className="text-xs text-slate-500">{` · attn=${runtime.attn_type}`}</span>
                             ) : null}
                           </div>
                           <div>

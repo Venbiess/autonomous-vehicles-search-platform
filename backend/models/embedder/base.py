@@ -20,6 +20,7 @@ class BaseEmbedder(ABC):
         self.device = device
         self.torch_dtype = torch_dtype
         self.dtype_label = dtype_label
+        self.attn_type = "default"
         self._inference_lock = threading.Lock()
 
     @property
