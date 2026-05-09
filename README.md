@@ -33,7 +33,7 @@ docker-compose -f docker/storage/docker-compose.qdrant.yml up -d --build
 
 For Waymo:
 ```
-docker exec -it avsp-server-$USER bash
+docker exec -it avsp-master-$USER bash
 gcloud auth application-default login
 ```
 

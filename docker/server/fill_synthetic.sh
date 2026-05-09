@@ -59,4 +59,4 @@ if [[ "${SYNTHETIC_KEEP_LOCAL_IMAGES}" == "1" ]]; then
 fi
 
 echo "Running synthetic preprocessor: ${preprocess_cmd[*]}"
-compose exec -T avsp-server "${preprocess_cmd[@]}"
+compose exec -T master-server "${preprocess_cmd[@]}"

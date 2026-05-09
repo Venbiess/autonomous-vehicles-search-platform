@@ -568,6 +568,9 @@ def _search_dependencies_ready(
     require_vlm: bool = True,
     allow_embedder_http_fallback: bool = False,
 ) -> tuple[bool, str]:
+    wait_timeout_sec = max(0.0, float(os.getenv("MODEL_BACKEND_READY_WAIT_SEC", "45")))
+    poll_interval_sec = max(0.1, float(os.getenv("MODEL_BACKEND_READY_POLL_SEC", "1")))
+
     def _embedder_http_ready() -> bool:
         endpoint = str(EMBEDDER_ENDPOINT or "").strip().rstrip("/")
         if not endpoint:
@@ -583,8 +586,11 @@ def _search_dependencies_ready(
         except Exception:
             return False
 
-    model_health = model_gateway.health()
-    if str(model_health.get("status", "")).lower() != "ok":
+    def _evaluate_model_health() -> tuple[bool, Dict[str, Any]]:
+        model_health = model_gateway.health()
+        if str(model_health.get("status", "")).lower() == "ok":
+            return True, model_health
+
         mode = str(model_health.get("mode", "")).strip().lower()
         if mode == "rabbitmq":
             rabbitmq = model_health.get("rabbitmq", {})
@@ -603,31 +609,40 @@ def _search_dependencies_ready(
                     missing_required.append(queue_name)
             if not missing_required and required_queues:
                 # Non-required queue is down; allow request/job that doesn't use it.
-                pass
-            else:
-                if (
-                    allow_embedder_http_fallback
-                    and require_embedder
-                    and not require_vlm
-                    and _embedder_http_ready()
-                ):
-                    pass
-                else:
-                    if missing_required:
-                        model_health = {
-                            **model_health,
-                            "missing_required_consumers": missing_required,
-                        }
-                    return False, f"model backend not ready: {model_health}"
+                return True, model_health
+            if (
+                allow_embedder_http_fallback
+                and require_embedder
+                and not require_vlm
+                and _embedder_http_ready()
+            ):
+                return True, model_health
+            if missing_required:
+                model_health = {
+                    **model_health,
+                    "missing_required_consumers": missing_required,
+                }
+            return False, model_health
         elif (
             allow_embedder_http_fallback
             and require_embedder
             and not require_vlm
             and _embedder_http_ready()
         ):
-            pass
-        else:
-            return False, f"model backend not ready: {model_health}"
+            return True, model_health
+        return False, model_health
+
+    deadline = time.monotonic() + wait_timeout_sec
+    last_model_health: Dict[str, Any] = {}
+    while True:
+        model_ready, model_health = _evaluate_model_health()
+        last_model_health = model_health
+        if model_ready:
+            break
+        if time.monotonic() >= deadline:
+            return False, f"model backend not ready: {last_model_health}"
+        time.sleep(poll_interval_sec)
+
     try:
         storage_health = storage_api.health()
     except Exception as exc:

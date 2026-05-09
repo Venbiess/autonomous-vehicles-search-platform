@@ -19,7 +19,6 @@ services:
     container_name: "grafana-${USER}"
     depends_on:
       - prometheus
-      - loki
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
@@ -34,7 +33,7 @@ services:
       - avsp-net
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
     container_name: "cadvisor-${USER}"
     privileged: true
     command:
@@ -45,37 +44,13 @@ services:
       - /dev/kmsg:/dev/kmsg
     volumes:
       - /:/rootfs:ro
-      - /var/run:/var/run:ro
+      - /var/run:/var/run:rw
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
       - /sys:/sys:ro
       - /var/lib/docker:/var/lib/docker:ro
       - /dev/disk:/dev/disk:ro
     ports:
       - "8088:8080"
-    networks:
-      - avsp-net
-
-  loki:
-    image: grafana/loki:2.9.8
-    container_name: "loki-${USER}"
-    command: -config.file=/etc/loki/config.yml
-    volumes:
-      - ./server/observability/loki/loki-config.yml:/etc/loki/config.yml:ro
-    ports:
-      - "3100:3100"
-    networks:
-      - avsp-net
-
-  promtail:
-    image: grafana/promtail:2.9.8
-    container_name: "promtail-${USER}"
-    depends_on:
-      - loki
-    command: -config.file=/etc/promtail/config.yml
-    volumes:
-      - ./server/observability/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
     networks:
       - avsp-net
 
@@ -335,12 +310,12 @@ services:
     networks:
       - avsp-net
 
-  avsp-server:
+  master-server:
     build:
       context: ..
       dockerfile: docker/server/server.Dockerfile
-    image: avsp-analytics-service
-    container_name: "avsp-analytics-service-${USER}"
+    image: avsp-master
+    container_name: "avsp-master-${USER}"
     depends_on:
       - postgres
       - minio
@@ -393,7 +368,7 @@ services:
     image: node:20
     container_name: "avsp-frontend-${USER}"
     depends_on:
-      - avsp-server
+      - master-server
     working_dir: /app/frontend
     command: >
       /bin/sh -c '
@@ -419,14 +394,14 @@ services:
         soft: 0
         hard: 0
     environment:
-      MASTER_ENDPOINT: http://avsp-server:9002
+      MASTER_ENDPOINT: http://master-server:9002
       MASTER_PROXY_TIMEOUT_MS: 10000
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012
       ANALYTICS_SERVER_ENDPOINT: http://storage-server:9012
       STORAGE_WRITE_TOKEN: change-me-storage-write-token
       MINIO_PUBLIC_ENDPOINT: http://localhost:9000
       MINIO_BUCKET: avsp
-      NODE_OPTIONS: --max-old-space-size=16384
+      NODE_OPTIONS: --max-old-space-size=4096
       FRONTEND_REQUEST_TIMEOUT_MS: "0"
       STORAGE_TRANSFER_IMPORT_MAX_BYTES: "17179869184"
       WATCHPACK_POLLING: "true"

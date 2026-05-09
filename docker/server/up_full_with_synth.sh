@@ -13,7 +13,7 @@ fi
 
 build_services=(
   storage-server
-  avsp-server
+  master-server
 )
 
 runtime_services=(
@@ -28,7 +28,7 @@ runtime_services=(
   embedder-worker
   vlm-worker
   storage-server
-  avsp-server
+  master-server
   frontend
 )
 
@@ -81,7 +81,7 @@ if [[ "${SYNTHETIC_KEEP_LOCAL_IMAGES}" == "1" ]]; then
 fi
 
 echo "Running synthetic preprocessor: ${preprocess_cmd[*]}"
-"${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" exec -T avsp-server "${preprocess_cmd[@]}"
+"${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" exec -T master-server "${preprocess_cmd[@]}"
 
 echo "Done"
 echo "Frontend: http://localhost:3000"

@@ -221,7 +221,10 @@ def run_embedder_worker(ch, queue_name: str) -> None:
             payload = json.loads(body.decode("utf-8"))
             task = str(payload.get("task", "")).strip()
             task_name = task or "unknown"
-            if task == "embed_text":
+            if task == "health":
+                response = {"ok": True, "worker": "embedder"}
+                status = "ok"
+            elif task == "embed_text":
                 text = str(payload.get("text", ""))
                 embedding = get_embedding(text, type="text")
                 response = {"ok": True, "embedding": embedding, "dim": len(embedding)}
@@ -278,16 +281,20 @@ def run_vlm_worker(ch, queue_name: str) -> None:
             payload = json.loads(body.decode("utf-8"))
             task = str(payload.get("task", "")).strip()
             task_name = task or "unknown"
-            if task != "generate_vlm":
+            if task == "health":
+                response = {"ok": True, "worker": "vlm"}
+                status = "ok"
+            elif task != "generate_vlm":
                 raise ValueError(f"unknown vlm task: {task}")
-            encoded = str(payload.get("image_base64", "")).strip()
-            image_bytes = base64.b64decode(encoded)
-            image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            prompt = str(payload.get("prompt", ""))
-            max_new_tokens = int(payload.get("max_new_tokens", 64))
-            generated = _generate_text(image, prompt, max_new_tokens)
-            response = {"ok": True, "response": generated}
-            status = "ok"
+            else:
+                encoded = str(payload.get("image_base64", "")).strip()
+                image_bytes = base64.b64decode(encoded)
+                image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                prompt = str(payload.get("prompt", ""))
+                max_new_tokens = int(payload.get("max_new_tokens", 64))
+                generated = _generate_text(image, prompt, max_new_tokens)
+                response = {"ok": True, "response": generated}
+                status = "ok"
         except Exception as exc:  # noqa: BLE001
             response = {
                 "ok": False,

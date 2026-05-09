@@ -5,5 +5,5 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 docker build \
   -f "$SCRIPT_DIR/server.Dockerfile" \
-  -t avsp-server \
+  -t avsp-master \
   "$SCRIPT_DIR/../.."

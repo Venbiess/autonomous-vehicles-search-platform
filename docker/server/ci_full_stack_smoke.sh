@@ -20,7 +20,7 @@ compose() {
 }
 
 cleanup() {
-  compose logs --tail=120 avsp-server embedder-worker vlm-worker storage-server rabbitmq || true
+  compose logs --tail=120 master-server embedder-worker vlm-worker storage-server rabbitmq || true
   compose down -v --remove-orphans || true
 }
 
@@ -69,7 +69,7 @@ compose up -d --build \
   storage-server \
   embedder-worker \
   vlm-worker \
-  avsp-server
+  master-server
 
 wait_http_ok "storage-server" "http://localhost:9013/health" "$SMOKE_TIMEOUT_SEC"
 wait_http_ok "master-jobs" "http://localhost:9002/jobs" "$SMOKE_TIMEOUT_SEC"

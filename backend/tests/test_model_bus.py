@@ -28,11 +28,15 @@ class _FakeHTTPClient:
 
 
 class _FakeRPC:
-    def __init__(self, snapshot: Dict[str, Any]) -> None:
+    def __init__(self, snapshot: Dict[str, Any], probes: Dict[str, bool] | None = None) -> None:
         self._snapshot = snapshot
+        self._probes = probes or {}
 
     def health_snapshot(self) -> Dict[str, Any]:
         return self._snapshot
+
+    def probe_queue(self, queue_name: str) -> bool:
+        return bool(self._probes.get(queue_name, False))
 
 
 def test_embedder_http_round_robin(monkeypatch) -> None:
@@ -58,7 +62,11 @@ def test_health_reports_missing_consumers(monkeypatch) -> None:
                 "avsp.embedder.tasks": {"messages": 0, "consumers": 0},
                 "avsp.vlm.tasks": {"messages": 0, "consumers": 1},
             },
-        }
+        },
+        probes={
+            "avsp.embedder.tasks": False,
+            "avsp.vlm.tasks": True,
+        },
     )
 
     health = gateway.health()

@@ -59,3 +59,41 @@ def test_search_dependencies_ready_fails_on_storage_health(monkeypatch) -> None:
 
     assert ready is False
     assert "storage backend not ready" in reason
+
+
+def test_search_dependencies_ready_waits_for_rabbit_consumers(monkeypatch) -> None:
+    states = iter(
+        [
+            {
+                "status": "error",
+                "mode": "rabbitmq",
+                "rabbitmq": {
+                    "queues": {
+                        "avsp.embedder.tasks": {"messages": 0, "consumers": 0},
+                        "avsp.vlm.tasks": {"messages": 0, "consumers": 0},
+                    }
+                },
+            },
+            {
+                "status": "ok",
+                "mode": "rabbitmq",
+                "rabbitmq": {
+                    "queues": {
+                        "avsp.embedder.tasks": {"messages": 0, "consumers": 1},
+                        "avsp.vlm.tasks": {"messages": 0, "consumers": 0},
+                    }
+                },
+            },
+        ]
+    )
+
+    monkeypatch.setenv("MODEL_BACKEND_READY_WAIT_SEC", "1")
+    monkeypatch.setenv("MODEL_BACKEND_READY_POLL_SEC", "0.01")
+    monkeypatch.setattr(master.time, "sleep", lambda _: None)
+    monkeypatch.setattr(master.storage_api, "health", lambda: {"status": "ok"})
+    monkeypatch.setattr(master.model_gateway, "health", lambda: next(states))
+
+    ready, reason = master._search_dependencies_ready(require_embedder=True, require_vlm=False)
+
+    assert ready is True
+    assert reason == ""

@@ -62,7 +62,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service) (label_replace(rate(container_cpu_usage_seconds_total{cpu=\"total\",container_label_com_docker_compose_service!=\"\"}[5m]), \"service\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or sum by (service) (label_replace(rate(process_cpu_seconds_total{job=~\"embedder-worker-metrics|vlm-worker-metrics|storage-server\"}[5m]), \"service\", \"$1\", \"job\", \"(.+)\"))",
+          "expr": "sum by (service) (label_replace(rate(container_cpu_usage_seconds_total{cpu=\"total\",container_label_com_docker_compose_service!=\"\",container_label_com_docker_compose_service!~\"prometheus|grafana|cadvisor\"}[5m]), \"service\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or sum by (service) (label_replace(rate(process_cpu_seconds_total{job=~\"embedder-worker-metrics|vlm-worker-metrics|storage-server\"}[5m]), \"service\", \"$1\", \"job\", \"(.+)\"))",
           "legendFormat": "{{service}}",
           "range": true,
           "refId": "A"
@@ -111,7 +111,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service) (label_replace(container_memory_working_set_bytes{container_label_com_docker_compose_service!=\"\"}, \"service\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or sum by (service) (label_replace(container_memory_working_set_bytes{id=\"/docker\"}, \"service\", \"docker_total\", \"id\", \".+\"))",
+          "expr": "sum by (service) (label_replace(container_memory_working_set_bytes{container_label_com_docker_compose_service!=\"\",container_label_com_docker_compose_service!~\"prometheus|grafana|cadvisor\"}, \"service\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or sum by (service) (label_replace(container_memory_working_set_bytes{id=\"/docker\"}, \"service\", \"docker_total\", \"id\", \".+\"))",
           "legendFormat": "{{service}}",
           "range": true,
           "refId": "A"

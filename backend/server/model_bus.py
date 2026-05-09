@@ -134,6 +134,13 @@ class RabbitRPCClient:
             }
         return {"connected": True, "queues": queues}
 
+    def probe_queue(self, queue_name: str) -> bool:
+        try:
+            response = self.call(queue_name, {"task": "health"})
+            return bool(response.get("ok", False))
+        except Exception:
+            return False
+
 
 class ModelGateway:
     def __init__(self):
@@ -159,6 +166,35 @@ class ModelGateway:
                 timeout_sec=max(1, timeout_sec),
             )
         )
+
+    def _embedder_http_health_ok(self, http_client, fallback_endpoint: str) -> bool:
+        try:
+            endpoint = self._pick_embedder_endpoint(fallback_endpoint)
+        except Exception:
+            return False
+        try:
+            response = http_client.get(f"{endpoint}/health")
+            response.raise_for_status()
+            payload = response.json()
+            return str(payload.get("status", "")).lower() == "ok"
+        except Exception:
+            return False
+
+    def _embedder_queue_has_consumers(self) -> bool:
+        if self._rpc is None:
+            return False
+        try:
+            snapshot = self._rpc.health_snapshot()
+            queues = snapshot.get("queues", {})
+            embedder_queue_name = getattr(
+                self._rpc.cfg,
+                "embedder_queue",
+                os.getenv("RABBITMQ_EMBEDDER_QUEUE", "avsp.embedder.tasks"),
+            )
+            stats = queues.get(embedder_queue_name, {}) if isinstance(queues, dict) else {}
+            return int(stats.get("consumers", 0)) > 0
+        except Exception:
+            return False
 
     def _pick_embedder_endpoint(self, fallback_endpoint: str) -> str:
         endpoints = self._embedder_endpoints or [fallback_endpoint.strip().rstrip("/")]
@@ -193,7 +229,7 @@ class ModelGateway:
                     and len(self._embedder_endpoints) > 0
                 ):
                     continue
-                if int(stats.get("consumers", 0)) <= 0:
+                if not self._rpc.probe_queue(queue_name):
                     missing_consumers.append(queue_name)
             if missing_consumers:
                 return {
@@ -258,38 +294,73 @@ class ModelGateway:
         response.raise_for_status()
         return response.json()["response"].strip()
     def embed_image(self, http_client, embedder_endpoint: str, image_bytes: bytes):
+        if (
+            self.mode == "rabbitmq"
+            and not self._embedder_queue_has_consumers()
+            and self._embedder_http_health_ok(http_client, embedder_endpoint)
+        ):
+            return self.embed_image_http(http_client, embedder_endpoint, image_bytes)
         if self._rpc is None:
+            if self._embedder_http_health_ok(http_client, embedder_endpoint):
+                return self.embed_image_http(http_client, embedder_endpoint, image_bytes)
             raise RuntimeError("rabbitmq RPC client is not initialized")
         payload = {
             "task": "embed_image",
             "image_base64": base64.b64encode(image_bytes).decode("ascii"),
         }
-        result = self._rpc.call(self._rpc.cfg.embedder_queue, payload)
-        return result["embedding"], int(result["dim"])
+        try:
+            result = self._rpc.call(self._rpc.cfg.embedder_queue, payload)
+            return result["embedding"], int(result["dim"])
+        except Exception:
+            if self._embedder_http_health_ok(http_client, embedder_endpoint):
+                return self.embed_image_http(http_client, embedder_endpoint, image_bytes)
+            raise
 
     def embed_text(self, http_client, embedder_endpoint: str, text: str):
+        if (
+            self.mode == "rabbitmq"
+            and not self._embedder_queue_has_consumers()
+            and self._embedder_http_health_ok(http_client, embedder_endpoint)
+        ):
+            return self.embed_text_http(http_client, embedder_endpoint, text)
         if self._rpc is None:
+            if self._embedder_http_health_ok(http_client, embedder_endpoint):
+                return self.embed_text_http(http_client, embedder_endpoint, text)
             raise RuntimeError("rabbitmq RPC client is not initialized")
         payload = {
             "task": "embed_text",
             "text": text,
         }
-        result = self._rpc.call(self._rpc.cfg.embedder_queue, payload)
-        return result["embedding"], int(result["dim"])
+        try:
+            result = self._rpc.call(self._rpc.cfg.embedder_queue, payload)
+            return result["embedding"], int(result["dim"])
+        except Exception:
+            if self._embedder_http_health_ok(http_client, embedder_endpoint):
+                return self.embed_text_http(http_client, embedder_endpoint, text)
+            raise
 
     def embed_images(self, http_client, embedder_endpoint: str, images_bytes: list[bytes]):
         if self.mode != "rabbitmq" or self._rpc is None:
+            return self.embed_images_http(http_client, embedder_endpoint, images_bytes)
+        if not self._embedder_queue_has_consumers() and self._embedder_http_health_ok(
+            http_client, embedder_endpoint
+        ):
             return self.embed_images_http(http_client, embedder_endpoint, images_bytes)
         payload = {
             "task": "embed_image_batch",
             "images_base64": [base64.b64encode(item).decode("ascii") for item in images_bytes],
         }
-        result = self._rpc.call(self._rpc.cfg.embedder_queue, payload)
-        embeddings = result.get("embeddings", [])
-        dim = int(result.get("dim", 0))
-        if not isinstance(embeddings, list):
-            raise RabbitRPCError("invalid embed_image_batch response: embeddings is not a list")
-        return embeddings, dim
+        try:
+            result = self._rpc.call(self._rpc.cfg.embedder_queue, payload)
+            embeddings = result.get("embeddings", [])
+            dim = int(result.get("dim", 0))
+            if not isinstance(embeddings, list):
+                raise RabbitRPCError("invalid embed_image_batch response: embeddings is not a list")
+            return embeddings, dim
+        except Exception:
+            if self._embedder_http_health_ok(http_client, embedder_endpoint):
+                return self.embed_images_http(http_client, embedder_endpoint, images_bytes)
+            raise
 
     def run_vlm(
         self,

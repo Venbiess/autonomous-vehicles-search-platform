@@ -1,5 +1,5 @@
 services:
-  avsp-server:
+  master-server:
     gpus: all
     environment:
       NVIDIA_VISIBLE_DEVICES: all

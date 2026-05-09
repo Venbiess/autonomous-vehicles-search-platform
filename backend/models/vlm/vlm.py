@@ -117,14 +117,17 @@ def _runtime_payload() -> dict:
 @app.middleware("http")
 async def track_request_activity(request: Request, call_next):
     global http_requests_in_progress, last_request_finished_at
+    should_track = request.url.path != "/health"
     with request_lock:
-        http_requests_in_progress += 1
+        if should_track:
+            http_requests_in_progress += 1
     try:
         return await call_next(request)
     finally:
-        with request_lock:
-            http_requests_in_progress = max(0, http_requests_in_progress - 1)
-            last_request_finished_at = time.monotonic()
+        if should_track:
+            with request_lock:
+                http_requests_in_progress = max(0, http_requests_in_progress - 1)
+                last_request_finished_at = time.monotonic()
 
 
 def has_active_http_requests(grace_period_sec: float = 0.0) -> bool:
