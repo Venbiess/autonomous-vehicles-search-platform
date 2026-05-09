@@ -77,6 +77,25 @@ func (c *ObjectCache) Get(objectID string) (cacheValue, bool) {
 	if c == nil {
 		return cacheValue{}, false
 	}
+	value, ok := c.get(objectID, true)
+	if !ok {
+		return cacheValue{}, false
+	}
+	return value, true
+}
+
+func (c *ObjectCache) Peek(objectID string) (cacheValue, bool) {
+	if c == nil {
+		return cacheValue{}, false
+	}
+	value, ok := c.get(objectID, false)
+	if !ok {
+		return cacheValue{}, false
+	}
+	return value, true
+}
+
+func (c *ObjectCache) get(objectID string, copyContent bool) (cacheValue, bool) {
 	now := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -97,14 +116,27 @@ func (c *ObjectCache) Get(objectID string) (cacheValue, bool) {
 	c.order.MoveToFront(elem)
 	c.hits.Add(1)
 	objectCacheHits.Inc()
+
+	content := entry.content
+	if copyContent {
+		content = append([]byte(nil), entry.content...)
+	}
 	return cacheValue{
-		Content:     append([]byte(nil), entry.content...),
+		Content:     content,
 		ContentType: entry.contentType,
 		SizeBytes:   entry.sizeBytes,
 	}, true
 }
 
 func (c *ObjectCache) Put(objectID string, content []byte, contentType string) {
+	c.put(objectID, content, contentType, true)
+}
+
+func (c *ObjectCache) PutOwned(objectID string, content []byte, contentType string) {
+	c.put(objectID, content, contentType, false)
+}
+
+func (c *ObjectCache) put(objectID string, content []byte, contentType string, copyContent bool) {
 	if c == nil {
 		return
 	}
@@ -122,10 +154,15 @@ func (c *ObjectCache) Put(objectID string, content []byte, contentType string) {
 		expiresAt = now.Add(c.ttl)
 	}
 
+	storedContent := content
+	if copyContent {
+		storedContent = append([]byte(nil), content...)
+	}
+
 	if elem, ok := c.entries[objectID]; ok {
 		entry := elem.Value.(*cacheEntry)
 		c.totalBytes -= entry.sizeBytes
-		entry.content = append([]byte(nil), content...)
+		entry.content = storedContent
 		entry.contentType = contentType
 		entry.sizeBytes = size
 		entry.expiresAt = expiresAt
@@ -134,7 +171,7 @@ func (c *ObjectCache) Put(objectID string, content []byte, contentType string) {
 	} else {
 		entry := &cacheEntry{
 			objectID:    objectID,
-			content:     append([]byte(nil), content...),
+			content:     storedContent,
 			contentType: contentType,
 			sizeBytes:   size,
 			expiresAt:   expiresAt,

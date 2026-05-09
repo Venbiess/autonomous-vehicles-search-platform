@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -26,6 +28,9 @@ type ObjectStoreConfig struct {
 
 type S3Adapter struct {
 	client *minio.Client
+
+	bucketsMu    sync.RWMutex
+	knownBuckets map[string]struct{}
 }
 
 func NewS3Adapter(cfg ObjectStoreConfig) (*S3Adapter, error) {
@@ -64,7 +69,10 @@ func NewS3Adapter(cfg ObjectStoreConfig) (*S3Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &S3Adapter{client: cli}, nil
+	return &S3Adapter{
+		client:       cli,
+		knownBuckets: make(map[string]struct{}),
+	}, nil
 }
 
 func (m *S3Adapter) GetBytes(ctx context.Context, bucket, key string) ([]byte, string, error) {
@@ -76,18 +84,14 @@ func (m *S3Adapter) GetBytes(ctx context.Context, bucket, key string) ([]byte, s
 		return nil, "", err
 	}
 	defer obj.Close()
-	stat, err := obj.Stat()
+	body, err := io.ReadAll(obj)
 	if err != nil {
 		if isMinioNotFound(err) {
 			return nil, "", fmt.Errorf("%w: object %s/%s", ErrNotFound, bucket, key)
 		}
 		return nil, "", err
 	}
-	body, err := io.ReadAll(obj)
-	if err != nil {
-		return nil, "", err
-	}
-	contentType := stat.ContentType
+	contentType := http.DetectContentType(body)
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
@@ -121,17 +125,9 @@ func (m *S3Adapter) PutStream(ctx context.Context, bucket, key string, reader io
 		contentType = "application/octet-stream"
 	}
 
-	exists, err := m.client.BucketExists(ctx, bucket)
-	if err != nil {
-		return PutResult{}, err
-	}
-	if !exists {
-		if err := m.client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{}); err != nil {
-			alreadyOwned := strings.TrimSpace(minio.ToErrorResponse(err).Code) == "BucketAlreadyOwnedByYou"
-			alreadyExists := strings.TrimSpace(minio.ToErrorResponse(err).Code) == "BucketAlreadyExists"
-			if !alreadyOwned && !alreadyExists {
-				return PutResult{}, err
-			}
+	if !m.isBucketKnown(bucket) {
+		if err := m.ensureBucket(ctx, bucket); err != nil {
+			return PutResult{}, err
 		}
 	}
 
@@ -139,6 +135,7 @@ func (m *S3Adapter) PutStream(ctx context.Context, bucket, key string, reader io
 	if err != nil {
 		return PutResult{}, err
 	}
+	m.markBucketKnown(bucket)
 
 	return PutResult{SizeBytes: res.Size, ContentType: contentType}, nil
 }
@@ -166,7 +163,35 @@ func isMinioNotFound(err error) bool {
 	}
 }
 
-func isMinioNoSuchBucket(err error) bool {
-	resp := minio.ToErrorResponse(err)
-	return strings.TrimSpace(resp.Code) == "NoSuchBucket"
+func (m *S3Adapter) ensureBucket(ctx context.Context, bucket string) error {
+	if m.isBucketKnown(bucket) {
+		return nil
+	}
+	m.bucketsMu.Lock()
+	defer m.bucketsMu.Unlock()
+	if _, ok := m.knownBuckets[bucket]; ok {
+		return nil
+	}
+	if err := m.client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{}); err != nil {
+		alreadyOwned := strings.TrimSpace(minio.ToErrorResponse(err).Code) == "BucketAlreadyOwnedByYou"
+		alreadyExists := strings.TrimSpace(minio.ToErrorResponse(err).Code) == "BucketAlreadyExists"
+		if !alreadyOwned && !alreadyExists {
+			return err
+		}
+	}
+	m.knownBuckets[bucket] = struct{}{}
+	return nil
+}
+
+func (m *S3Adapter) markBucketKnown(bucket string) {
+	m.bucketsMu.Lock()
+	defer m.bucketsMu.Unlock()
+	m.knownBuckets[bucket] = struct{}{}
+}
+
+func (m *S3Adapter) isBucketKnown(bucket string) bool {
+	m.bucketsMu.RLock()
+	defer m.bucketsMu.RUnlock()
+	_, ok := m.knownBuckets[bucket]
+	return ok
 }

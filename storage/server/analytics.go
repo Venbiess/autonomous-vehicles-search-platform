@@ -442,9 +442,10 @@ func (s *clickHouseAnalyticsShard) purgeDeletedFieldsFromAnnotations(ctx context
 	lastObjectID := ""
 	for {
 		query := fmt.Sprintf(
-			"SELECT object_id, argMax(values_json, updated_at) AS values_json FROM %s WHERE object_id > %s GROUP BY object_id ORDER BY object_id LIMIT %d",
+			"SELECT object_id, argMax(values_json, updated_at) AS values_json FROM %s WHERE object_id > %s GROUP BY object_id HAVING %s ORDER BY object_id LIMIT %d",
 			chIdent(s.annotationsTable),
 			chQuote(lastObjectID),
+			buildAnnotationFieldPresenceClause("values_json", fieldNames),
 			analyticsScanBatchSize,
 		)
 		var payload struct {
@@ -481,8 +482,10 @@ func (s *clickHouseAnalyticsShard) purgeDeletedFieldsFromAnnotations(ctx context
 				"updated_at":  formatClickHouseTime(now),
 			})
 		}
-		if err := s.insertJSONEachRow(ctx, s.annotationsTable, []string{"object_id", "values_json", "updated_at"}, rows); err != nil {
-			return err
+		if len(rows) > 0 {
+			if err := s.insertJSONEachRow(ctx, s.annotationsTable, []string{"object_id", "values_json", "updated_at"}, rows); err != nil {
+				return err
+			}
 		}
 		if len(payload.Data) < analyticsScanBatchSize {
 			return nil
@@ -490,10 +493,15 @@ func (s *clickHouseAnalyticsShard) purgeDeletedFieldsFromAnnotations(ctx context
 	}
 }
 
-func (s *clickHouseAnalyticsShard) getAnnotationValuesBatch(ctx context.Context, objectIDs []string) (map[string]map[string]string, error) {
+type annotationPayload struct {
+	Raw    string
+	Values map[string]string
+}
+
+func (s *clickHouseAnalyticsShard) getAnnotationPayloadBatch(ctx context.Context, objectIDs []string) (map[string]annotationPayload, error) {
 	normalized := dedupeTrimmed(objectIDs)
 	if len(normalized) == 0 {
-		return map[string]map[string]string{}, nil
+		return map[string]annotationPayload{}, nil
 	}
 	query := fmt.Sprintf(
 		"SELECT object_id, argMax(values_json, updated_at) AS values_json FROM %s WHERE object_id IN (%s) GROUP BY object_id",
@@ -509,9 +517,24 @@ func (s *clickHouseAnalyticsShard) getAnnotationValuesBatch(ctx context.Context,
 	if err := s.queryJSON(ctx, query, &payload); err != nil {
 		return nil, err
 	}
-	valuesByObjectID := make(map[string]map[string]string, len(payload.Data))
+	valuesByObjectID := make(map[string]annotationPayload, len(payload.Data))
 	for _, row := range payload.Data {
-		valuesByObjectID[row.ObjectID] = decodeValues(row.ValuesJSON)
+		valuesByObjectID[row.ObjectID] = annotationPayload{
+			Raw:    row.ValuesJSON,
+			Values: decodeValues(row.ValuesJSON),
+		}
+	}
+	return valuesByObjectID, nil
+}
+
+func (s *clickHouseAnalyticsShard) getAnnotationValuesBatch(ctx context.Context, objectIDs []string) (map[string]map[string]string, error) {
+	payloads, err := s.getAnnotationPayloadBatch(ctx, objectIDs)
+	if err != nil {
+		return nil, err
+	}
+	valuesByObjectID := make(map[string]map[string]string, len(payloads))
+	for objectID, payload := range payloads {
+		valuesByObjectID[objectID] = payload.Values
 	}
 	return valuesByObjectID, nil
 }
@@ -541,18 +564,32 @@ func (s *clickHouseAnalyticsShard) upsertAnnotations(ctx context.Context, rows [
 	if len(order) == 0 {
 		return nil
 	}
-	existingValues, err := s.getAnnotationValuesBatch(ctx, order)
+	existingValues, err := s.getAnnotationPayloadBatch(ctx, order)
 	if err != nil {
 		return err
 	}
 	insertRows := make([]map[string]any, 0, len(order))
 	now := time.Now().UTC()
 	for _, objectID := range order {
-		merged := existingValues[objectID]
-		if merged == nil {
-			merged = make(map[string]string, len(grouped[objectID]))
+		existingPayload, hasExisting := existingValues[objectID]
+		updates := grouped[objectID]
+		unchanged := hasExisting
+		if unchanged {
+			for key, value := range updates {
+				if existingPayload.Values[key] != value {
+					unchanged = false
+					break
+				}
+			}
 		}
-		for key, value := range grouped[objectID] {
+		if unchanged {
+			continue
+		}
+		merged := make(map[string]string, len(existingPayload.Values)+len(updates))
+		for key, value := range existingPayload.Values {
+			merged[key] = value
+		}
+		for key, value := range updates {
 			merged[key] = value
 		}
 		raw, _ := json.Marshal(merged)
@@ -561,6 +598,9 @@ func (s *clickHouseAnalyticsShard) upsertAnnotations(ctx context.Context, rows [
 			"values_json": string(raw),
 			"updated_at":  formatClickHouseTime(now),
 		})
+	}
+	if len(insertRows) == 0 {
+		return nil
 	}
 	return s.insertJSONEachRow(ctx, s.annotationsTable, []string{"object_id", "values_json", "updated_at"}, insertRows)
 }
@@ -745,6 +785,18 @@ func (s *clickHouseAnalyticsShard) search(ctx context.Context, filters []SearchF
 		out = append(out, SearchResult{ObjectID: row.ObjectID, Attributes: attrs, UpdatedAt: updatedAt})
 	}
 	return out, nil
+}
+
+func buildAnnotationFieldPresenceClause(jsonExpr string, fieldNames []string) string {
+	normalized := dedupeTrimmed(fieldNames)
+	if len(normalized) == 0 {
+		return "1"
+	}
+	clauses := make([]string, 0, len(normalized))
+	for _, fieldName := range normalized {
+		clauses = append(clauses, fmt.Sprintf("JSONHas(%s, %s)", jsonExpr, chQuote(fieldName)))
+	}
+	return strings.Join(clauses, " OR ")
 }
 
 func (s *clickHouseAnalyticsShard) queryJSON(ctx context.Context, query string, out any) error {

@@ -182,12 +182,27 @@ func (s *StorageServer) ListObjects(ctx context.Context, limit int, cursor strin
 }
 
 func (s *StorageServer) GetContent(ctx context.Context, objectID string) ([]byte, string, error) {
+	return s.getContent(ctx, objectID, true)
+}
+
+func (s *StorageServer) getContent(ctx context.Context, objectID string, copyCached bool) ([]byte, string, error) {
 	objectID = strings.TrimSpace(objectID)
 	if objectID == "" {
 		return nil, "", invalidArgument("object_id is required")
 	}
-	if cached, ok := s.cache.Get(objectID); ok {
-		return cached.Content, cached.ContentType, nil
+	if s.cache != nil {
+		var (
+			cached cacheValue
+			ok     bool
+		)
+		if copyCached {
+			cached, ok = s.cache.Get(objectID)
+		} else {
+			cached, ok = s.cache.Peek(objectID)
+		}
+		if ok {
+			return cached.Content, cached.ContentType, nil
+		}
 	}
 	m, err := s.getMetadataByID(ctx, objectID)
 	if err != nil {
@@ -197,7 +212,9 @@ func (s *StorageServer) GetContent(ctx context.Context, objectID string) ([]byte
 	if err != nil {
 		return nil, "", err
 	}
-	s.cache.Put(objectID, body, contentType)
+	if s.cache != nil {
+		s.cache.PutOwned(objectID, body, contentType)
+	}
 	return body, contentType, nil
 }
 
@@ -207,11 +224,28 @@ func (s *StorageServer) GetBatchContent(ctx context.Context, objectIDs []string)
 		return items
 	}
 
-	workers := len(objectIDs)
+	positionsByID := make(map[string][]int, len(objectIDs))
+	uniqueIDs := make([]string, 0, len(objectIDs))
+	for idx, rawID := range objectIDs {
+		objectID := strings.TrimSpace(rawID)
+		if objectID == "" {
+			items[idx] = ObjectBatchItem{ObjectID: rawID, Error: "object_id is required"}
+			continue
+		}
+		if _, ok := positionsByID[objectID]; !ok {
+			uniqueIDs = append(uniqueIDs, objectID)
+		}
+		positionsByID[objectID] = append(positionsByID[objectID], idx)
+	}
+	if len(uniqueIDs) == 0 {
+		return items
+	}
+
+	workers := len(uniqueIDs)
 	if workers > maxBatchContentWorkers {
 		workers = maxBatchContentWorkers
 	}
-	jobs := make(chan int, len(objectIDs))
+	jobs := make(chan int, len(uniqueIDs))
 	var wg sync.WaitGroup
 
 	for i := 0; i < workers; i++ {
@@ -219,28 +253,29 @@ func (s *StorageServer) GetBatchContent(ctx context.Context, objectIDs []string)
 		go func() {
 			defer wg.Done()
 			for idx := range jobs {
-				rawID := objectIDs[idx]
-				objectID := strings.TrimSpace(rawID)
-				if objectID == "" {
-					items[idx] = ObjectBatchItem{ObjectID: rawID, Error: "object_id is required"}
-					continue
-				}
-				body, contentType, err := s.GetContent(ctx, objectID)
+				objectID := uniqueIDs[idx]
+				body, contentType, err := s.getContent(ctx, objectID, false)
 				if err != nil {
-					items[idx] = ObjectBatchItem{ObjectID: objectID, Error: err.Error()}
+					for _, pos := range positionsByID[objectID] {
+						items[pos] = ObjectBatchItem{ObjectID: objectID, Error: err.Error()}
+					}
 					continue
 				}
-				items[idx] = ObjectBatchItem{
+				body = append([]byte(nil), body...)
+				item := ObjectBatchItem{
 					ObjectID:    objectID,
 					Content:     body,
 					ContentType: contentType,
 					SizeBytes:   int64(len(body)),
 				}
+				for _, pos := range positionsByID[objectID] {
+					items[pos] = item
+				}
 			}
 		}()
 	}
 
-	for idx := range objectIDs {
+	for idx := range uniqueIDs {
 		jobs <- idx
 	}
 	close(jobs)

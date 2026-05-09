@@ -11,11 +11,13 @@ import (
 type fakeObjectAdapter struct {
 	bodyByKey map[string][]byte
 	putCalls  int
+	getCalls  int
 	deleteKey string
 }
 
 func (f *fakeObjectAdapter) GetBytes(ctx context.Context, bucket, key string) ([]byte, string, error) {
 	_ = ctx
+	f.getCalls++
 	body, ok := f.bodyByKey[bucket+"/"+key]
 	if !ok {
 		return nil, "", infra.ErrNotFound
@@ -176,5 +178,33 @@ func TestStorageServerGetBatchContentReturnsErrorsPerObject(t *testing.T) {
 	}
 	if items[1].Error == "" {
 		t.Fatal("expected validation error for empty object id")
+	}
+}
+
+func TestStorageServerGetBatchContentDeduplicatesCachedObjectIDs(t *testing.T) {
+	obj := &fakeObjectAdapter{
+		bodyByKey: map[string][]byte{
+			"avsp/path/a.jpg": []byte("a-bytes"),
+		},
+	}
+	server := &StorageServer{
+		objectAdapter: obj,
+		cache:         NewObjectCache(ObjectCacheConfig{Enabled: true, MaxItems: 10, MaxTotalBytes: 1024}),
+	}
+
+	objectID := objectIDFromStoragePath("s3://avsp/path/a.jpg")
+	server.cache.Put(objectID, []byte("cached"), "image/jpeg")
+
+	items := server.GetBatchContent(context.Background(), []string{objectID, objectID, objectID})
+	if len(items) != 3 {
+		t.Fatalf("unexpected batch length: %d", len(items))
+	}
+	for i, item := range items {
+		if string(item.Content) != "cached" {
+			t.Fatalf("item %d expected cached content, got %q", i, string(item.Content))
+		}
+	}
+	if obj.getCalls != 0 {
+		t.Fatalf("expected cached batch lookup to avoid object store reads, got %d", obj.getCalls)
 	}
 }

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 const pgvectorUpsertChunkSize = 128
@@ -34,9 +34,9 @@ type VectorIndexConfig struct {
 }
 
 type PgVectorAdapter struct {
-	db        *sql.DB
-	schema    string
-	tableName string
+	db         *sql.DB
+	schema     string
+	tableName  string
 	vectorSize int
 }
 
@@ -259,8 +259,8 @@ func (p *PgVectorAdapter) execUpsertRows(ctx context.Context, objectIDs []string
 	args := make([]any, 0, len(objectIDs)*3)
 	for i := range objectIDs {
 		base := i*3 + 1
-		values = append(values, fmt.Sprintf("($%d, $%d::vector, $%d)", base, base+1, base+2))
-		args = append(args, objectIDs[i], vectorLiteral(embeddings[i]), len(embeddings[i]))
+		values = append(values, fmt.Sprintf("($%d, translate($%d::text, '{}', '[]')::vector, $%d)", base, base+1, base+2))
+		args = append(args, objectIDs[i], pq.Array(embeddings[i]), len(embeddings[i]))
 	}
 	query := p.buildUpsertSQL(strings.Join(values, ","))
 	_, err := p.db.ExecContext(ctx, query, args...)
@@ -276,27 +276,32 @@ func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, to
 		efSearch = pgvectorDefaultHNSWEfSearch
 	}
 
-	tx, err := p.db.BeginTx(ctx, nil)
+	conn, err := p.db.Conn(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		_ = tx.Rollback()
-	}()
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", efSearch)); err != nil {
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, fmt.Sprintf("SET hnsw.ef_search = %d", efSearch)); err != nil {
 		log.Printf("pgvector: failed to set hnsw.ef_search=%d: %v", efSearch, err)
+	} else {
+		defer func() {
+			if _, err := conn.ExecContext(context.Background(), "RESET hnsw.ef_search"); err != nil {
+				log.Printf("pgvector: failed to reset hnsw.ef_search: %v", err)
+			}
+		}()
 	}
 
 	query := fmt.Sprintf(`
 		SELECT object_id,
-			embedding <=> $1::vector AS distance,
-			1 - (embedding <=> $1::vector) AS similarity
+			embedding <=> translate($1::text, '{}', '[]')::vector AS distance,
+			1 - (embedding <=> translate($1::text, '{}', '[]')::vector) AS similarity
 		FROM %s
 		WHERE embedding_dim = $3
-		ORDER BY embedding <=> $1::vector
+		ORDER BY embedding <=> translate($1::text, '{}', '[]')::vector
 		LIMIT $2
 	`, p.qualifiedTable())
-	rows, err := tx.QueryContext(ctx, query, vectorLiteral(embedding), topK, len(embedding))
+	rows, err := conn.QueryContext(ctx, query, pq.Array(embedding), topK, len(embedding))
 	if err != nil {
 		return nil, err
 	}
@@ -311,9 +316,6 @@ func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, to
 		results = append(results, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return results, nil
@@ -438,7 +440,7 @@ func (p *PgVectorAdapter) GetByObjectIDs(ctx context.Context, objectIDs []string
 			vals = append(vals, id)
 		}
 		query := fmt.Sprintf(
-			"SELECT object_id, embedding::text FROM %s WHERE object_id IN (%s)",
+			"SELECT object_id, translate(embedding::text, '[]', '{}')::float8[] FROM %s WHERE object_id IN (%s)",
 			p.qualifiedTable(),
 			strings.Join(args, ","),
 		)
@@ -448,17 +450,12 @@ func (p *PgVectorAdapter) GetByObjectIDs(ctx context.Context, objectIDs []string
 		}
 		for rows.Next() {
 			var objectID string
-			var rawVector string
+			var rawVector pq.Float64Array
 			if err := rows.Scan(&objectID, &rawVector); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			parsed, err := parseVectorLiteral(rawVector)
-			if err != nil {
-				rows.Close()
-				return nil, err
-			}
-			out[objectID] = parsed
+			out[objectID] = append([]float64(nil), rawVector...)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -492,37 +489,6 @@ func (p *PgVectorAdapter) buildUpsertSQL(valuesExpr string) string {
 }
 
 func pqIdent(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
-
-func vectorLiteral(values []float64) string {
-	if len(values) == 0 {
-		return "[]"
-	}
-	parts := make([]string, len(values))
-	for i, value := range values {
-		parts[i] = fmt.Sprintf("%.8f", value)
-	}
-	return "[" + strings.Join(parts, ",") + "]"
-}
-
-func parseVectorLiteral(raw string) ([]float64, error) {
-	trimmed := strings.TrimSpace(raw)
-	trimmed = strings.TrimPrefix(trimmed, "[")
-	trimmed = strings.TrimSuffix(trimmed, "]")
-	trimmed = strings.TrimSpace(trimmed)
-	if trimmed == "" {
-		return []float64{}, nil
-	}
-	parts := strings.Split(trimmed, ",")
-	out := make([]float64, 0, len(parts))
-	for _, part := range parts {
-		value, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, value)
-	}
-	return out, nil
-}
 
 func waitForPostgres(db *sql.DB, timeout time.Duration, interval time.Duration) error {
 	deadline := time.Now().Add(timeout)
