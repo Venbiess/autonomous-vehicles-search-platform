@@ -144,9 +144,11 @@ type ModelServiceKey = "embedder" | "vlm";
 type RuntimeServiceStatus = "online" | "starting" | "offline";
 
 export default function SystemMonitor({
-  showRuntimePanels = false,
+  showModelRuntimeBlocks = true,
+  showGpuHostBlock = true,
 }: {
-  showRuntimePanels?: boolean;
+  showModelRuntimeBlocks?: boolean;
+  showGpuHostBlock?: boolean;
 }) {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -935,7 +937,7 @@ export default function SystemMonitor({
           </div>
         </div>
 
-        {showRuntimePanels && (
+        {showModelRuntimeBlocks && (
           <>
             <div className="mt-6">
               <h3 className="text-lg font-semibold text-gray-800 mb-3">
@@ -1037,59 +1039,62 @@ export default function SystemMonitor({
               </div>
             </div>
 
-            <div className="mt-6">
-              <h3 className="text-lg font-semibold text-gray-800 mb-3">GPU хоста</h3>
-              {gpuList.length === 0 ? (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-                  {systemInfo.gpu?.error
-                    ? `GPU недоступен: ${systemInfo.gpu.error}`
-                    : "GPU не обнаружен на текущем хосте master-сервиса."}
-                </div>
-              ) : (
-                <div className="overflow-x-auto rounded-lg border border-slate-200">
-                  <table className="min-w-full divide-y divide-slate-200 bg-white">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          GPU
-                        </th>
-                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Util
-                        </th>
-                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Memory
-                        </th>
-                        <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Temp
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-200">
-                      {gpuList.map((gpu) => (
-                        <tr key={`${gpu.index}-${gpu.uuid || gpu.name}`}>
-                          <td className="px-3 py-2 text-sm text-slate-700">
-                            <div className="font-medium">{`#${gpu.index} ${gpu.name}`}</div>
-                            {gpu.uuid ? <div className="text-xs text-slate-500">{gpu.uuid}</div> : null}
-                          </td>
-                          <td className="px-3 py-2 text-sm text-slate-700">
-                            {`${Number(gpu.utilization_percent ?? 0).toFixed(1)}%`}
-                          </td>
-                          <td className="px-3 py-2 text-sm text-slate-700">
-                            {`${formatMb(gpu.memory_used_mb)} / ${formatMb(gpu.memory_total_mb)} (${Number(
-                              gpu.memory_used_percent ?? 0
-                            ).toFixed(1)}%)`}
-                          </td>
-                          <td className="px-3 py-2 text-sm text-slate-700">
-                            {`${Number(gpu.temperature_c ?? 0).toFixed(0)}°C`}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
           </>
+        )}
+
+        {showGpuHostBlock && (
+          <div className="mt-6">
+            <h3 className="text-lg font-semibold text-gray-800 mb-3">GPU хоста</h3>
+            {gpuList.length === 0 ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                {systemInfo.gpu?.error
+                  ? `GPU недоступен: ${systemInfo.gpu.error}`
+                  : "GPU не обнаружен на текущем хосте master-сервиса."}
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-lg border border-slate-200">
+                <table className="min-w-full divide-y divide-slate-200 bg-white">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        GPU
+                      </th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        Util
+                      </th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        Memory
+                      </th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        Temp
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {gpuList.map((gpu) => (
+                      <tr key={`${gpu.index}-${gpu.uuid || gpu.name}`}>
+                        <td className="px-3 py-2 text-sm text-slate-700">
+                          <div className="font-medium">{`#${gpu.index} ${gpu.name}`}</div>
+                          {gpu.uuid ? <div className="text-xs text-slate-500">{gpu.uuid}</div> : null}
+                        </td>
+                        <td className="px-3 py-2 text-sm text-slate-700">
+                          {`${Number(gpu.utilization_percent ?? 0).toFixed(1)}%`}
+                        </td>
+                        <td className="px-3 py-2 text-sm text-slate-700">
+                          {`${formatMb(gpu.memory_used_mb)} / ${formatMb(gpu.memory_total_mb)} (${Number(
+                            gpu.memory_used_percent ?? 0
+                          ).toFixed(1)}%)`}
+                        </td>
+                        <td className="px-3 py-2 text-sm text-slate-700">
+                          {`${Number(gpu.temperature_c ?? 0).toFixed(0)}°C`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         )}
       </div>
 

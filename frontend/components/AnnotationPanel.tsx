@@ -47,6 +47,24 @@ function moveSyntheticToEnd(methods: PreprocessorMethod[]): PreprocessorMethod[]
   return [...regular, ...synthetic];
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientFetchFailure(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false;
+  const message = String(error.message || "").toLowerCase();
+  const detail = String(error.response?.data?.detail || error.response?.data?.error || "").toLowerCase();
+  return (
+    message.includes("fetch failed") ||
+    message.includes("network error") ||
+    message.includes("timeout") ||
+    detail.includes("fetch failed") ||
+    detail.includes("connection refused") ||
+    detail.includes("bad gateway")
+  );
+}
+
 interface WaymoAuthStartResponse {
   session_id?: string;
   auth_url?: string;
@@ -246,67 +264,85 @@ export default function AnnotationPanel({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
     const loadPreprocessorMethods = async () => {
-      try {
-        const response = await axios.get("/api/storage/preprocessors");
-        const items: unknown[] = Array.isArray(response.data?.items)
-          ? response.data.items
-          : [];
-        const methods: PreprocessorMethod[] = items
-          .map((rawItem) => {
-            const item =
-              rawItem && typeof rawItem === "object"
-                ? (rawItem as Record<string, unknown>)
-                : {};
-            return {
-              key: String(item.key ?? "").trim(),
-              label: String(item.label ?? "").trim(),
-              description:
-                typeof item.description === "string"
-                  ? item.description.trim()
-                  : undefined,
-              default_config: {
-                embed_on_install: false,
-                ...(item.default_config &&
-                typeof item.default_config === "object" &&
-                !Array.isArray(item.default_config)
-                  ? (item.default_config as Record<string, unknown>)
-                  : {}),
-              },
-            };
-          })
-          .filter((item: PreprocessorMethod) => item.key && item.label);
-        const orderedMethods = moveSyntheticToEnd(methods);
-        setPreprocessorMethods(orderedMethods);
-        setInstallDatasets(
-          orderedMethods.reduce<Record<string, boolean>>((acc, item) => {
-            acc[item.key] = false;
-            return acc;
-          }, {})
-        );
-        setDatasetConfigText(
-          orderedMethods.reduce<Record<string, string>>((acc, item) => {
-            acc[item.key] = JSON.stringify(item.default_config ?? {}, null, 2);
-            return acc;
-          }, {})
-        );
-        setPreprocessorMethodsError(null);
-      } catch (error: unknown) {
-        const message =
-          axios.isAxiosError(error) && error.response?.data?.detail
-            ? String(error.response.data.detail)
-            : axios.isAxiosError(error) && error.response?.data?.error
-              ? String(error.response.data.error)
-              : error instanceof Error
-                ? error.message
-                : "Failed to load preprocessor methods from storage API. Check storage-server logs for YAML/config parse errors.";
-        setPreprocessorMethods([]);
-        setInstallDatasets({});
-        setDatasetConfigText({});
-        setPreprocessorMethodsError(message);
+      const maxAttempts = 4;
+      let lastError: unknown = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          const response = await axios.get("/api/storage/preprocessors");
+          if (cancelled) return;
+          const items: unknown[] = Array.isArray(response.data?.items)
+            ? response.data.items
+            : [];
+          const methods: PreprocessorMethod[] = items
+            .map((rawItem) => {
+              const item =
+                rawItem && typeof rawItem === "object"
+                  ? (rawItem as Record<string, unknown>)
+                  : {};
+              return {
+                key: String(item.key ?? "").trim(),
+                label: String(item.label ?? "").trim(),
+                description:
+                  typeof item.description === "string"
+                    ? item.description.trim()
+                    : undefined,
+                default_config: {
+                  embed_on_install: false,
+                  ...(item.default_config &&
+                  typeof item.default_config === "object" &&
+                  !Array.isArray(item.default_config)
+                    ? (item.default_config as Record<string, unknown>)
+                    : {}),
+                },
+              };
+            })
+            .filter((item: PreprocessorMethod) => item.key && item.label);
+          const orderedMethods = moveSyntheticToEnd(methods);
+          setPreprocessorMethods(orderedMethods);
+          setInstallDatasets(
+            orderedMethods.reduce<Record<string, boolean>>((acc, item) => {
+              acc[item.key] = false;
+              return acc;
+            }, {})
+          );
+          setDatasetConfigText(
+            orderedMethods.reduce<Record<string, string>>((acc, item) => {
+              acc[item.key] = JSON.stringify(item.default_config ?? {}, null, 2);
+              return acc;
+            }, {})
+          );
+          setPreprocessorMethodsError(null);
+          return;
+        } catch (error: unknown) {
+          lastError = error;
+          if (!isTransientFetchFailure(error) || attempt === maxAttempts) {
+            break;
+          }
+          await sleep(600 * attempt);
+        }
       }
+      if (cancelled) return;
+      const message =
+        axios.isAxiosError(lastError) && lastError.response?.data?.detail
+          ? String(lastError.response.data.detail)
+          : axios.isAxiosError(lastError) && lastError.response?.data?.error
+            ? String(lastError.response.data.error)
+            : isTransientFetchFailure(lastError)
+              ? "Storage server is starting up. Retry in a few seconds."
+              : lastError instanceof Error
+                ? lastError.message
+                : "Failed to load preprocessor methods from storage API. Check storage-server logs for YAML/config parse errors.";
+      setPreprocessorMethods([]);
+      setInstallDatasets({});
+      setDatasetConfigText({});
+      setPreprocessorMethodsError(message);
     };
     loadPreprocessorMethods();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {

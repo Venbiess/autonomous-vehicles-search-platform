@@ -192,6 +192,20 @@ function toErrorMessage(value: unknown): string {
   return "";
 }
 
+function isTransientFetchFailure(error: unknown): boolean {
+  if (!axios.isAxiosError(error)) return false;
+  const message = String(error.message || "").toLowerCase();
+  const detail = String(error.response?.data?.detail || error.response?.data?.error || "").toLowerCase();
+  return (
+    message.includes("fetch failed") ||
+    message.includes("network error") ||
+    message.includes("timeout") ||
+    detail.includes("fetch failed") ||
+    detail.includes("connection refused") ||
+    detail.includes("bad gateway")
+  );
+}
+
 function formatNumber(value: number): string {
   return value.toLocaleString("ru-RU");
 }
@@ -991,14 +1005,27 @@ export default function StoragePanel({
       setIsRefreshing(true);
     }
     try {
-      const response = await axios.get("/api/storage/stats");
-      setStats(response.data);
-      setErrorMessage(null);
-    } catch (error) {
-      const message = extractAxiosErrorMessage(
-        error,
-        "Failed to load storage stats"
-      );
+      const maxAttempts = showLoader ? 4 : 1;
+      let lastError: unknown = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          const response = await axios.get("/api/storage/stats");
+          setStats(response.data);
+          setErrorMessage(null);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (!isTransientFetchFailure(error) || attempt === maxAttempts) {
+            break;
+          }
+          await new Promise<void>((resolve) => {
+            setTimeout(resolve, 500 * attempt);
+          });
+        }
+      }
+      const message = isTransientFetchFailure(lastError)
+        ? "Storage server is starting up. Retry in a few seconds."
+        : extractAxiosErrorMessage(lastError, "Failed to load storage stats");
       setErrorMessage(message);
     } finally {
       setIsLoading(false);

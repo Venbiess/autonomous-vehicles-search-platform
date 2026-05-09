@@ -30,7 +30,8 @@ interface UISettings {
   showSnapshotSection: boolean;
   showSyntheticInAnnotation: boolean;
   showSearchMeta: boolean;
-  showJobMonitorRuntime: boolean;
+  showModelRuntimeBlocks: boolean;
+  showGpuHostInfo: boolean;
 }
 
 const IMAGES_PER_PAGE_OPTIONS = [6, 9, 12, 18, 24];
@@ -41,7 +42,8 @@ const DEFAULT_UI_SETTINGS: UISettings = {
   showSnapshotSection: true,
   showSyntheticInAnnotation: true,
   showSearchMeta: false,
-  showJobMonitorRuntime: true,
+  showModelRuntimeBlocks: true,
+  showGpuHostInfo: false,
 };
 
 function parseStoragePathMeta(storagePath?: string): {
@@ -116,6 +118,7 @@ export default function HomePageClient({
   const [minScoreInput, setMinScoreInput] = useState("0.1");
   const [maxScoreInput, setMaxScoreInput] = useState("");
   const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS);
+  const [needsGpuDefaultProbe, setNeedsGpuDefaultProbe] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsPopoverRef = useRef<HTMLDivElement | null>(null);
 
@@ -205,6 +208,7 @@ export default function HomePageClient({
       const raw = window.localStorage.getItem(UI_SETTINGS_STORAGE_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw) as Partial<UISettings>;
+      const hasGpuStored = typeof parsed?.showGpuHostInfo === "boolean";
       setUiSettings({
         showSnapshotSection:
           typeof parsed?.showSnapshotSection === "boolean"
@@ -218,15 +222,47 @@ export default function HomePageClient({
           typeof parsed?.showSearchMeta === "boolean"
             ? parsed.showSearchMeta
             : DEFAULT_UI_SETTINGS.showSearchMeta,
-        showJobMonitorRuntime:
-          typeof parsed?.showJobMonitorRuntime === "boolean"
-            ? parsed.showJobMonitorRuntime
-            : DEFAULT_UI_SETTINGS.showJobMonitorRuntime,
+        showModelRuntimeBlocks:
+          typeof parsed?.showModelRuntimeBlocks === "boolean"
+            ? parsed.showModelRuntimeBlocks
+            : typeof (parsed as { showJobMonitorRuntime?: boolean })?.showJobMonitorRuntime ===
+                  "boolean"
+              ? Boolean((parsed as { showJobMonitorRuntime?: boolean }).showJobMonitorRuntime)
+              : DEFAULT_UI_SETTINGS.showModelRuntimeBlocks,
+        showGpuHostInfo: hasGpuStored
+          ? Boolean(parsed.showGpuHostInfo)
+          : DEFAULT_UI_SETTINGS.showGpuHostInfo,
       });
+      setNeedsGpuDefaultProbe(!hasGpuStored);
     } catch {
       setUiSettings(DEFAULT_UI_SETTINGS);
+      setNeedsGpuDefaultProbe(true);
     }
   }, []);
+
+  useEffect(() => {
+    if (!needsGpuDefaultProbe) return;
+    let cancelled = false;
+    const resolveGpuDefault = async () => {
+      try {
+        const response = await axios.get("/api/system-info");
+        if (cancelled) return;
+        const gpuAvailable = Boolean(response.data?.gpu?.available);
+        setUiSettings((prev) => ({ ...prev, showGpuHostInfo: gpuAvailable }));
+      } catch {
+        if (cancelled) return;
+        setUiSettings((prev) => ({ ...prev, showGpuHostInfo: false }));
+      } finally {
+        if (!cancelled) {
+          setNeedsGpuDefaultProbe(false);
+        }
+      }
+    };
+    resolveGpuDefault();
+    return () => {
+      cancelled = true;
+    };
+  }, [needsGpuDefaultProbe]);
 
   useEffect(() => {
     window.localStorage.setItem(UI_SETTINGS_STORAGE_KEY, JSON.stringify(uiSettings));
@@ -421,13 +457,25 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">Show Job Monitor Runtime</div>
-                    <div className="text-xs text-slate-500">GPU host and model runtime blocks</div>
+                    <div className="text-sm font-medium text-slate-800">Show Model Runtime Blocks</div>
+                    <div className="text-xs text-slate-500">Embedder/VLM runtime cards</div>
                   </div>
                   <IOSSwitch
-                    checked={uiSettings.showJobMonitorRuntime}
+                    checked={uiSettings.showModelRuntimeBlocks}
                     onChange={(next) =>
-                      setUiSettings((prev) => ({ ...prev, showJobMonitorRuntime: next }))
+                      setUiSettings((prev) => ({ ...prev, showModelRuntimeBlocks: next }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">Show GPU Host Info</div>
+                    <div className="text-xs text-slate-500">nvidia-smi host GPU section</div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showGpuHostInfo}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({ ...prev, showGpuHostInfo: next }))
                     }
                   />
                 </div>
@@ -505,7 +553,10 @@ export default function HomePageClient({
 
       {searchMode === "Job Monitor" ? (
         <section className="px-6 pt-8 pb-16">
-          <SystemMonitor showRuntimePanels={uiSettings.showJobMonitorRuntime} />
+          <SystemMonitor
+            showModelRuntimeBlocks={uiSettings.showModelRuntimeBlocks}
+            showGpuHostBlock={uiSettings.showGpuHostInfo}
+          />
         </section>
       ) : searchMode === "VLM" ? (
         <VlmPanel />

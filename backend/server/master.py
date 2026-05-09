@@ -26,6 +26,7 @@ from configs.common import (
     STORAGE_SERVER_ENDPOINT,
     STORAGE_SERVER_TIMEOUT_SEC,
     STORAGE_WRITE_TOKEN,
+    VLM_ENDPOINT,
     VLM_TIMEOUT_SEC,
 )
 from backend.server.analytics_api import AnalyticsAPI
@@ -2024,10 +2025,14 @@ def get_system_info():
         disk = psutil.disk_usage("/")
         uptime_seconds = int(time.time() - psutil.boot_time())
         embedder_runtime = _fetch_model_runtime("embedder", EMBEDDER_ENDPOINT)
-        vlm_runtime = _queue_only_runtime(
-            "vlm",
-            "vlm worker is queue-only and does not expose an HTTP runtime endpoint",
-        )
+        normalized_vlm_endpoint = str(VLM_ENDPOINT or "").strip()
+        if normalized_vlm_endpoint:
+            vlm_runtime = _fetch_model_runtime("vlm", normalized_vlm_endpoint)
+        else:
+            vlm_runtime = _queue_only_runtime(
+                "vlm",
+                "vlm endpoint is not configured",
+            )
         gpu_info = _collect_nvidia_info()
 
         return {
@@ -2081,10 +2086,9 @@ def get_system_info():
             },
             "services": {
                 "embedder": _fetch_model_runtime("embedder", EMBEDDER_ENDPOINT),
-                "vlm": _queue_only_runtime(
-                    "vlm",
-                    "vlm worker is queue-only and does not expose an HTTP runtime endpoint",
-                ),
+                "vlm": _fetch_model_runtime("vlm", str(VLM_ENDPOINT or "").strip())
+                if str(VLM_ENDPOINT or "").strip()
+                else _queue_only_runtime("vlm", "vlm endpoint is not configured"),
             },
             "uptime_seconds": 0,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),

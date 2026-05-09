@@ -320,6 +320,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       EMBEDDER_ENDPOINT: http://embedder-worker:8000
+      VLM_ENDPOINT: http://vlm-worker:8001
       EMBEDDER_ENDPOINTS: http://embedder-worker:8000
       MODEL_EXECUTION_MODE: rabbitmq
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
