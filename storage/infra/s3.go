@@ -1,7 +1,6 @@
 package infra
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -96,28 +95,6 @@ func (m *S3Adapter) GetBytes(ctx context.Context, bucket, key string) ([]byte, s
 		contentType = "application/octet-stream"
 	}
 	return body, contentType, nil
-}
-
-func (m *S3Adapter) HeadObject(ctx context.Context, bucket, key string) (ObjectInfo, error) {
-	stat, err := m.client.StatObject(ctx, bucket, key, minio.StatObjectOptions{})
-	if err != nil {
-		if isMinioNotFound(err) {
-			return ObjectInfo{}, fmt.Errorf("%w: object %s/%s", ErrNotFound, bucket, key)
-		}
-		return ObjectInfo{}, err
-	}
-	contentType := stat.ContentType
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	return ObjectInfo{
-		SizeBytes:   stat.Size,
-		ContentType: contentType,
-	}, nil
-}
-
-func (m *S3Adapter) PutBytes(ctx context.Context, bucket, key string, data []byte, contentType string) (PutResult, error) {
-	return m.PutStream(ctx, bucket, key, bytes.NewReader(data), int64(len(data)), contentType)
 }
 
 func (m *S3Adapter) PutStream(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) (PutResult, error) {

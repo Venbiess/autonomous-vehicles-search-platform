@@ -149,6 +149,38 @@ def test_user_flow_list_pagination_and_batch(settings, http_session):
     assert missing and missing[0].get("error", "") != ""
 
 
+def test_batch_get_preserves_duplicates_without_content(settings, http_session):
+    headers = _write_headers(settings)
+    payload = _fake_jpeg()
+    uploaded = _upload_object(
+        settings,
+        http_session,
+        headers,
+        payload,
+        filename="dup.jpg",
+        key=f"integration/{uuid.uuid4().hex}-dup.jpg",
+    )
+    object_id = uploaded["object_id"]
+
+    batch = http_session.post(
+        f"{settings.storage_base_url}/objects/get-batch",
+        json={
+            "object_ids": [object_id, object_id, uuid.uuid4().hex],
+            "include_content": False,
+        },
+        timeout=settings.request_timeout_sec,
+    )
+    assert batch.status_code == 200, batch.text
+    items = batch.json()["items"]
+    assert [item["object_id"] for item in items[:2]] == [object_id, object_id]
+    assert items[0]["size_bytes"] == len(payload)
+    assert items[1]["size_bytes"] == len(payload)
+    assert "content_base64" not in items[0]
+    assert "content_base64" not in items[1]
+    assert items[2]["object_id"] != object_id
+    assert items[2].get("error", "") != ""
+
+
 def test_vector_upsert_query_count_and_delete_cascade(settings, http_session):
     headers = _write_headers(settings)
     uploaded = _upload_object(
@@ -209,6 +241,64 @@ def test_vector_upsert_query_count_and_delete_cascade(settings, http_session):
     )
     assert query_after.status_code == 200, query_after.text
     assert object_id not in {item["object_id"] for item in query_after.json()["results"]}
+
+
+def test_vectors_get_and_completed_ids_ignore_missing(settings, http_session):
+    headers = _write_headers(settings)
+    uploaded_a = _upload_object(
+        settings,
+        http_session,
+        headers,
+        _fake_jpeg(),
+        filename="vec-a.jpg",
+        key=f"integration/{uuid.uuid4().hex}-vec-a.jpg",
+    )
+    uploaded_b = _upload_object(
+        settings,
+        http_session,
+        headers,
+        _fake_jpeg(),
+        filename="vec-b.jpg",
+        key=f"integration/{uuid.uuid4().hex}-vec-b.jpg",
+    )
+    object_id_a = uploaded_a["object_id"]
+    object_id_b = uploaded_b["object_id"]
+
+    vector_a = _fake_embedding(settings, base=0.11)
+    vector_b = _fake_embedding(settings, base=0.22)
+    upsert = http_session.post(
+        f"{settings.storage_base_url}/vectors/upsert",
+        json={
+            "vectors": [
+                {"object_id": object_id_a, "embedding": vector_a},
+                {"object_id": object_id_b, "embedding": vector_b},
+            ]
+        },
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert upsert.status_code == 200, upsert.text
+    assert upsert.json()["upserted"] == 2
+
+    missing_id = uuid.uuid4().hex
+    fetched = http_session.post(
+        f"{settings.storage_base_url}/vectors/get",
+        json={"object_ids": [object_id_b, missing_id, object_id_a, object_id_b]},
+        timeout=settings.request_timeout_sec,
+    )
+    assert fetched.status_code == 200, fetched.text
+    items = fetched.json()["items"]
+    assert [item["object_id"] for item in items] == [object_id_b, object_id_a]
+    assert items[0]["embedding"] == vector_b
+    assert items[1]["embedding"] == vector_a
+
+    completed = http_session.post(
+        f"{settings.storage_base_url}/vectors/completed-object-ids",
+        json={"object_ids": [object_id_a, missing_id, object_id_b]},
+        timeout=settings.request_timeout_sec,
+    )
+    assert completed.status_code == 200, completed.text
+    assert set(completed.json()["object_ids"]) == {object_id_a, object_id_b}
 
 
 def test_analytics_schema_annotations_completed_and_search(settings, http_session):
@@ -276,6 +366,113 @@ def test_analytics_schema_annotations_completed_and_search(settings, http_sessio
     )
     assert deleted.status_code == 200, deleted.text
     assert deleted.json()["requested"] == 1
+
+
+def test_replace_missing_fields_purges_deleted_annotation_values(settings, http_session):
+    headers = _write_headers(settings)
+    object_id = _upload_object(
+        settings,
+        http_session,
+        headers,
+        _fake_jpeg(),
+        filename="purge.jpg",
+        key=f"integration/{uuid.uuid4().hex}-purge.jpg",
+    )["object_id"]
+    keep_field = f"keep_{uuid.uuid4().hex[:8]}"
+    drop_field = f"drop_{uuid.uuid4().hex[:8]}"
+
+    fields = http_session.post(
+        f"{settings.storage_base_url}/fields",
+        json={
+            "fields": [
+                {"field_name": keep_field, "prompt": "Keep", "response_type": "text"},
+                {"field_name": drop_field, "prompt": "Drop", "response_type": "text"},
+            ]
+        },
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert fields.status_code == 200, fields.text
+
+    annotations = http_session.post(
+        f"{settings.storage_base_url}/annotations/upsert",
+        json={
+            "rows": [
+                {
+                    "object_id": object_id,
+                    "values": {
+                        keep_field: "kept value",
+                        drop_field: "deleted value",
+                    },
+                }
+            ]
+        },
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert annotations.status_code == 200, annotations.text
+
+    before = http_session.post(
+        f"{settings.storage_base_url}/annotations/get",
+        json={"object_ids": [object_id]},
+        timeout=settings.request_timeout_sec,
+    )
+    assert before.status_code == 200, before.text
+    row_before = before.json()["rows"][0]
+    assert row_before["values"][keep_field] == "kept value"
+    assert row_before["values"][drop_field] == "deleted value"
+
+    replaced = http_session.post(
+        f"{settings.storage_base_url}/fields",
+        json={
+            "fields": [
+                {"field_name": keep_field, "prompt": "Keep updated", "response_type": "text"},
+            ],
+            "replace_missing": True,
+            "purge_deleted_values": True,
+        },
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert replaced.status_code == 200, replaced.text
+    assert [item["field_name"] for item in replaced.json()["fields"]] == [keep_field]
+
+    after = http_session.post(
+        f"{settings.storage_base_url}/annotations/get",
+        json={"object_ids": [object_id]},
+        timeout=settings.request_timeout_sec,
+    )
+    assert after.status_code == 200, after.text
+    row_after = after.json()["rows"][0]
+    assert row_after["values"][keep_field] == "kept value"
+    assert drop_field not in row_after["values"]
+
+    completed_keep = http_session.post(
+        f"{settings.storage_base_url}/annotations/completed-object-ids",
+        json={"object_ids": [object_id], "field_names": [keep_field]},
+        timeout=settings.request_timeout_sec,
+    )
+    assert completed_keep.status_code == 200, completed_keep.text
+    assert completed_keep.json()["object_ids"] == [object_id]
+
+    completed_drop = http_session.post(
+        f"{settings.storage_base_url}/annotations/completed-object-ids",
+        json={"object_ids": [object_id], "field_names": [drop_field]},
+        timeout=settings.request_timeout_sec,
+    )
+    assert completed_drop.status_code == 200, completed_drop.text
+    assert completed_drop.json()["object_ids"] == []
+
+    dropped_search = http_session.post(
+        f"{settings.storage_base_url}/search",
+        json={
+            "filters": [{"field_name": drop_field, "value": "deleted", "match_mode": "contains"}],
+            "limit": 10,
+        },
+        timeout=settings.request_timeout_sec,
+    )
+    assert dropped_search.status_code == 200, dropped_search.text
+    assert dropped_search.json()["results"] == []
 
 
 def test_write_endpoints_require_token(settings, http_session):

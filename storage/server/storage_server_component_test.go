@@ -25,25 +25,6 @@ func (f *fakeObjectAdapter) GetBytes(ctx context.Context, bucket, key string) ([
 	return append([]byte(nil), body...), "image/jpeg", nil
 }
 
-func (f *fakeObjectAdapter) HeadObject(ctx context.Context, bucket, key string) (infra.ObjectInfo, error) {
-	_ = ctx
-	body, ok := f.bodyByKey[bucket+"/"+key]
-	if !ok {
-		return infra.ObjectInfo{}, infra.ErrNotFound
-	}
-	return infra.ObjectInfo{SizeBytes: int64(len(body)), ContentType: "image/jpeg"}, nil
-}
-
-func (f *fakeObjectAdapter) PutBytes(ctx context.Context, bucket, key string, data []byte, contentType string) (infra.PutResult, error) {
-	_ = ctx
-	_ = contentType
-	if f.bodyByKey == nil {
-		f.bodyByKey = map[string][]byte{}
-	}
-	f.bodyByKey[bucket+"/"+key] = append([]byte(nil), data...)
-	return infra.PutResult{SizeBytes: int64(len(data)), ContentType: "image/jpeg"}, nil
-}
-
 func (f *fakeObjectAdapter) PutStream(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) (infra.PutResult, error) {
 	_ = ctx
 	_ = contentType
