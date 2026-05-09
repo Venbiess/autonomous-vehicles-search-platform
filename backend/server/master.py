@@ -408,6 +408,58 @@ def _filter_pending_vlm_object_ids(
     return [object_id for object_id in object_ids if object_id not in completed]
 
 
+def _list_pending_vlm_object_ids(
+    limit: int,
+    field_names: List[str],
+    overwrite_existing: bool,
+    page_size: int = 500,
+    dataset: Optional[str] = None,
+) -> List[str]:
+    if overwrite_existing:
+        return _list_object_ids(limit, page_size=page_size, dataset=dataset)
+
+    remaining = max(limit, 0)
+    cursor: Optional[str] = None
+    pending: List[str] = []
+    dataset_filter = str(dataset or "").strip().lower()
+    hidden = {name.lower() for name in load_hidden_datasets()}
+
+    while remaining > 0:
+        payload = storage_api.list_objects(limit=page_size, cursor=cursor)
+        items = payload.get("items", [])
+        if not items:
+            break
+
+        batch_ids: List[str] = []
+        for item in items:
+            bucket_name = str(item.get("bucket", "")).strip().lower()
+            if bucket_name and bucket_name in hidden:
+                continue
+            if dataset_filter and bucket_name != dataset_filter:
+                continue
+            object_id = str(item.get("object_id", "")).strip()
+            if object_id:
+                batch_ids.append(object_id)
+
+        if batch_ids:
+            batch_pending = _filter_pending_vlm_object_ids(
+                batch_ids,
+                field_names,
+                overwrite_existing=False,
+            )
+            if batch_pending:
+                take = batch_pending[:remaining]
+                pending.extend(take)
+                remaining -= len(take)
+
+        next_cursor = payload.get("next_cursor")
+        if not next_cursor or remaining == 0:
+            break
+        cursor = next_cursor
+
+    return pending
+
+
 def _list_object_ids(limit: int, page_size: int = 500, dataset: Optional[str] = None) -> List[str]:
     remaining = max(limit, 0)
     cursor: Optional[str] = None
@@ -1449,11 +1501,11 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
             raise ValueError("No VLM fields configured")
 
         field_names = [field["field_name"] for field in fields]
-        object_ids = _list_object_ids(payload.limit, dataset=payload.dataset)
-        object_ids = _filter_pending_vlm_object_ids(
-            object_ids,
+        object_ids = _list_pending_vlm_object_ids(
+            payload.limit,
             field_names,
             payload.overwrite_existing,
+            dataset=payload.dataset,
         )
         planned_total = len(object_ids)
         total_tasks_planned = len(object_ids) * len(field_names)

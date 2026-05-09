@@ -21,6 +21,7 @@ class StorageAPI:
         self.write_headers = (
             {"X-Storage-Write-Token": write_token.strip()} if write_token.strip() else {}
         )
+        self._supports_include_content: Optional[bool] = None
 
     def upload_object(
         self,
@@ -69,10 +70,7 @@ class StorageAPI:
 
         for i in range(0, len(normalized_ids), max_batch_ids):
             chunk = normalized_ids[i : i + max_batch_ids]
-            response = self._client.post(
-                f"{self.endpoint}/objects/get-batch",
-                json={"object_ids": chunk, "include_content": True},
-            )
+            response = self._post_get_batch(chunk)
             if response.is_error:
                 detail = response.text
                 try:
@@ -107,6 +105,36 @@ class StorageAPI:
                 )
 
         return results
+
+    def _post_get_batch(self, chunk: List[str]) -> httpx.Response:
+        # Support both storage-server API variants:
+        # - newer: accepts include_content
+        # - older/alternate: rejects unknown field include_content
+        endpoint = f"{self.endpoint}/objects/get-batch"
+        if self._supports_include_content is not False:
+            response = self._client.post(
+                endpoint,
+                json={"object_ids": chunk, "include_content": True},
+            )
+            if not self._is_unknown_include_content_error(response):
+                if response.status_code < 400:
+                    self._supports_include_content = True
+                return response
+            self._supports_include_content = False
+        return self._client.post(endpoint, json={"object_ids": chunk})
+
+    def _is_unknown_include_content_error(self, response: httpx.Response) -> bool:
+        if response.status_code != 400:
+            return False
+        detail = ""
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                detail = str(payload.get("error", {}).get("message", ""))
+        except Exception:
+            detail = response.text or ""
+        normalized = detail.lower()
+        return "unknown field" in normalized and "include_content" in normalized
 
     def query_vectors(self, embedding: List[float], top_k: int) -> List[Dict[str, Any]]:
         response = self._client.post(
