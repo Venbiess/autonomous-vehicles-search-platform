@@ -152,6 +152,7 @@ export default function AnnotationPanel({
     null
   );
   const [vlmBackfillLimit, setVlmBackfillLimit] = useState(200);
+  const [vlmBatchSize, setVlmBatchSize] = useState(10);
   const [vlmMaxNewTokens, setVlmMaxNewTokens] = useState(64);
   const [isSavingVlmSchema, setIsSavingVlmSchema] = useState(false);
   const [isStartingVlmJob, setIsStartingVlmJob] = useState(false);
@@ -622,6 +623,7 @@ export default function AnnotationPanel({
       const response = await axios.post("/api/vlm/backfill", {
         field_names: vlmSavedFields.map((field) => field.field_name),
         limit: vlmBackfillLimit,
+        batch_size: Math.max(1, vlmBatchSize),
         overwrite_existing: false,
         max_new_tokens: vlmMaxNewTokens,
         dataset: vlmDataset === "all" ? null : vlmDataset,
@@ -1545,6 +1547,18 @@ export default function AnnotationPanel({
                     )
                   }
                   className="w-32 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm text-slate-600">
+                Batch size
+                <input
+                  type="number"
+                  min={1}
+                  value={vlmBatchSize}
+                  onChange={(event) =>
+                    setVlmBatchSize(Math.max(1, Number(event.target.value) || 1))
+                  }
+                  className="w-28 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm text-slate-600">

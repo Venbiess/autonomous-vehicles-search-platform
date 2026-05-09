@@ -21,6 +21,7 @@ def create_vlm(
             device=device,
             torch_dtype=torch_dtype,
             dtype_label=dtype_label,
+            attn_implementation=attn_implementation,
         )
     if normalized_backend == "QWEN":
         from backend.models.vlm.qwen_vl_backend import QwenVLMBackend

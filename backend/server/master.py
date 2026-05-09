@@ -1181,6 +1181,7 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                     _append_job_log(jobs_store[job_id], f"Failed preflight: {reason}")
             return
 
+        hidden_datasets = sorted({name for name in load_hidden_datasets() if str(name).strip()})
         logger.info(
             "Backfill embeddings job %s started: limit=%s batch_size=%s dry_run=%s dataset=%s",
             job_id,
@@ -1198,6 +1199,17 @@ def _run_backfill_job(job_id: str, payload: BackfillRequest):
                         "Backfill embeddings started: "
                         f"limit={payload.limit}, batch_size={payload.batch_size}, dry_run={payload.dry_run}, "
                         f"dataset={str(payload.dataset or '').strip() or 'all'}"
+                    ),
+                )
+                _append_job_log(
+                    job,
+                    (
+                        "Dataset visibility: "
+                        + (
+                            f"hidden={','.join(hidden_datasets)}"
+                            if hidden_datasets
+                            else "hidden=<none>"
+                        )
                     ),
                 )
         timeout = httpx.Timeout(EMBEDDER_TIMEOUT_SEC)
@@ -1492,6 +1504,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
     try:
         timeout = httpx.Timeout(VLM_TIMEOUT_SEC)
         dataset_filter = str(payload.dataset or "").strip()
+        hidden_datasets = sorted({name for name in load_hidden_datasets() if str(name).strip()})
 
         if payload.field_names:
             fields = _validate_existing_vlm_fields(payload.field_names)
@@ -1518,6 +1531,17 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                     (
                         f"VLM backfill started: limit={payload.limit}, fields={len(field_names)}, "
                         f"dataset={dataset_filter or 'all'}"
+                    ),
+                )
+                _append_job_log(
+                    job,
+                    (
+                        "Dataset visibility: "
+                        + (
+                            f"hidden={','.join(hidden_datasets)}"
+                            if hidden_datasets
+                            else "hidden=<none>"
+                        )
                     ),
                 )
                 _append_job_log(

@@ -386,6 +386,7 @@ services:
       '
     volumes:
       - ../frontend:/app/frontend
+      - ../storage/config:/app/storage/config
       - "frontend-node-modules:/app/frontend/node_modules"
     ports:
       - "3000:3000"

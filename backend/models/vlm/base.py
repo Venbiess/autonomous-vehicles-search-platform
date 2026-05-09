@@ -29,7 +29,7 @@ class BaseVLM(ABC):
         raise NotImplementedError
 
     def generate_text(self, image: Image.Image, prompt_text: str, max_new_tokens: int) -> str:
-        with self._inference_lock, torch.no_grad():
+        with self._inference_lock, torch.inference_mode():
             return self._generate(image=image, prompt_text=prompt_text, max_new_tokens=max_new_tokens)
 
     def get_runtime_payload(self, configured_device: str) -> dict:
