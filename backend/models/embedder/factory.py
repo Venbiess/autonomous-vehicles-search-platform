@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from backend.models.common.runtime import TorchDTypeLike
 from backend.models.embedder.base import BaseEmbedder
 
@@ -10,6 +12,7 @@ def create_embedder(
     device: str,
     torch_dtype: TorchDTypeLike,
     dtype_label: str,
+    attn_implementation: Optional[str] = None,
 ) -> BaseEmbedder:
     normalized_backend = str(backend_name).strip().upper()
     if normalized_backend == "ALIGN":
@@ -20,6 +23,7 @@ def create_embedder(
             device=device,
             torch_dtype=torch_dtype,
             dtype_label=dtype_label,
+            attn_implementation=attn_implementation,
         )
     if normalized_backend == "QWEN":
         from backend.models.embedder.qwen_embedder import QwenEmbedder
@@ -29,6 +33,7 @@ def create_embedder(
             device=device,
             torch_dtype=torch_dtype,
             dtype_label=dtype_label,
+            attn_implementation=attn_implementation,
         )
     raise ValueError(
         f"Unsupported EMBEDDER_BACKEND={backend_name!r}. "

@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from typing import Literal
+from typing import Optional
 
 from fastapi import FastAPI
 from fastapi import File
@@ -47,6 +48,15 @@ embedder_torch_dtype, embedder_dtype_label = resolve_torch_dtype(
     default_cuda="float32",
     default_other="float32",
 )
+embedder_attn_implementation_raw = os.getenv(
+    "EMBEDDER_ATTN_IMPLEMENTATION",
+    getattr(EMBEDDER_CONFIG, "ATTN_IMPLEMENTATION", None),
+)
+embedder_attn_implementation: Optional[str] = (
+    str(embedder_attn_implementation_raw).strip() if embedder_attn_implementation_raw else None
+)
+if embedder_attn_implementation == "":
+    embedder_attn_implementation = None
 hf_download_progress = resolve_bool_flag(
     os.getenv(
         "EMBEDDER_HF_DOWNLOAD_PROGRESS",
@@ -67,12 +77,14 @@ embedder = create_embedder(
     device=device,
     torch_dtype=embedder_torch_dtype,
     dtype_label=embedder_dtype_label,
+    attn_implementation=embedder_attn_implementation,
 )
 print(
     "Embedder has been successfully initialized.",
     f"Backend: {embedder.backend_name}.",
     f"Model: {embedder.model_name}.",
     f"DType: {embedder.dtype_label}.",
+    f"Attention: {embedder_attn_implementation or 'default'}.",
     f"HFDownloadProgress: {hf_download_progress}.",
     f"Device: {device}.",
     f"Port: {EMBEDDER_CONFIG.PORT}",

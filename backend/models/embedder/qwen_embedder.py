@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 from PIL import Image
 from sentence_transformers import SentenceTransformer
@@ -11,11 +13,20 @@ from backend.models.embedder.base import BaseEmbedder
 class QwenEmbedder(BaseEmbedder):
     DEFAULT_MODEL_NAME = "Qwen/Qwen3-VL-Embedding-2B"
 
-    def __init__(self, model_name: str, device: str, torch_dtype: TorchDTypeLike, dtype_label: str) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        device: str,
+        torch_dtype: TorchDTypeLike,
+        dtype_label: str,
+        attn_implementation: Optional[str] = None,
+    ) -> None:
         super().__init__(model_name=model_name, device=device, torch_dtype=torch_dtype, dtype_label=dtype_label)
         model_kwargs = {}
         if torch_dtype is not None:
-            model_kwargs["dtype"] = torch_dtype
+            model_kwargs["torch_dtype"] = torch_dtype
+        if attn_implementation:
+            model_kwargs["attn_implementation"] = str(attn_implementation).strip()
         self.model = SentenceTransformer(
             model_name,
             device=device,
