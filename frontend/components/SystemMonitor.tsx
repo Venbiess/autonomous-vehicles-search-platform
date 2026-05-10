@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 
 interface RuntimeServiceData {
@@ -120,6 +120,20 @@ interface Job {
   updated_at: number;
 }
 
+interface EtaCounters {
+  completed: number;
+  total: number;
+}
+
+interface JobEtaState {
+  total: number;
+  completed: number;
+  lastObservedAt: number;
+  lastProgressAt: number;
+  smoothedSecPerUnit: number | null;
+  lastEtaSec: number | null;
+}
+
 interface LogViewerState {
   title: string;
   content: string;
@@ -169,6 +183,7 @@ export default function SystemMonitor({
   const [waymoAuthError, setWaymoAuthError] = useState<string | null>(null);
   const [waymoAuthSuccess, setWaymoAuthSuccess] = useState<string | null>(null);
   const [waymoAuthPromptedJobIds, setWaymoAuthPromptedJobIds] = useState<string[]>([]);
+  const etaStateRef = useRef<Record<string, JobEtaState>>({});
   const [modelLogMeta, setModelLogMeta] = useState<
     Record<ModelServiceKey, { exists: boolean; updated_at?: string | null }>
   >({
@@ -256,6 +271,17 @@ export default function SystemMonitor({
     }, 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const activeIds = new Set(jobs.map((job) => job.job_id));
+    const nextState: Record<string, JobEtaState> = {};
+    for (const [jobId, state] of Object.entries(etaStateRef.current)) {
+      if (activeIds.has(jobId)) {
+        nextState[jobId] = state;
+      }
+    }
+    etaStateRef.current = nextState;
+  }, [jobs]);
 
   const formatUptime = (seconds: number): string => {
     const days = Math.floor(seconds / 86400);
@@ -431,26 +457,93 @@ export default function SystemMonitor({
     return `${minutes}м ${String(secs).padStart(2, "0")}с`;
   };
 
+  const getEtaCounters = (job: Job): EtaCounters => {
+    const tasksPlanned = Math.max(0, Number(job.total_tasks_planned ?? 0));
+    const tasksCompleted = Math.max(0, Number(job.total_tasks_completed ?? 0));
+    if (tasksPlanned > 0) {
+      return {
+        completed: Math.min(tasksCompleted, tasksPlanned),
+        total: tasksPlanned,
+      };
+    }
+
+    const plannedTotalRaw = job.total_planned ?? job.total_limit ?? 0;
+    const plannedTotal = Math.max(0, Number(plannedTotalRaw));
+    const completed = Math.max(
+      0,
+      Math.min(Number(job.total_seen ?? 0), plannedTotal || Number.MAX_SAFE_INTEGER)
+    );
+    return { completed, total: plannedTotal };
+  };
+
   const getJobTiming = (job: Job): { elapsed: string; eta: string } => {
     const start = Math.max(0, job.created_at || 0);
     const end = job.status === "running" ? nowSeconds : Math.max(start, job.updated_at || start);
     const elapsedSec = Math.max(0, end - start);
+    const { completed, total } = getEtaCounters(job);
+    const remaining = Math.max(0, total - completed);
 
-    const plannedTotalRaw = job.total_planned ?? job.total_limit ?? 0;
-    const plannedTotal = Math.max(0, plannedTotalRaw);
-    const completed = Math.max(0, Math.min(job.total_seen ?? 0, plannedTotal || Number.MAX_SAFE_INTEGER));
-    const remaining = Math.max(0, plannedTotal - completed);
-    const speed = elapsedSec > 0 ? completed / elapsedSec : 0;
-    const etaSec =
-      job.status === "running" && plannedTotal > 0 && speed > 0 && remaining > 0
-        ? Math.ceil(remaining / speed)
-        : 0;
+    const prevState = etaStateRef.current[job.job_id];
+    const needsReset =
+      !prevState ||
+      prevState.total !== total ||
+      completed < prevState.completed ||
+      job.status !== "running";
+
+    if (needsReset) {
+      etaStateRef.current[job.job_id] = {
+        total,
+        completed,
+        lastObservedAt: nowSeconds,
+        lastProgressAt: nowSeconds,
+        smoothedSecPerUnit:
+          completed > 0 && elapsedSec > 0 ? elapsedSec / completed : null,
+        lastEtaSec: null,
+      };
+    }
+
+    const state = etaStateRef.current[job.job_id];
+    let hadProgress = false;
+    let etaSec: number | null = null;
+    if (job.status === "running" && total > 0 && remaining > 0) {
+      if (completed > state.completed) {
+        hadProgress = true;
+        const deltaUnits = completed - state.completed;
+        const deltaTime = Math.max(1, nowSeconds - state.lastProgressAt);
+        const instantSecPerUnit = deltaTime / deltaUnits;
+        const alpha = 0.35;
+        state.smoothedSecPerUnit =
+          state.smoothedSecPerUnit == null
+            ? instantSecPerUnit
+            : alpha * instantSecPerUnit + (1 - alpha) * state.smoothedSecPerUnit;
+        state.completed = completed;
+        state.lastProgressAt = nowSeconds;
+      }
+      state.lastObservedAt = nowSeconds;
+      state.total = total;
+
+      if (state.smoothedSecPerUnit != null && Number.isFinite(state.smoothedSecPerUnit)) {
+        etaSec = Math.max(1, Math.ceil(remaining * state.smoothedSecPerUnit));
+      } else if (completed > 0 && elapsedSec > 0) {
+        etaSec = Math.max(1, Math.ceil((remaining * elapsedSec) / completed));
+      } else {
+        etaSec = null;
+      }
+
+      if (!hadProgress && state.lastEtaSec != null && etaSec != null) {
+        // Do not inflate ETA while waiting for the next completed unit.
+        etaSec = Math.min(etaSec, state.lastEtaSec);
+      }
+      state.lastEtaSec = etaSec;
+    } else {
+      state.lastEtaSec = null;
+    }
 
     return {
       elapsed: formatDuration(elapsedSec),
       eta:
         job.status === "running"
-          ? etaSec > 0
+          ? etaSec && etaSec > 0
             ? formatDuration(etaSec)
             : "—"
           : "—",
