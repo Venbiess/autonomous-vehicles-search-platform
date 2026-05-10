@@ -86,7 +86,7 @@ class SmolVLMBackend(BaseVLM):
                     "role": "user",
                     "content": [
                         {"type": "image"},
-                        {"type": "text", "text": prompt_text},
+                        {"type": "text", "text": pдавrompt_text},
                     ],
                 }
             ]

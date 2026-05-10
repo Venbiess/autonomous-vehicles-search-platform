@@ -184,6 +184,9 @@ export default function SystemMonitor({
   const [waymoAuthSuccess, setWaymoAuthSuccess] = useState<string | null>(null);
   const [waymoAuthPromptedJobIds, setWaymoAuthPromptedJobIds] = useState<string[]>([]);
   const etaStateRef = useRef<Record<string, JobEtaState>>({});
+  const sceneBarColorStateRef = useRef<
+    Record<string, { paletteIndex: number; lastProgress: number }>
+  >({});
   const [modelLogMeta, setModelLogMeta] = useState<
     Record<ModelServiceKey, { exists: boolean; updated_at?: string | null }>
   >({
@@ -550,10 +553,29 @@ export default function SystemMonitor({
     };
   };
 
-  const getSceneTaskGradient = (sceneIndex: number): string => {
-    const hue = (sceneIndex * 47) % 360;
+  const getSceneTaskGradient = (paletteIndex: number): string => {
+    const hue = (paletteIndex * 47) % 360;
     const nextHue = (hue + 52) % 360;
     return `linear-gradient(90deg, hsl(${hue} 75% 52%), hsl(${nextHue} 82% 58%))`;
+  };
+
+  const getStableSceneTaskGradient = (jobId: string, progressPercent: number): string => {
+    const clamped = Math.max(0, Math.min(100, Number(progressPercent) || 0));
+    const state = sceneBarColorStateRef.current[jobId];
+    if (!state) {
+      sceneBarColorStateRef.current[jobId] = {
+        paletteIndex: 0,
+        lastProgress: clamped,
+      };
+      return getSceneTaskGradient(0);
+    }
+
+    const didResetToNewCycle = state.lastProgress > 0 && clamped <= 0.1;
+    if (didResetToNewCycle) {
+      state.paletteIndex += 1;
+    }
+    state.lastProgress = clamped;
+    return getSceneTaskGradient(state.paletteIndex);
   };
 
   const executeCancelJob = async (
@@ -1365,7 +1387,7 @@ export default function SystemMonitor({
                       : 0;
                   const currentSceneLabel = isInstallJob
                     ? `Install: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`
-                    : `VLM calls: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
+                    : `Schema fields: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
                   const currentSceneIndex = job.current_scene_index ?? 0;
                   const timing = getJobTiming(job);
                   const downloadLabelPrefix = String(job.download_label ?? "").trim() || "Download";
@@ -1414,7 +1436,7 @@ export default function SystemMonitor({
                     ? installPhase === "upload"
                       ? "linear-gradient(90deg, hsl(146 70% 42%), hsl(172 70% 38%))"
                       : "linear-gradient(90deg, hsl(200 78% 48%), hsl(160 78% 45%))"
-                    : getSceneTaskGradient(currentSceneIndex);
+                    : getStableSceneTaskGradient(job.job_id, currentSceneProgress);
                   const showSecondaryProgress =
                     job.status === "running" &&
                     currentSceneTasksTotal > 0 &&
