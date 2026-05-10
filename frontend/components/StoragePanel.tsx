@@ -138,7 +138,7 @@ interface ConfirmDialogState {
 
 type TransferKind = "full" | "vlm" | "embeddings";
 type SnapshotImportMode = "replace" | "append";
-type ActionMessageScope = "cleanup" | "storage";
+type ActionMessageScope = "cleanup" | "storage" | "snapshot";
 
 const SNAPSHOT_ACTION_IDS = [
   "download-full",
@@ -301,6 +301,53 @@ function buildImportSummary(result: unknown): string {
   }
 
   return "Импорт завершен.";
+}
+
+function buildImportWarnings(result: unknown): string[] {
+  if (!result || typeof result !== "object") {
+    return [];
+  }
+  const payload = result as Record<string, unknown>;
+  const warnings: string[] = [];
+  const rawWarnings = Array.isArray(payload.warnings) ? payload.warnings : [];
+  for (const item of rawWarnings) {
+    const text = String(item || "").trim();
+    if (text) warnings.push(text);
+  }
+  const vlm =
+    payload.vlm && typeof payload.vlm === "object"
+      ? (payload.vlm as Record<string, unknown>)
+      : null;
+  const mode = String(payload.mode || "").trim().toLowerCase();
+  const diff =
+    vlm?.fields_diff && typeof vlm.fields_diff === "object"
+      ? (vlm.fields_diff as Record<string, unknown>)
+      : null;
+  if (mode === "append" && diff) {
+    const missingInSnapshot = Array.isArray(diff.missing_in_snapshot)
+      ? diff.missing_in_snapshot.map((v) => String(v || "").trim()).filter(Boolean)
+      : [];
+    const missingInExisting = Array.isArray(diff.missing_in_existing)
+      ? diff.missing_in_existing.map((v) => String(v || "").trim()).filter(Boolean)
+      : [];
+    const changed = Array.isArray(diff.changed)
+      ? diff.changed.map((v) => String(v || "").trim()).filter(Boolean)
+      : [];
+    if (missingInSnapshot.length > 0 || missingInExisting.length > 0 || changed.length > 0) {
+      const parts: string[] = [];
+      if (missingInSnapshot.length > 0) {
+        parts.push(`в текущей схеме есть лишние поля: ${missingInSnapshot.join(", ")}`);
+      }
+      if (missingInExisting.length > 0) {
+        parts.push(`в снапшоте есть новые поля: ${missingInExisting.join(", ")}`);
+      }
+      if (changed.length > 0) {
+        parts.push(`совпадающие поля с отличиями prompt/type: ${changed.join(", ")}`);
+      }
+      warnings.push(`Append VLM: различия полей (${parts.join("; ")}).`);
+    }
+  }
+  return warnings;
 }
 
 function polarToCartesian(
@@ -542,6 +589,7 @@ export default function StoragePanel({
   >({});
   const [snapshotExportInlineMessage, setSnapshotExportInlineMessage] = useState<string | null>(null);
   const [snapshotImportInlineMessage, setSnapshotImportInlineMessage] = useState<string | null>(null);
+  const [snapshotWarningMessage, setSnapshotWarningMessage] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [confirmDialogBusy, setConfirmDialogBusy] = useState(false);
   const snapshotProgressTimersRef = useRef<
@@ -1240,6 +1288,10 @@ export default function StoragePanel({
   }, [stats, cleanupDatasetFilter]);
 
   const clearScopedMessages = (scope: ActionMessageScope) => {
+    if (scope === "snapshot") {
+      setSnapshotWarningMessage(null);
+      return;
+    }
     if (scope === "storage") {
       setStorageStatusMessage(null);
       setStorageWarningMessage(null);
@@ -1275,13 +1327,23 @@ export default function StoragePanel({
         }
         if (scope === "storage") {
           setStorageWarningMessage("Operation cancelled.");
+        } else if (scope === "snapshot") {
+          setSnapshotWarningMessage("Operation cancelled.");
         } else {
           setCleanupWarningMessage("Operation cancelled.");
         }
         return;
       }
       const message = extractAxiosErrorMessage(error, "Operation failed");
-      if (scope === "storage") {
+      if (scope === "snapshot") {
+        if (actionId === "import-snapshot") {
+          setSnapshotImportInlineMessage(null);
+        }
+        if (actionId === "download-full" || actionId === "download-embeddings" || actionId === "download-vlm") {
+          setSnapshotExportInlineMessage(null);
+        }
+        setSnapshotWarningMessage(message);
+      } else if (scope === "storage") {
         setStorageWarningMessage(message);
       } else {
         setCleanupWarningMessage(message);
@@ -1620,7 +1682,7 @@ export default function StoragePanel({
       document.body.removeChild(link);
       URL.revokeObjectURL(href);
       setSnapshotExportInlineMessage(`Файл '${filename}' выгружен.`);
-    });
+    }, "snapshot");
 
     stopSnapshotExportProgressPoll();
     setSnapshotAbortController(actionId, null);
@@ -1629,7 +1691,7 @@ export default function StoragePanel({
 
   const startSnapshotImport = async (mode: SnapshotImportMode) => {
     if (!transferFile) {
-      setStorageWarningMessage("Выберите файл снапшота перед импортом.");
+      setSnapshotWarningMessage("Выберите файл снапшота перед импортом.");
       return;
     }
     const snapshotFile = transferFile;
@@ -1728,10 +1790,14 @@ export default function StoragePanel({
           ? (payload as Record<string, unknown>)
           : {};
       setSnapshotImportInlineMessage(buildImportSummary(responsePayload.result));
+      const importWarnings = buildImportWarnings(responsePayload.result);
+      if (importWarnings.length > 0) {
+        setSnapshotWarningMessage(importWarnings.join(" "));
+      }
       setTransferFile(null);
       setTransferFileInputKey((value) => value + 1);
       await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
-    });
+    }, "snapshot");
 
     stopSnapshotImportProgressPoll();
     setSnapshotAbortController(actionId, null);
@@ -1740,13 +1806,13 @@ export default function StoragePanel({
 
   const askImportSnapshot = async () => {
     if (!transferFile) {
-      setStorageWarningMessage("Выберите файл снапшота перед импортом.");
+      setSnapshotWarningMessage("Выберите файл снапшота перед импортом.");
       return;
     }
     openConfirmDialog({
       title: "Import snapshot",
       description:
-        "Импорт может перезаписать существующие embeddings/VLM аннотации и добавить объекты в storage. Продолжить?",
+        "Импорт с перезаписью заменяет VLM-схему/аннотации данными из файла (для VLM snapshot) и может перезаписать embeddings/добавить объекты для других форматов. Продолжить?",
       confirmLabel: "Импортировать с перезаписью",
       onConfirm: async () => startSnapshotImport("replace"),
       extraActions: [
@@ -2123,6 +2189,11 @@ export default function StoragePanel({
             {snapshotImportInlineMessage && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
                 {snapshotImportInlineMessage}
+              </div>
+            )}
+            {snapshotWarningMessage && (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+                {snapshotWarningMessage}
               </div>
             )}
             {renderSnapshotProgressButton({

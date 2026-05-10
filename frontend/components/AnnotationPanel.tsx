@@ -160,7 +160,6 @@ export default function AnnotationPanel({
   const localUploadFileInputRef = useRef<HTMLInputElement | null>(null);
   const [limitInput, setLimitInput] = useState("1000");
   const [batchSizeInput, setBatchSizeInput] = useState("50");
-  const [stopOnError, setStopOnError] = useState(false);
   const [isStartingJob, setIsStartingJob] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [warningMessage, setWarningMessage] = useState<string | null>(null);
@@ -186,6 +185,7 @@ export default function AnnotationPanel({
   const [vlmWarningMessage, setVlmWarningMessage] = useState<string | null>(null);
   const [vlmErrorMessage, setVlmErrorMessage] = useState<string | null>(null);
   const [showVlmJobsLink, setShowVlmJobsLink] = useState(false);
+  const [isVlmSchemaCollapsed, setIsVlmSchemaCollapsed] = useState(false);
   const [sourceWarning, setSourceWarning] = useState<string | null>(null);
   const [availableDatasets, setAvailableDatasets] = useState<string[]>([]);
   const [embeddingDataset, setEmbeddingDataset] = useState<string>("all");
@@ -453,7 +453,7 @@ export default function AnnotationPanel({
       const response = await axios.post("/api/backfill", {
         limit,
         batch_size: batchSize,
-        stop_on_error: stopOnError,
+        stop_on_error: false,
         dataset: embeddingDataset === "all" ? null : embeddingDataset,
       });
       setStatusMessage(
@@ -496,7 +496,7 @@ export default function AnnotationPanel({
       const response = await axios.post("/api/backfill", {
         limit: Math.max(1, Math.max(Math.floor(pendingRows || 0), limit)),
         batch_size: batchSize,
-        stop_on_error: stopOnError,
+        stop_on_error: false,
         dataset: embeddingDataset === "all" ? null : embeddingDataset,
       });
 
@@ -1358,7 +1358,7 @@ export default function AnnotationPanel({
             </p>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="mb-6 flex flex-wrap items-end gap-3">
             <label className="flex flex-col gap-1 text-sm text-slate-600">
               Limit
               <input
@@ -1366,7 +1366,7 @@ export default function AnnotationPanel({
                 min={1}
                 value={limitInput}
                 onChange={(event) => setLimitInput(event.target.value)}
-                className="rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
+                className="w-28 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
               />
             </label>
 
@@ -1377,7 +1377,7 @@ export default function AnnotationPanel({
                 min={1}
                 value={batchSizeInput}
                 onChange={(event) => setBatchSizeInput(event.target.value)}
-                className="rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
+                className="w-28 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
               />
             </label>
 
@@ -1386,7 +1386,7 @@ export default function AnnotationPanel({
               <select
                 value={embeddingDataset}
                 onChange={(event) => setEmbeddingDataset(event.target.value)}
-                className="rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
+                className="w-44 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
               >
                 <option value="all">All datasets</option>
                 {availableDatasets.map((dataset) => (
@@ -1395,16 +1395,6 @@ export default function AnnotationPanel({
                   </option>
                 ))}
               </select>
-            </label>
-
-            <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-              <input
-                type="checkbox"
-                checked={stopOnError}
-                onChange={(event) => setStopOnError(event.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
-              />
-              Stop on error
             </label>
           </div>
 
@@ -1460,89 +1450,6 @@ export default function AnnotationPanel({
           {errorMessage && (
             <div className="mt-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
               {errorMessage}
-            </div>
-          )}
-        </div>
-
-        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="mb-5">
-            <h2 className="text-2xl font-semibold text-slate-900">VLM Schema</h2>
-            <p className="mt-2 text-sm text-slate-600">
-              Configure VLM fields directly from this tab and run analysis jobs.
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-4">
-            {vlmDraftFields.map((field, index) => (
-              <div
-                key={field.id}
-                className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:grid-cols-[1.2fr_2.4fr_1fr_auto]"
-              >
-                <input
-                  value={field.name}
-                  onChange={(event) =>
-                    updateVlmDraftField(field.id, "name", event.target.value)
-                  }
-                  placeholder={`field_${index + 1}`}
-                  className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
-                />
-                <textarea
-                  value={field.prompt}
-                  onChange={(event) =>
-                    updateVlmDraftField(field.id, "prompt", event.target.value)
-                  }
-                  placeholder="Example: Is there a pedestrian crossing in front of the ego vehicle?"
-                  rows={3}
-                  className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
-                />
-                <select
-                  value={field.response_type}
-                  onChange={(event) =>
-                    updateVlmDraftField(
-                      field.id,
-                      "response_type",
-                      event.target.value
-                    )
-                  }
-                  className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
-                >
-                  {RESPONSE_TYPE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => removeVlmFieldRow(field.id)}
-                  className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 transition hover:bg-slate-100"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-5 flex flex-wrap gap-3">
-            <button
-              type="button"
-              onClick={addVlmFieldRow}
-              className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
-            >
-              Add field
-            </button>
-            <button
-              type="button"
-              onClick={saveVlmSchema}
-              disabled={isSavingVlmSchema}
-              className="rounded-full bg-sky-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isSavingVlmSchema ? "Saving..." : "Save schema"}
-            </button>
-          </div>
-          {vlmSchemaStatusMessage && (
-            <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
-              {vlmSchemaStatusMessage}
             </div>
           )}
         </div>
@@ -1658,6 +1565,102 @@ export default function AnnotationPanel({
             <div className="mt-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
               {vlmErrorMessage}
             </div>
+          )}
+        </div>
+
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="mb-5 flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-2xl font-semibold text-slate-900">VLM Schema</h2>
+              <p className="mt-2 text-sm text-slate-600">
+                Configure VLM fields directly from this tab and run analysis jobs.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsVlmSchemaCollapsed((current) => !current)}
+              className="rounded-full border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
+            >
+              {isVlmSchemaCollapsed ? "Expand" : "Collapse"}
+            </button>
+          </div>
+
+          {!isVlmSchemaCollapsed && (
+            <>
+              <div className="flex flex-col gap-4">
+                {vlmDraftFields.map((field, index) => (
+                  <div
+                    key={field.id}
+                    className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 lg:grid-cols-[1.2fr_2.4fr_1fr_auto]"
+                  >
+                    <input
+                      value={field.name}
+                      onChange={(event) =>
+                        updateVlmDraftField(field.id, "name", event.target.value)
+                      }
+                      placeholder={`field_${index + 1}`}
+                      className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                    />
+                    <textarea
+                      value={field.prompt}
+                      onChange={(event) =>
+                        updateVlmDraftField(field.id, "prompt", event.target.value)
+                      }
+                      placeholder="Example: Is there a pedestrian crossing in front of the ego vehicle?"
+                      rows={3}
+                      className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                    />
+                    <select
+                      value={field.response_type}
+                      onChange={(event) =>
+                        updateVlmDraftField(
+                          field.id,
+                          "response_type",
+                          event.target.value
+                        )
+                      }
+                      className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                    >
+                      {RESPONSE_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => removeVlmFieldRow(field.id)}
+                      className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 transition hover:bg-slate-100"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={addVlmFieldRow}
+                  className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+                >
+                  Add field
+                </button>
+                <button
+                  type="button"
+                  onClick={saveVlmSchema}
+                  disabled={isSavingVlmSchema}
+                  className="rounded-full bg-sky-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isSavingVlmSchema ? "Saving..." : "Save schema"}
+                </button>
+              </div>
+              {vlmSchemaStatusMessage && (
+                <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+                  {vlmSchemaStatusMessage}
+                </div>
+              )}
+            </>
           )}
         </div>
 

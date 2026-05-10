@@ -318,8 +318,6 @@ class ClickHouseShard:
         return completed
 
     def search(self, filters: Sequence[SearchFilter], limit: int) -> List[Tuple[datetime, SearchResult]]:
-        if not filters:
-            return []
         limit = max(limit, 1)
         subquery = (
             f"SELECT object_id, argMax(values_json, updated_at) AS values_json, max(updated_at) AS latest_updated_at "

@@ -107,7 +107,7 @@ class VLMFilterDefinition(BaseModel):
 
 
 class VLMSearchRequest(BaseModel):
-    filters: List[VLMFilterDefinition] = Field(..., min_length=1)
+    filters: List[VLMFilterDefinition] = Field(default_factory=list)
     limit: int = Field(100, ge=1, le=1000)
 
 
@@ -489,6 +489,77 @@ def _list_object_ids(limit: int, page_size: int = 500, dataset: Optional[str] = 
             break
         cursor = next_cursor
     return object_ids
+
+
+def _list_recent_vlm_annotations(limit: int, page_size: int = 500) -> List[Dict[str, Any]]:
+    if limit <= 0:
+        return []
+    out: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    pages_read = 0
+    max_pages = 50
+
+    while len(out) < limit and pages_read < max_pages:
+        pages_read += 1
+        payload = storage_api.list_objects(limit=page_size, cursor=cursor)
+        items = payload.get("items", [])
+        if not isinstance(items, list) or not items:
+            break
+
+        object_meta: Dict[str, Dict[str, str]] = {}
+        object_ids: List[str] = []
+        for item in items:
+            object_id = str(item.get("object_id", "")).strip()
+            if not object_id:
+                continue
+            object_meta[object_id] = {
+                "storage_path": str(item.get("storage_path", "") or ""),
+            }
+            object_ids.append(object_id)
+        if not object_ids:
+            next_cursor = payload.get("next_cursor")
+            if not next_cursor:
+                break
+            cursor = next_cursor
+            continue
+
+        rows = analytics_api.get_annotations(object_ids)
+        by_object_id: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            object_id = str(row.get("object_id", "")).strip()
+            values = row.get("values", {})
+            if not object_id or not isinstance(values, dict):
+                continue
+            cleaned_values = {
+                str(key): value
+                for key, value in values.items()
+                if str(value).strip()
+            }
+            if not cleaned_values:
+                continue
+            by_object_id[object_id] = cleaned_values
+
+        for object_id in object_ids:
+            values = by_object_id.get(object_id)
+            if not values:
+                continue
+            meta = object_meta.get(object_id, {})
+            out.append(
+                {
+                    "object_id": object_id,
+                    "storage_path": meta.get("storage_path", ""),
+                    "attributes": values,
+                }
+            )
+            if len(out) >= limit:
+                break
+
+        next_cursor = payload.get("next_cursor")
+        if not next_cursor:
+            break
+        cursor = next_cursor
+
+    return out[:limit]
 
 
 def _filter_pending_embedding_object_ids(object_ids: List[str]) -> List[str]:
@@ -3313,11 +3384,9 @@ def search_vlm(payload: VLMSearchRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if not normalized_filters:
-        return {"results": []}
+        return {"results": _list_recent_vlm_annotations(payload.limit)}
     _validate_existing_vlm_fields([item["field_name"] for item in normalized_filters])
-    return {
-        "results": analytics_api.search(normalized_filters, payload.limit),
-    }
+    return {"results": analytics_api.search(normalized_filters, payload.limit)}
 
 
 @app.delete("/objects/{object_id}")
