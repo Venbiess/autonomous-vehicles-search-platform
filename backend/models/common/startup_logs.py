@@ -65,9 +65,9 @@ def setup_worker_startup_logging(worker: str) -> StartupLogHandle:
 
     log_path = os.path.join(log_dir, f"{worker_name}.log")
     started_at = datetime.now(timezone.utc).isoformat()
-    # Keep full startup history across restarts to preserve the root-cause trace.
-    with open(log_path, "a", encoding="utf-8") as fp:
-        fp.write(f"\n=== {worker_name} startup {started_at} ===\n")
+    # Keep only the latest startup logs for the model cards in Job Monitor.
+    with open(log_path, "w", encoding="utf-8") as fp:
+        fp.write(f"=== {worker_name} startup {started_at} ===\n")
         fp.flush()
 
     mirror = open(log_path, "a", encoding="utf-8", buffering=1)
