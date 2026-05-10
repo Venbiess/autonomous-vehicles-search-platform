@@ -29,3 +29,4 @@ core
 core.*
 frontend/core
 frontend/core.*
+storage/config/dataset_visibility.json
