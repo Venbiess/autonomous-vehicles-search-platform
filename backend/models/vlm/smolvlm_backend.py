@@ -86,7 +86,7 @@ class SmolVLMBackend(BaseVLM):
                     "role": "user",
                     "content": [
                         {"type": "image"},
-                        {"type": "text", "text": prompt_texts},
+                        {"type": "text", "text": prompt_text},
                     ],
                 }
             ]
@@ -98,7 +98,7 @@ class SmolVLMBackend(BaseVLM):
         ]
         inputs = self.processor(
             text=prompts,
-            images=images,
+            images=[[image] for image in images],
             return_tensors="pt",
             padding=True,
         )
