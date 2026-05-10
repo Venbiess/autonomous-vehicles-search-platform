@@ -1742,12 +1742,23 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                             task_items,
                             payload.max_new_tokens,
                         )
-                    except Exception:
+                    except Exception as exc:
                         logger.exception(
                             "VLM batch inference failed for object_id=%s fields=%s; falling back to per-item",
                             entry["object_id"],
                             len(prepared_fields),
                         )
+                        with jobs_lock:
+                            job = jobs_store.get(job_id)
+                            if job:
+                                _append_job_log(
+                                    job,
+                                    (
+                                        "VLM batch inference failed; falling back to per-item: "
+                                        f"object_id={entry['object_id']}, "
+                                        f"fields={len(prepared_fields)}, error={exc}"
+                                    ),
+                                )
                         responses = None
 
                     if responses is not None:

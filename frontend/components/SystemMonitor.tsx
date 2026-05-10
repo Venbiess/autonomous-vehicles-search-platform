@@ -1064,7 +1064,6 @@ export default function SystemMonitor({
                   {serviceEntries.map((service) => {
                     const runtime = service.data?.runtime ?? {};
                     const memory = service.data?.memory ?? {};
-                    const counters = service.data?.counters ?? {};
                     const uiStatus = getServiceUiStatus(service.key, service.data);
                     const canOpenStartupLogs =
                       uiStatus === "starting" || Boolean(modelLogMeta[service.key]?.exists);
@@ -1141,12 +1140,6 @@ export default function SystemMonitor({
                               <span>{`${formatMb(memory.gpu_total_mb)} / ${formatMb(
                                 memory.gpu_free_mb
                               )}`}</span>
-                            </div>
-                          ) : null}
-                          {typeof counters.in_progress === "number" ? (
-                            <div>
-                              <span className="text-slate-500">Запросы: </span>
-                              <span>{`in_progress=${counters.in_progress}, completed=${counters.completed ?? 0}, received=${counters.received ?? 0}`}</span>
                             </div>
                           ) : null}
                           {service.data?.error ? (
