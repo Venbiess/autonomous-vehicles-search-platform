@@ -1721,137 +1721,155 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                     "updated_at": time.time(),
                                 }
                             )
-                    task_items = [
-                        {
-                            "image_bytes": entry["image_bytes"],
-                            "prompt": field["prompt"],
-                            "metadata": {
-                                "job_id": job_id,
-                                "task_index": completed_tasks + idx + 1,
-                                "task_total": total_tasks_planned if total_tasks_planned > 0 else None,
-                                "field_name": field["field_name"],
-                                "object_id": entry["object_id"],
-                            },
-                        }
-                        for idx, field in enumerate(prepared_fields)
+                    remaining_fields = [
+                        field
+                        for field in prepared_fields
+                        if field["field_name"] not in entry["values"]
                     ]
+                    chunk_size = max(1, int(payload.batch_size))
 
-                    try:
-                        responses = _run_vlm_batch(
-                            client,
-                            task_items,
-                            payload.max_new_tokens,
-                        )
-                    except Exception as exc:
-                        logger.exception(
-                            "VLM batch inference failed for object_id=%s fields=%s; falling back to per-item",
-                            entry["object_id"],
-                            len(prepared_fields),
-                        )
-                        with jobs_lock:
-                            job = jobs_store.get(job_id)
-                            if job:
-                                _append_job_log(
-                                    job,
-                                    (
-                                        "VLM batch inference failed; falling back to per-item: "
-                                        f"object_id={entry['object_id']}, "
-                                        f"fields={len(prepared_fields)}, error={exc}"
-                                    ),
-                                )
-                        responses = None
-
-                    if responses is not None:
-                        for field, response_text in zip(prepared_fields, responses):
-                            if entry["failed"]:
-                                break
-                            try:
-                                entry["values"][field["field_name"]] = _normalize_vlm_response(
-                                    response_text,
-                                    field["response_type"],
-                                )
-                                entry["scene_tasks_completed"] += 1
-                                completed_tasks += 1
-                                with jobs_lock:
-                                    if job_id in jobs_store:
-                                        jobs_store[job_id].update(
-                                            {
-                                                "total_tasks_completed": completed_tasks,
-                                                "total_tasks_planned": total_tasks_planned,
-                                                "current_scene_index": entry["scene_index"],
-                                                "current_scene_tasks_completed": entry[
-                                                    "scene_tasks_completed"
-                                                ],
-                                                "current_scene_tasks_total": field_total,
-                                                "updated_at": time.time(),
-                                            }
-                                        )
-                            except Exception as exc:
-                                logger.exception(
-                                    "VLM response normalize failed for object_id=%s field=%s",
-                                    entry["object_id"],
-                                    field["field_name"],
-                                )
-                                entry["failed"] = True
-                                errors.append(
-                                    {
-                                        "object_id": entry["object_id"],
-                                        "error": str(exc),
-                                    }
-                                )
-                                if payload.stop_on_error:
-                                    break
+                    for field_offset in range(0, len(remaining_fields), chunk_size):
+                        if _job_cancel_requested(job_id):
+                            _cancel_vlm_job()
+                            return
+                        if entry["failed"]:
+                            break
                         if payload.stop_on_error and errors:
                             break
-                    else:
-                        for field in prepared_fields:
-                            if _job_cancel_requested(job_id):
-                                _cancel_vlm_job()
-                                return
-                            if entry["failed"]:
-                                break
-                            try:
-                                response_text = _run_vlm(
-                                    client,
-                                    entry["image_bytes"],
-                                    field["prompt"],
-                                    payload.max_new_tokens,
-                                    job_id=job_id,
-                                    task_index=completed_tasks + 1,
-                                    task_total=total_tasks_planned if total_tasks_planned > 0 else None,
-                                    field_name=field["field_name"],
-                                    object_id=entry["object_id"],
-                                )
-                                entry["values"][field["field_name"]] = _normalize_vlm_response(
-                                    response_text,
-                                    field["response_type"],
-                                )
-                                entry["scene_tasks_completed"] += 1
-                                completed_tasks += 1
-                                with jobs_lock:
-                                    if job_id in jobs_store:
-                                        jobs_store[job_id].update(
-                                            {
-                                                "total_tasks_completed": completed_tasks,
-                                                "total_tasks_planned": total_tasks_planned,
-                                                "current_scene_index": entry["scene_index"],
-                                                "current_scene_tasks_completed": entry[
-                                                    "scene_tasks_completed"
-                                                ],
-                                                "current_scene_tasks_total": field_total,
-                                                "updated_at": time.time(),
-                                            }
-                                        )
-                            except Exception as exc:
-                                logger.exception(
-                                    "VLM failed for object_id=%s field=%s",
-                                    entry["object_id"],
-                                    field["field_name"],
-                                )
-                                entry["failed"] = True
-                                errors.append({"object_id": entry["object_id"], "error": str(exc)})
-                                if payload.stop_on_error:
+
+                        field_chunk = remaining_fields[field_offset : field_offset + chunk_size]
+                        task_items = [
+                            {
+                                "image_bytes": entry["image_bytes"],
+                                "prompt": field["prompt"],
+                                "metadata": {
+                                    "job_id": job_id,
+                                    "task_index": completed_tasks + idx + 1,
+                                    "task_total": total_tasks_planned if total_tasks_planned > 0 else None,
+                                    "field_name": field["field_name"],
+                                    "object_id": entry["object_id"],
+                                },
+                            }
+                            for idx, field in enumerate(field_chunk)
+                        ]
+
+                        try:
+                            responses = _run_vlm_batch(
+                                client,
+                                task_items,
+                                payload.max_new_tokens,
+                            )
+                        except Exception as exc:
+                            logger.exception(
+                                "VLM batch inference failed for object_id=%s fields=%s; falling back to per-item",
+                                entry["object_id"],
+                                len(field_chunk),
+                            )
+                            with jobs_lock:
+                                job = jobs_store.get(job_id)
+                                if job:
+                                    _append_job_log(
+                                        job,
+                                        (
+                                            "VLM batch inference failed; falling back to per-item: "
+                                            f"object_id={entry['object_id']}, "
+                                            f"fields={len(field_chunk)}, error={exc}"
+                                        ),
+                                    )
+                            responses = None
+
+                        if responses is not None:
+                            for field, response_text in zip(field_chunk, responses):
+                                if entry["failed"]:
                                     break
+                                try:
+                                    entry["values"][field["field_name"]] = _normalize_vlm_response(
+                                        response_text,
+                                        field["response_type"],
+                                    )
+                                    entry["scene_tasks_completed"] += 1
+                                    completed_tasks += 1
+                                    with jobs_lock:
+                                        if job_id in jobs_store:
+                                            jobs_store[job_id].update(
+                                                {
+                                                    "total_tasks_completed": completed_tasks,
+                                                    "total_tasks_planned": total_tasks_planned,
+                                                    "current_scene_index": entry["scene_index"],
+                                                    "current_scene_tasks_completed": entry[
+                                                        "scene_tasks_completed"
+                                                    ],
+                                                    "current_scene_tasks_total": field_total,
+                                                    "updated_at": time.time(),
+                                                }
+                                            )
+                                except Exception as exc:
+                                    logger.exception(
+                                        "VLM response normalize failed for object_id=%s field=%s",
+                                        entry["object_id"],
+                                        field["field_name"],
+                                    )
+                                    entry["failed"] = True
+                                    errors.append(
+                                        {
+                                            "object_id": entry["object_id"],
+                                            "error": str(exc),
+                                        }
+                                    )
+                                    if payload.stop_on_error:
+                                        break
+                        else:
+                            for field in field_chunk:
+                                if _job_cancel_requested(job_id):
+                                    _cancel_vlm_job()
+                                    return
+                                if entry["failed"]:
+                                    break
+                                try:
+                                    response_text = _run_vlm(
+                                        client,
+                                        entry["image_bytes"],
+                                        field["prompt"],
+                                        payload.max_new_tokens,
+                                        job_id=job_id,
+                                        task_index=completed_tasks + 1,
+                                        task_total=total_tasks_planned if total_tasks_planned > 0 else None,
+                                        field_name=field["field_name"],
+                                        object_id=entry["object_id"],
+                                    )
+                                    entry["values"][field["field_name"]] = _normalize_vlm_response(
+                                        response_text,
+                                        field["response_type"],
+                                    )
+                                    entry["scene_tasks_completed"] += 1
+                                    completed_tasks += 1
+                                    with jobs_lock:
+                                        if job_id in jobs_store:
+                                            jobs_store[job_id].update(
+                                                {
+                                                    "total_tasks_completed": completed_tasks,
+                                                    "total_tasks_planned": total_tasks_planned,
+                                                    "current_scene_index": entry["scene_index"],
+                                                    "current_scene_tasks_completed": entry[
+                                                        "scene_tasks_completed"
+                                                    ],
+                                                    "current_scene_tasks_total": field_total,
+                                                    "updated_at": time.time(),
+                                                }
+                                            )
+                                except Exception as exc:
+                                    logger.exception(
+                                        "VLM failed for object_id=%s field=%s",
+                                        entry["object_id"],
+                                        field["field_name"],
+                                    )
+                                    entry["failed"] = True
+                                    errors.append({"object_id": entry["object_id"], "error": str(exc)})
+                                    if payload.stop_on_error:
+                                        break
+
+                        if payload.stop_on_error and errors:
+                            break
 
                     object_id = str(entry["object_id"])
                     scene_tasks_completed = int(entry["scene_tasks_completed"])
