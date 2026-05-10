@@ -395,6 +395,61 @@ function normalizeFieldRows(fields) {
   return normalized;
 }
 
+function fieldSignature(field) {
+  const name = String(field?.name || field?.field_name || "").trim();
+  const prompt = String(field?.prompt || "").trim();
+  const responseType = String(field?.response_type || "text").trim();
+  if (!name) return "";
+  return `${name}::${responseType}::${prompt}`;
+}
+
+function diffVlmFields(existingFields, snapshotFields) {
+  const existingByName = new Map();
+  const snapshotByName = new Map();
+  for (const item of Array.isArray(existingFields) ? existingFields : []) {
+    const name = String(item?.field_name || item?.name || "").trim();
+    if (!name) continue;
+    existingByName.set(name, {
+      field_name: name,
+      prompt: String(item?.prompt || "").trim(),
+      response_type: String(item?.response_type || "text").trim(),
+    });
+  }
+  for (const item of Array.isArray(snapshotFields) ? snapshotFields : []) {
+    const name = String(item?.name || item?.field_name || "").trim();
+    if (!name) continue;
+    snapshotByName.set(name, {
+      field_name: name,
+      prompt: String(item?.prompt || "").trim(),
+      response_type: String(item?.response_type || "text").trim(),
+    });
+  }
+
+  const missingInSnapshot = [];
+  const missingInExisting = [];
+  const changed = [];
+  for (const [name, existing] of existingByName.entries()) {
+    const snapshot = snapshotByName.get(name);
+    if (!snapshot) {
+      missingInSnapshot.push(name);
+      continue;
+    }
+    if (fieldSignature(existing) !== fieldSignature(snapshot)) {
+      changed.push(name);
+    }
+  }
+  for (const name of snapshotByName.keys()) {
+    if (!existingByName.has(name)) {
+      missingInExisting.push(name);
+    }
+  }
+  return {
+    missing_in_snapshot: missingInSnapshot.sort((a, b) => a.localeCompare(b)),
+    missing_in_existing: missingInExisting.sort((a, b) => a.localeCompare(b)),
+    changed: changed.sort((a, b) => a.localeCompare(b)),
+  };
+}
+
 function normalizeVlmAnnotation(row) {
   const objectID = String(row?.object_id || "").trim();
   const rawValues = row?.values;
@@ -422,18 +477,53 @@ async function importVlmFromArchive(extractRoot, options = {}) {
   }
   const fieldsPath = resolveArchivePath(extractRoot, options.fieldsFile || "fields.json");
   const annotationsPath = resolveArchivePath(extractRoot, options.annotationsFile || "vlm.ndjson");
+  const mode = options.importMode === "append" ? "append" : "replace";
 
   const rawFields = await readJsonFileOrDefault(fieldsPath, []);
   const normalizedFields = normalizeFieldRows(Array.isArray(rawFields) ? rawFields : []);
+  const existingFieldsPayload = await readMasterJson("/vlm/fields");
+  const existingFields = Array.isArray(existingFieldsPayload?.fields)
+    ? existingFieldsPayload.fields
+    : [];
+  const fieldsDiff = diffVlmFields(existingFields, normalizedFields);
+  const warnings = [];
+  if (
+    mode === "append" &&
+    (fieldsDiff.missing_in_snapshot.length > 0 ||
+      fieldsDiff.missing_in_existing.length > 0 ||
+      fieldsDiff.changed.length > 0)
+  ) {
+    warnings.push(
+      "VLM fields differ between current schema and imported snapshot (append mode keeps existing data)."
+    );
+  }
 
   let savedFields = 0;
+  let schemaReplaceApplied = false;
+  let clearedAnnotations = 0;
   if (normalizedFields.length > 0) {
     const fieldsPayload = await readMasterJson("/vlm/fields", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fields: normalizedFields }),
+      body: JSON.stringify({
+        fields: normalizedFields,
+        replace_missing: mode === "replace",
+        purge_deleted_values: mode === "replace",
+      }),
     });
     savedFields = Array.isArray(fieldsPayload?.fields) ? fieldsPayload.fields.length : 0;
+    schemaReplaceApplied = mode === "replace";
+  } else if (mode === "replace") {
+    warnings.push(
+      "Snapshot has no fields: field catalog was not replaced because /vlm/fields requires non-empty list."
+    );
+  }
+
+  if (mode === "replace") {
+    const clearPayload = await readMasterJson("/vlm/annotations/clear", {
+      method: "POST",
+    });
+    clearedAnnotations = Number(clearPayload?.deleted ?? clearPayload?.requested ?? 0);
   }
 
   let receivedAnnotations = 0;
@@ -481,12 +571,17 @@ async function importVlmFromArchive(extractRoot, options = {}) {
   await flushBatch();
 
   return {
+    mode,
     received_fields: Array.isArray(rawFields) ? rawFields.length : 0,
     valid_fields: normalizedFields.length,
     saved_fields: savedFields,
+    fields_diff: fieldsDiff,
+    schema_replace_applied: schemaReplaceApplied,
+    cleared_annotations_before_import: clearedAnnotations,
     received_annotations: receivedAnnotations,
     valid_annotations: validAnnotations,
     upserted_annotations: upsertedAnnotations,
+    warnings,
   };
 }
 
@@ -595,14 +690,17 @@ async function importSnapshotFromArchive(extractRoot, manifest, options = {}) {
   }
 
   if (format === SNAPSHOT_FORMAT_VLM) {
+    const vlm = await importVlmFromArchive(extractRoot, options);
     return {
       format,
       mode: options.importMode === "append" ? "append" : "replace",
-      vlm: await importVlmFromArchive(extractRoot, options),
+      vlm,
+      warnings: Array.isArray(vlm?.warnings) ? vlm.warnings : [],
     };
   }
 
   if (format === SNAPSHOT_FORMAT_FULL) {
+    const vlm = await importVlmFromArchive(extractRoot, options);
     return {
       format,
       mode: options.importMode === "append" ? "append" : "replace",
@@ -611,7 +709,8 @@ async function importSnapshotFromArchive(extractRoot, manifest, options = {}) {
         resolveArchivePath(extractRoot, "embeddings.ndjson"),
         options
       ),
-      vlm: await importVlmFromArchive(extractRoot, options),
+      vlm,
+      warnings: Array.isArray(vlm?.warnings) ? vlm.warnings : [],
     };
   }
 

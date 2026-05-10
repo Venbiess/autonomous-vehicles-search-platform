@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -645,7 +647,7 @@ func (s *clickHouseAnalyticsShard) deleteAnnotations(ctx context.Context, object
 func (s *clickHouseAnalyticsShard) clearAnnotations(ctx context.Context) (int, error) {
 	var payload struct {
 		Data []struct {
-			Count int `json:"count"`
+			Count any `json:"count"`
 		} `json:"data"`
 	}
 	query := fmt.Sprintf("SELECT COUNT() AS count FROM (SELECT object_id FROM %s GROUP BY object_id)", chIdent(s.annotationsTable))
@@ -654,12 +656,87 @@ func (s *clickHouseAnalyticsShard) clearAnnotations(ctx context.Context) (int, e
 	}
 	count := 0
 	if len(payload.Data) > 0 {
-		count = payload.Data[0].Count
+		parsedCount, err := parseJSONInt(payload.Data[0].Count)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse annotations count: %w", err)
+		}
+		count = parsedCount
 	}
 	if err := s.exec(ctx, fmt.Sprintf("TRUNCATE TABLE %s", chIdent(s.annotationsTable))); err != nil {
 		return 0, err
 	}
 	return count, nil
+}
+
+func parseJSONInt(value any) (int, error) {
+	var asInt64 int64
+	switch v := value.(type) {
+	case nil:
+		return 0, nil
+	case int:
+		asInt64 = int64(v)
+	case int8:
+		asInt64 = int64(v)
+	case int16:
+		asInt64 = int64(v)
+	case int32:
+		asInt64 = int64(v)
+	case int64:
+		asInt64 = v
+	case uint:
+		if uint64(v) > math.MaxInt64 {
+			return 0, fmt.Errorf("value %v overflows int64", value)
+		}
+		asInt64 = int64(v)
+	case uint8:
+		asInt64 = int64(v)
+	case uint16:
+		asInt64 = int64(v)
+	case uint32:
+		asInt64 = int64(v)
+	case uint64:
+		if v > math.MaxInt64 {
+			return 0, fmt.Errorf("value %v overflows int64", value)
+		}
+		asInt64 = int64(v)
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0, fmt.Errorf("invalid numeric value: %v", value)
+		}
+		if math.Trunc(v) != v {
+			return 0, fmt.Errorf("non-integer numeric value: %v", value)
+		}
+		if v < math.MinInt64 || v > math.MaxInt64 {
+			return 0, fmt.Errorf("value %v overflows int64", value)
+		}
+		asInt64 = int64(v)
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			return 0, err
+		}
+		asInt64 = parsed
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return 0, nil
+		}
+		parsed, err := strconv.ParseInt(trimmed, 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		asInt64 = parsed
+	default:
+		return 0, fmt.Errorf("unsupported value type %T", value)
+	}
+
+	if asInt64 < 0 {
+		return 0, fmt.Errorf("negative value: %d", asInt64)
+	}
+	if asInt64 > int64(math.MaxInt) {
+		return 0, fmt.Errorf("value %d overflows int", asInt64)
+	}
+	return int(asInt64), nil
 }
 
 func (s *clickHouseAnalyticsShard) completedObjectIDs(ctx context.Context, objectIDs, fieldNames []string) ([]string, error) {
