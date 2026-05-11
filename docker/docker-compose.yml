@@ -334,12 +334,24 @@ services:
       - "9002:9002"
     command: >
       /bin/sh -c "
-      uvicorn backend.server.master:app
-      --host 0.0.0.0
-      --port 9002
-      --log-level debug
+      if [ \"${AVSP_DEV_RELOAD:-0}\" = \"1\" ]; then
+        echo 'master-server: DEV reload mode enabled';
+        exec uvicorn backend.server.master:app
+          --host 0.0.0.0
+          --port 9002
+          --log-level debug
+          --reload
+          --reload-dir /app/backend
+          --reload-dir /app/configs;
+      else
+        exec uvicorn backend.server.master:app
+          --host 0.0.0.0
+          --port 9002
+          --log-level debug;
+      fi
       "
     environment:
+      AVSP_DEV_RELOAD: ${AVSP_DEV_RELOAD:-0}
       PYTHONWARNINGS: "ignore::FutureWarning:google.api_core._python_version_support"
       CUDA_VISIBLE_DEVICES: ""
       S3_ENDPOINT_URL: http://minio:9000
@@ -388,10 +400,14 @@ services:
       else
         echo "Reusing existing frontend deps from volume";
       fi;
+      if [ "${AVSP_DEV_RELOAD:-0}" = "1" ]; then
+        echo "frontend: DEV reload mode enabled";
+        exec npm run dev -- --hostname 0.0.0.0 --port 3000;
+      fi;
       rm -rf .next;
       npm run build;
       test -f .next/server/middleware-manifest.json;
-      npm run start -- --hostname 0.0.0.0 --port 3000
+      exec npm run start -- --hostname 0.0.0.0 --port 3000
       '
     volumes:
       - ../frontend:/app/frontend
@@ -404,6 +420,7 @@ services:
         soft: 0
         hard: 0
     environment:
+      AVSP_DEV_RELOAD: ${AVSP_DEV_RELOAD:-0}
       MASTER_ENDPOINT: http://master-server:9002
       MASTER_PROXY_TIMEOUT_MS: 10000
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012
