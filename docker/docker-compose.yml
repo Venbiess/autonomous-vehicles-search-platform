@@ -190,10 +190,7 @@ services:
       VLM_DEBUG_EMPTY_OUTPUT: ${VLM_DEBUG_EMPTY_OUTPUT:-0}
     command: >
       /bin/sh -c "
-      uvicorn backend.models.vlm.vlm:app
-      --host 0.0.0.0
-      --port 8001
-      --log-level debug
+      uvicorn backend.models.vlm.vlm:app --host 0.0.0.0 --port 8001 --log-level debug
       "
     ports:
       - "8001:8001"
@@ -336,18 +333,9 @@ services:
       /bin/sh -c "
       if [ \"${AVSP_DEV_RELOAD:-0}\" = \"1\" ]; then
         echo 'master-server: DEV reload mode enabled';
-        exec uvicorn backend.server.master:app
-          --host 0.0.0.0
-          --port 9002
-          --log-level debug
-          --reload
-          --reload-dir /app/backend
-          --reload-dir /app/configs;
+        exec uvicorn backend.server.master:app --host 0.0.0.0 --port 9002 --log-level debug --reload --reload-dir /app/backend --reload-dir /app/configs;
       else
-        exec uvicorn backend.server.master:app
-          --host 0.0.0.0
-          --port 9002
-          --log-level debug;
+        exec uvicorn backend.server.master:app --host 0.0.0.0 --port 9002 --log-level debug;
       fi
       "
     environment:
