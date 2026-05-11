@@ -51,6 +51,13 @@ interface EmbeddingMismatchDialogState {
 const IMAGES_PER_PAGE_OPTIONS = [6, 9, 12, 18, 24];
 const SEARCH_MODE_COOKIE_KEY = SEARCH_MODE_STORAGE_KEY;
 const UI_SETTINGS_STORAGE_KEY = "avsp_ui_settings_v1";
+const SEARCH_MODE_TABS: Array<{ mode: SearchMode; label: string }> = [
+  { mode: "STORAGE", label: "STORAGE" },
+  { mode: "VLM", label: "VLM" },
+  { mode: "Browser", label: "BROWSER" },
+  { mode: "ANNOTATION", label: "ANNOTATION" },
+  { mode: "Job Monitor", label: "JOB MONITOR" },
+];
 
 const DEFAULT_UI_SETTINGS: UISettings = {
   showSnapshotSection: true,
@@ -496,8 +503,8 @@ export default function HomePageClient({
   };
 
   return (
-    <main className="min-h-screen bg-gray-100">
-      <div className="fixed right-4 top-4 z-[70]">
+    <main className="min-h-screen overflow-x-hidden bg-gray-100">
+      <div className="fixed right-3 top-3 z-[70] sm:right-4 sm:top-4">
         <div ref={settingsPopoverRef} className="relative">
           <button
             type="button"
@@ -508,7 +515,7 @@ export default function HomePageClient({
             <Cog6ToothIcon className="h-6 w-6 transition-transform duration-500 group-hover:rotate-180" />
           </button>
           {settingsOpen && (
-            <div className="absolute right-0 mt-3 w-[340px] rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl">
+            <div className="absolute right-0 mt-3 w-[min(22rem,calc(100vw-1.5rem))] rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl">
               <div className="mb-3 text-sm font-semibold text-slate-900">Interface Settings</div>
               <div className="space-y-3">
                 <div className="flex items-center justify-between gap-3">
@@ -581,73 +588,27 @@ export default function HomePageClient({
       </div>
 
       <section className="bg-white border-b border-gray-200 shadow-sm">
-        <div className="mx-auto max-w-5xl px-6">
-          <div className="flex items-center justify-center py-6">
-            <button
-              onClick={() => setSearchMode("STORAGE")}
-              style={{ fontSize: '32px', fontWeight: 900, letterSpacing: '0.5px' }}
-              className={`font-bebas transition-all duration-200 px-8 py-3 ${
-                searchMode === "STORAGE"
-                  ? "text-blue-600 bg-blue-50 border-b-4 border-blue-600"
-                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
-              }`}
-            >
-              STORAGE
-            </button>
-            <div className="h-8 w-px bg-gray-300 mx-4"></div>
-            <button
-              onClick={() => setSearchMode("VLM")}
-              style={{ fontSize: '32px', fontWeight: 900, letterSpacing: '0.5px' }}
-              className={`font-bebas transition-all duration-200 px-8 py-3 ${
-                searchMode === "VLM"
-                  ? "text-blue-600 bg-blue-50 border-b-4 border-blue-600"
-                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
-              }`}
-            >
-              VLM
-            </button>
-            <div className="h-8 w-px bg-gray-300 mx-4"></div>
-            <button
-              onClick={() => setSearchMode("Browser")}
-              style={{ fontSize: '32px', fontWeight: 900, letterSpacing: '0.5px' }}
-              className={`font-bebas transition-all duration-200 px-8 py-3 ${
-                searchMode === "Browser"
-                  ? "text-blue-600 bg-blue-50 border-b-4 border-blue-600"
-                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
-              }`}
-            >
-              BROWSER
-            </button>
-            <div className="h-8 w-px bg-gray-300 mx-4"></div>
-            <button
-              onClick={() => setSearchMode("ANNOTATION")}
-              style={{ fontSize: '32px', fontWeight: 900, letterSpacing: '0.5px' }}
-              className={`font-bebas transition-all duration-200 px-8 py-3 ${
-                searchMode === "ANNOTATION"
-                  ? "text-blue-600 bg-blue-50 border-b-4 border-blue-600"
-                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
-              }`}
-            >
-              ANNOTATION
-            </button>
-            <div className="h-8 w-px bg-gray-300 mx-4"></div>
-            <button
-              onClick={() => setSearchMode("Job Monitor")}
-              style={{ fontSize: '32px', fontWeight: 900, letterSpacing: '0.5px' }}
-              className={`font-bebas transition-all duration-200 px-8 py-3 ${
-                searchMode === "Job Monitor"
-                  ? "text-blue-600 bg-blue-50 border-b-4 border-blue-600"
-                  : "text-gray-600 hover:text-gray-900 hover:bg-gray-50"
-              }`}
-            >
-              JOB MONITOR
-            </button>
+        <div className="mx-auto max-w-5xl px-2 sm:px-6">
+          <div className="hide-scrollbar flex items-center gap-1 overflow-x-auto py-3 sm:justify-center sm:gap-2 sm:py-6">
+            {SEARCH_MODE_TABS.map((tab) => (
+              <button
+                key={tab.mode}
+                onClick={() => setSearchMode(tab.mode)}
+                className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-xl font-black tracking-wide font-bebas transition-all duration-200 sm:px-6 sm:py-3 sm:text-3xl ${
+                  searchMode === tab.mode
+                    ? "border-blue-600 bg-blue-50 text-blue-600"
+                    : "border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
         </div>
       </section>
 
       {searchMode === "Job Monitor" ? (
-        <section className="px-6 pt-8 pb-16">
+        <section className="px-4 pb-16 pt-8 sm:px-6">
           <SystemMonitor
             showModelsPanel={uiSettings.showJobMonitorModels}
             showGpuPanel={uiSettings.showJobMonitorGpu}
@@ -665,9 +626,9 @@ export default function HomePageClient({
         <StoragePanel showSnapshotSection={uiSettings.showSnapshotSection} />
       ) : (
         <>
-          <section className="px-6 pt-12 pb-8">
+          <section className="px-4 pb-8 pt-10 sm:px-6 sm:pt-12">
             <div className="mx-auto flex max-w-5xl flex-col items-center gap-6 text-center">
-              <h1 className="text-3xl font-bold text-gray-900">
+              <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">
                 Поиск сцен автономного транспорта
               </h1>
 
@@ -700,7 +661,7 @@ export default function HomePageClient({
             </div>
           </section>
 
-          <section className="px-6 pb-16">
+          <section className="px-4 pb-16 sm:px-6">
             <div className="mx-auto max-w-5xl">
               {isLoading && (
                 <div className="text-sm text-gray-500">Ищем подходящие кадры...</div>
@@ -739,7 +700,7 @@ export default function HomePageClient({
                           ))}
                         </select>
                       </label>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
                           onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
@@ -748,7 +709,7 @@ export default function HomePageClient({
                         >
                           ← Назад
                         </button>
-                        <div className="min-w-24 text-center text-sm font-medium text-gray-700">
+                        <div className="min-w-[5rem] text-center text-sm font-medium text-gray-700">
                           {currentPage} / {totalPages}
                         </div>
                         <button
