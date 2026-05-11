@@ -92,7 +92,7 @@ function getMatchModeOptions(responseType: ResponseType): MatchModeOption[] {
 
 function createFilterState(
   responseType: ResponseType,
-  current?: FilterState
+  current?: Partial<FilterState>
 ): FilterState {
   const allowedModes = new Set(
     getMatchModeOptions(responseType).map((option) => option.value)

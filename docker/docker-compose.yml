@@ -335,7 +335,6 @@ services:
       --host 0.0.0.0
       --port 9002
       --log-level debug
-      --reload
       "
     environment:
       PYTHONWARNINGS: "ignore::FutureWarning:google.api_core._python_version_support"
@@ -382,7 +381,10 @@ services:
       else
         echo "Reusing existing frontend deps from volume";
       fi;
-      npm run dev -- --hostname 0.0.0.0 --webpack
+      rm -rf .next;
+      npm run build;
+      test -f .next/server/middleware-manifest.json;
+      npm run start -- --hostname 0.0.0.0 --port 3000
       '
     volumes:
       - ../frontend:/app/frontend
@@ -402,12 +404,9 @@ services:
       STORAGE_WRITE_TOKEN: change-me-storage-write-token
       MINIO_PUBLIC_ENDPOINT: http://localhost:9000
       MINIO_BUCKET: avsp
-      NODE_OPTIONS: --max-old-space-size=4096
+      NODE_OPTIONS: --max-old-space-size=2048
       FRONTEND_REQUEST_TIMEOUT_MS: "0"
       STORAGE_TRANSFER_IMPORT_MAX_BYTES: "17179869184"
-      WATCHPACK_POLLING: "true"
-      WATCHPACK_POLLING_INTERVAL: "1000"
-      CHOKIDAR_USEPOLLING: "true"
     networks:
       - avsp-net
 
