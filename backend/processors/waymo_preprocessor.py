@@ -37,10 +37,6 @@ class WaymoPreprocessor(Preprocessor):
     REVERSE_CAMERA_TO_LABEL = {
         v: k for k, v in CAMERA_TO_LABEL.items()
     }
-    STORAGE_KEY_PATTERN = re.compile(
-        r"^(FRONT|FRONT_LEFT|FRONT_RIGHT|BACK_LEFT|BACK_RIGHT)_(.+)_(\d+)(?:_\d+)?\.jpg$"
-    )
-
     COLUMNS_TO_SAVE = {
         "key.frame_timestamp_micros": "timestamp",
         "key.camera_name": "camera_name",
@@ -83,11 +79,54 @@ class WaymoPreprocessor(Preprocessor):
         normalized = key.strip().replace("\\", "/")
         if not normalized.startswith("waymo/"):
             return None
-        file_name = os.path.basename(normalized)
-        match = self.STORAGE_KEY_PATTERN.match(file_name)
-        if not match:
+
+        parts = [part for part in normalized.split("/") if part]
+        if len(parts) < 4 or parts[0] != "waymo":
             return None
-        return str(match.group(2)).strip() or None
+
+        episode_candidate = str(parts[1]).strip()
+        camera_candidate = str(parts[2]).strip().upper()
+        file_candidate = str(parts[3]).strip()
+        if (
+            episode_candidate
+            and camera_candidate in self.CAMERA_TO_LABEL
+            and re.match(r"^\d+(?:_\d+)?\.jpg$", file_candidate)
+        ):
+            return episode_candidate
+        return None
+
+    def _resolve_camera_name(self, raw_value: Any) -> str:
+        value = str(raw_value).strip()
+        if not value:
+            return ""
+        upper = value.upper()
+        if upper in self.CAMERA_TO_LABEL:
+            return upper
+        try:
+            numeric = int(value)
+        except Exception:
+            return upper
+        return self.REVERSE_CAMERA_TO_LABEL.get(numeric, upper)
+
+    def _build_object_key(self, row: Any, local_path: str) -> str:
+        dataset_type = str(row.get("dataset_type", "waymo")).strip() or "waymo"
+        camera_name = self._resolve_camera_name(row.get("camera_name", ""))
+        timestamp_raw = str(row.get("timestamp", "")).strip()
+        timestamp_token = re.sub(r"[^0-9]+", "", timestamp_raw)
+
+        episode_id = str(row.get("episode_id", "")).strip()
+        if not episode_id:
+            source_link = str(row.get("source_link", "")).strip()
+            if source_link:
+                episode_id = Path(source_link).stem
+
+        safe_episode_id = self._sanitize_storage_path(episode_id).replace("/", "_").strip("_")
+        safe_camera = self._sanitize_storage_path(camera_name).replace("/", "_").strip("_")
+
+        if safe_episode_id and safe_camera and timestamp_token:
+            return f"{dataset_type}/{safe_episode_id}/{safe_camera}/{timestamp_token}.jpg"
+
+        return super()._build_object_key(row, local_path)
 
     def _load_processed_episode_ids_from_storage(self) -> set[str]:
         processed: set[str] = set()
@@ -325,11 +364,13 @@ class WaymoPreprocessor(Preprocessor):
             )
 
         episode_name = os.path.basename(path)
+        episode_id = Path(episode_name).stem
         df = df[self.COLUMNS_TO_SAVE.keys()].rename(columns=self.COLUMNS_TO_SAVE)
         df = self._save_images_and_replace_column(df, episode_name)
         df["dataset_type"] = "waymo"
+        df["episode_id"] = episode_id
         df["source_link"] = f"gs://{BUCKET_NAME}/{PREFIX}/{episode_name}"
-        df = df[OUTPUT_COLUMNS]
+        df = df[OUTPUT_COLUMNS + ["episode_id"]]
         return df
 
     def _save_images_and_replace_column(

@@ -31,5 +31,5 @@ npm run start -- --hostname 0.0.0.0 --port 3001
 
 ## Important Distinction
 
-- Local Docker Compose development uses a separate `frontend` service defined in `docker/docker-compose.yml` with bind mounts and `npm run dev` (hot reload).
-- `frontend.k8s.Dockerfile` is for production-style packaged runtime, not for iterative local dev.
+- Local Docker Compose uses a separate `frontend` service defined in `docker/docker-compose.yml` with bind mounts, but runs in production mode (`npm run build` + `npm run start`) to reduce memory usage.
+- `frontend.k8s.Dockerfile` is also production-style packaged runtime.

@@ -146,6 +146,8 @@ const SNAPSHOT_ACTION_IDS = [
   "download-vlm",
   "import-snapshot",
 ] as const;
+const OBJECT_BROWSER_ROW_HEIGHT_PX = 64;
+const OBJECT_BROWSER_VIRTUAL_OVERSCAN_ROWS = 6;
 
 type SnapshotActionId = (typeof SNAPSHOT_ACTION_IDS)[number];
 
@@ -566,6 +568,8 @@ export default function StoragePanel({
   const [filteredObjectsCursor, setFilteredObjectsCursor] = useState("");
   const [filteredObjectsPrevCursors, setFilteredObjectsPrevCursors] = useState<string[]>([]);
   const [filteredObjectsNextCursor, setFilteredObjectsNextCursor] = useState("");
+  const [objectBrowserScrollTop, setObjectBrowserScrollTop] = useState(0);
+  const [objectBrowserViewportHeight, setObjectBrowserViewportHeight] = useState(420);
   const [previewObjectId, setPreviewObjectId] = useState<string | null>(null);
   const [cleanupStatusMessage, setCleanupStatusMessage] = useState<string | null>(null);
   const [cleanupWarningMessage, setCleanupWarningMessage] = useState<string | null>(null);
@@ -605,6 +609,7 @@ export default function StoragePanel({
   const snapshotExportPollTokenRef = useRef(0);
   const snapshotImportPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const snapshotImportPollTokenRef = useRef(0);
+  const objectBrowserViewportRef = useRef<HTMLDivElement | null>(null);
   const normalizedObjectsQuery = objectsSearchQuery.trim().toLowerCase();
   const hasObjectsFilter = Boolean(objectsDatasetFilter || normalizedObjectsQuery);
 
@@ -629,6 +634,40 @@ export default function StoragePanel({
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [confirmDialog, confirmDialogBusy, previewObjectId]);
+
+  useEffect(() => {
+    const root = objectBrowserViewportRef.current;
+    if (!root) return;
+
+    const updateViewport = () => {
+      setObjectBrowserViewportHeight(Math.max(220, root.clientHeight || 0));
+      setObjectBrowserScrollTop(root.scrollTop || 0);
+    };
+
+    updateViewport();
+
+    const onScroll = () => {
+      setObjectBrowserScrollTop(root.scrollTop || 0);
+    };
+    root.addEventListener("scroll", onScroll, { passive: true });
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(updateViewport);
+      resizeObserver.observe(root);
+    } else {
+      window.addEventListener("resize", updateViewport);
+    }
+
+    return () => {
+      root.removeEventListener("scroll", onScroll);
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      } else {
+        window.removeEventListener("resize", updateViewport);
+      }
+    };
+  }, []);
 
   const extractAxiosErrorMessage = (
     error: unknown,
@@ -857,7 +896,11 @@ export default function StoragePanel({
         } catch {
         }
         if (token === snapshotExportPollTokenRef.current) {
-          scheduleNext(350);
+          const nextDelay =
+            typeof document !== "undefined" && document.visibilityState !== "visible"
+              ? 1400
+              : 350;
+          scheduleNext(nextDelay);
         }
       }, delayMs);
     };
@@ -939,7 +982,11 @@ export default function StoragePanel({
         } catch {
         }
         if (token === snapshotImportPollTokenRef.current) {
-          scheduleNext(450);
+          const nextDelay =
+            typeof document !== "undefined" && document.visibilityState !== "visible"
+              ? 1800
+              : 450;
+          scheduleNext(nextDelay);
         }
       }, delayMs);
     };
@@ -1973,6 +2020,35 @@ export default function StoragePanel({
   );
 
   const objectsToRender = hasObjectsFilter ? filteredObjects ?? [] : objects;
+  const shouldVirtualizeObjectRows = objectsToRender.length > 40;
+  const virtualRowsPerViewport = Math.max(
+    1,
+    Math.ceil(objectBrowserViewportHeight / OBJECT_BROWSER_ROW_HEIGHT_PX)
+  );
+  const virtualStartIndex = shouldVirtualizeObjectRows
+    ? Math.max(
+        0,
+        Math.floor(objectBrowserScrollTop / OBJECT_BROWSER_ROW_HEIGHT_PX) -
+          OBJECT_BROWSER_VIRTUAL_OVERSCAN_ROWS
+      )
+    : 0;
+  const virtualEndIndex = shouldVirtualizeObjectRows
+    ? Math.min(
+        objectsToRender.length,
+        virtualStartIndex +
+          virtualRowsPerViewport +
+          OBJECT_BROWSER_VIRTUAL_OVERSCAN_ROWS * 2
+      )
+    : objectsToRender.length;
+  const virtualTopSpacerHeight = shouldVirtualizeObjectRows
+    ? virtualStartIndex * OBJECT_BROWSER_ROW_HEIGHT_PX
+    : 0;
+  const virtualBottomSpacerHeight = shouldVirtualizeObjectRows
+    ? Math.max(0, (objectsToRender.length - virtualEndIndex) * OBJECT_BROWSER_ROW_HEIGHT_PX)
+    : 0;
+  const visibleObjectRows = shouldVirtualizeObjectRows
+    ? objectsToRender.slice(virtualStartIndex, virtualEndIndex)
+    : objectsToRender;
   const allDatasetBuckets = (stats.storage.all_bucket_stats || stats.storage.bucket_stats).map(
     (bucket) => bucket.bucket
   );
@@ -2347,15 +2423,15 @@ export default function StoragePanel({
             </div>
           </div>
 
-          <div className="mt-5 overflow-x-auto">
-            <table className="min-w-full divide-y divide-slate-200">
+          <div ref={objectBrowserViewportRef} className="mt-5 max-h-[65vh] overflow-auto">
+            <table className="min-w-full w-full table-fixed divide-y divide-slate-200">
               <thead className="bg-slate-50">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Object ID</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Bucket / Key</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Size</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Created</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Actions</th>
+                  <th className="w-[16rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Object ID</th>
+                  <th className="w-[45%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Bucket / Key</th>
+                  <th className="w-[8rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Size</th>
+                  <th className="w-[13rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Created</th>
+                  <th className="w-[16rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
@@ -2373,19 +2449,32 @@ export default function StoragePanel({
                     </td>
                   </tr>
                 )}
-                {objectsToRender.map((item) => (
-                  <tr key={item.object_id}>
-                    <td className="px-4 py-3 text-xs text-slate-800">{item.object_id}</td>
-                    <td className="px-4 py-3 text-sm text-slate-700">
-                      <div className="font-medium">{item.bucket}</div>
-                      <div className="text-xs text-slate-500 break-all">{item.key}</div>
+                {virtualTopSpacerHeight > 0 && (
+                  <tr aria-hidden="true">
+                    <td colSpan={5} className="p-0" style={{ height: `${virtualTopSpacerHeight}px` }} />
+                  </tr>
+                )}
+                {visibleObjectRows.map((item) => (
+                  <tr key={item.object_id} className="h-16">
+                    <td className="px-4 py-2 text-xs text-slate-800 align-middle">
+                      <div className="truncate" title={item.object_id}>
+                        {item.object_id}
+                      </div>
                     </td>
-                    <td className="px-4 py-3 text-sm text-slate-700">{formatBytes(item.size_bytes)}</td>
-                    <td className="px-4 py-3 text-sm text-slate-700">
+                    <td className="px-4 py-2 text-sm text-slate-700 align-middle">
+                      <div className="truncate font-medium" title={item.bucket}>
+                        {item.bucket}
+                      </div>
+                      <div className="truncate text-xs text-slate-500" title={item.key}>
+                        {item.key}
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 text-sm text-slate-700 align-middle">{formatBytes(item.size_bytes)}</td>
+                    <td className="px-4 py-2 text-sm text-slate-700 align-middle">
                       {item.created_at ? new Date(item.created_at).toLocaleString("ru-RU") : "-"}
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
+                    <td className="px-4 py-2 align-middle">
+                      <div className="flex items-center gap-2 whitespace-nowrap">
                         <button
                           type="button"
                           onClick={() => setPreviewObjectId(item.object_id)}
@@ -2413,6 +2502,11 @@ export default function StoragePanel({
                     </td>
                   </tr>
                 ))}
+                {virtualBottomSpacerHeight > 0 && (
+                  <tr aria-hidden="true">
+                    <td colSpan={5} className="p-0" style={{ height: `${virtualBottomSpacerHeight}px` }} />
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import axios from "axios";
 import { Cog6ToothIcon } from "@heroicons/react/24/outline";
 import {
@@ -10,10 +11,6 @@ import {
 
 import SearchBar from "../components/SearchBar";
 import ImageGallery from "../components/ImageGallery";
-import SystemMonitor from "../components/SystemMonitor";
-import VlmPanel from "../components/VlmPanel";
-import AnnotationPanel from "../components/AnnotationPanel";
-import StoragePanel from "../components/StoragePanel";
 import TransferToast from "../components/TransferToast";
 
 interface ImageResult {
@@ -61,11 +58,28 @@ const SEARCH_MODE_TABS: Array<{ mode: SearchMode; label: string }> = [
 
 const DEFAULT_UI_SETTINGS: UISettings = {
   showSnapshotSection: true,
-  showSyntheticInAnnotation: true,
+  showSyntheticInAnnotation: false,
   showSearchMeta: false,
   showJobMonitorModels: true,
   showJobMonitorGpu: false,
 };
+
+const SystemMonitor = dynamic(() => import("../components/SystemMonitor"), {
+  ssr: false,
+  loading: () => <div className="text-sm text-gray-500">Loading Job Monitor...</div>,
+});
+const VlmPanel = dynamic(() => import("../components/VlmPanel"), {
+  ssr: false,
+  loading: () => <div className="px-4 py-8 text-sm text-gray-500">Loading VLM...</div>,
+});
+const AnnotationPanel = dynamic(() => import("../components/AnnotationPanel"), {
+  ssr: false,
+  loading: () => <div className="px-4 py-8 text-sm text-gray-500">Loading Annotation...</div>,
+});
+const StoragePanel = dynamic(() => import("../components/StoragePanel"), {
+  ssr: false,
+  loading: () => <div className="px-4 py-8 text-sm text-gray-500">Loading Storage...</div>,
+});
 
 function parseStoragePathMeta(storagePath?: string): {
   dataset: string;
@@ -232,7 +246,10 @@ export default function HomePageClient({
       let gpuAvailableByDefault = false;
       try {
         const systemInfo = await axios.get("/api/system-info");
-        gpuAvailableByDefault = Boolean(systemInfo.data?.gpu?.available);
+        const gpuPayload = systemInfo.data?.gpu;
+        const hasGpuList = Array.isArray(gpuPayload?.gpus) && gpuPayload.gpus.length > 0;
+        const hasNoGpuError = typeof gpuPayload?.error !== "string" || gpuPayload.error.trim() === "";
+        gpuAvailableByDefault = Boolean(gpuPayload?.available && hasGpuList && hasNoGpuError);
       } catch {
         gpuAvailableByDefault = false;
       }
@@ -532,16 +549,28 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">Show Synthetic Dataset</div>
-                    <div className="text-xs text-slate-500">In annotation preprocessor list</div>
+                    <div className="text-sm font-medium text-slate-800">Show Job Monitor Models</div>
+                    <div className="text-xs text-slate-500">Model runtime block</div>
                   </div>
                   <IOSSwitch
-                    checked={uiSettings.showSyntheticInAnnotation}
+                    checked={uiSettings.showJobMonitorModels}
                     onChange={(next) =>
                       setUiSettings((prev) => ({
                         ...prev,
-                        showSyntheticInAnnotation: next,
+                        showJobMonitorModels: next,
                       }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">Show Job Monitor GPU</div>
+                    <div className="text-xs text-slate-500">GPU host block</div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showJobMonitorGpu}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({ ...prev, showJobMonitorGpu: next }))
                     }
                   />
                 </div>
@@ -559,25 +588,16 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">Show Job Monitor Models</div>
-                    <div className="text-xs text-slate-500">Model runtime block</div>
+                    <div className="text-sm font-medium text-slate-800">Show Synthetic Dataset</div>
+                    <div className="text-xs text-slate-500">In annotation preprocessor list</div>
                   </div>
                   <IOSSwitch
-                    checked={uiSettings.showJobMonitorModels}
+                    checked={uiSettings.showSyntheticInAnnotation}
                     onChange={(next) =>
-                      setUiSettings((prev) => ({ ...prev, showJobMonitorModels: next }))
-                    }
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium text-slate-800">Show Job Monitor GPU</div>
-                    <div className="text-xs text-slate-500">GPU host block</div>
-                  </div>
-                  <IOSSwitch
-                    checked={uiSettings.showJobMonitorGpu}
-                    onChange={(next) =>
-                      setUiSettings((prev) => ({ ...prev, showJobMonitorGpu: next }))
+                      setUiSettings((prev) => ({
+                        ...prev,
+                        showSyntheticInAnnotation: next,
+                      }))
                     }
                   />
                 </div>
@@ -612,6 +632,7 @@ export default function HomePageClient({
           <SystemMonitor
             showModelsPanel={uiSettings.showJobMonitorModels}
             showGpuPanel={uiSettings.showJobMonitorGpu}
+            isActive={searchMode === "Job Monitor"}
           />
         </section>
       ) : searchMode === "VLM" ? (
@@ -781,7 +802,10 @@ export default function HomePageClient({
           </section>
         </>
       )}
-      <TransferToast onOpenTransfer={openTransferSnapshotSection} />
+      <TransferToast
+        onOpenTransfer={openTransferSnapshotSection}
+        isStorageMode={searchMode === "STORAGE"}
+      />
 
       {embeddingMismatchDialog && (
         <div

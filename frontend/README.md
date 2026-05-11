@@ -80,5 +80,10 @@ Default local URL:
 
 ## Docker Runtime Notes
 
-- In local Docker Compose, frontend runs in dev mode with bind mounts and hot reload.
+- In local Docker Compose, frontend now runs as a production process (`npm run build` + `npm run start`) to reduce runtime memory usage.
 - In Kubernetes/k3s flows, frontend is packaged with `docker/frontend/frontend.k8s.Dockerfile` and runs as a production build.
+- For frontend code fixes in local Compose, use container restart (no image rebuild needed):
+
+```bash
+docker compose -f docker/docker-compose.yml restart frontend
+```

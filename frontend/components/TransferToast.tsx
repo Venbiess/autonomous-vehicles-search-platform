@@ -79,8 +79,10 @@ function normalizeProgress(job: SnapshotTransferJob): number {
 
 export default function TransferToast({
   onOpenTransfer,
+  isStorageMode = false,
 }: {
   onOpenTransfer?: () => void;
+  isStorageMode?: boolean;
 }) {
   const [jobs, setJobs] = useState<SnapshotTransferJob[]>([]);
   const pollTokenRef = useRef(0);
@@ -88,6 +90,12 @@ export default function TransferToast({
 
   useEffect(() => {
     const token = pollTokenRef.current;
+    const getPollDelay = (): number => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return 4000;
+      }
+      return isStorageMode ? 700 : 1500;
+    };
     const poll = async () => {
       try {
         const response = await axios.get("/api/jobs");
@@ -101,7 +109,7 @@ export default function TransferToast({
       } catch {
       } finally {
         if (token === pollTokenRef.current) {
-          pollTimerRef.current = setTimeout(poll, 700);
+          pollTimerRef.current = setTimeout(poll, getPollDelay());
         }
       }
     };
@@ -115,7 +123,7 @@ export default function TransferToast({
         pollTimerRef.current = null;
       }
     };
-  }, []);
+  }, [isStorageMode]);
 
   const primaryJob = jobs[0];
   const hasJobs = Boolean(primaryJob);
