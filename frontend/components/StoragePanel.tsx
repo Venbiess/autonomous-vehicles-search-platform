@@ -563,6 +563,9 @@ export default function StoragePanel({
   const [filteredObjects, setFilteredObjects] = useState<ObjectListItem[] | null>(null);
   const [filteredObjectsLoading, setFilteredObjectsLoading] = useState(false);
   const [filteredObjectsPage, setFilteredObjectsPage] = useState(1);
+  const [filteredObjectsCursor, setFilteredObjectsCursor] = useState("");
+  const [filteredObjectsPrevCursors, setFilteredObjectsPrevCursors] = useState<string[]>([]);
+  const [filteredObjectsNextCursor, setFilteredObjectsNextCursor] = useState("");
   const [previewObjectId, setPreviewObjectId] = useState<string | null>(null);
   const [cleanupStatusMessage, setCleanupStatusMessage] = useState<string | null>(null);
   const [cleanupWarningMessage, setCleanupWarningMessage] = useState<string | null>(null);
@@ -602,6 +605,8 @@ export default function StoragePanel({
   const snapshotExportPollTokenRef = useRef(0);
   const snapshotImportPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const snapshotImportPollTokenRef = useRef(0);
+  const normalizedObjectsQuery = objectsSearchQuery.trim().toLowerCase();
+  const hasObjectsFilter = Boolean(objectsDatasetFilter || normalizedObjectsQuery);
 
   useEffect(() => {
     if (!confirmDialog && !previewObjectId) {
@@ -1053,7 +1058,7 @@ export default function StoragePanel({
     };
   }, []);
 
-  const loadStats = async (showLoader = false) => {
+  const loadStats = async (showLoader = false, includeStorageDetails = true) => {
     if (showLoader) {
       setIsLoading(true);
     } else {
@@ -1064,7 +1069,11 @@ export default function StoragePanel({
       let lastError: unknown = null;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-          const response = await axios.get("/api/storage/stats");
+          const response = await axios.get("/api/storage/stats", {
+            params: {
+              include_storage_details: includeStorageDetails ? 1 : 0,
+            },
+          });
           setStats(response.data);
           setErrorMessage(null);
           return;
@@ -1089,7 +1098,18 @@ export default function StoragePanel({
   };
 
   useEffect(() => {
-    loadStats(true);
+    let cancelled = false;
+    const boot = async () => {
+      await loadStats(true, false);
+      if (!cancelled) {
+        loadStats(false, true);
+      }
+    };
+    boot();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -1196,87 +1216,64 @@ export default function StoragePanel({
     }
   };
 
+  const loadFilteredObjectsPage = async (
+    cursor: string,
+    prevCursors: string[],
+    page: number,
+    query: string,
+    dataset: string
+  ) => {
+    setFilteredObjectsLoading(true);
+    setErrorMessage(null);
+    try {
+      const response = await axios.get<ObjectListResponse>("/api/storage/objects", {
+        params: {
+          limit: objectsPageSize,
+          q: query,
+          dataset,
+          ...(cursor ? { cursor } : {}),
+        },
+      });
+      setFilteredObjects(response.data.items ?? []);
+      setFilteredObjectsCursor(cursor);
+      setFilteredObjectsPrevCursors(prevCursors);
+      setFilteredObjectsNextCursor(response.data.next_cursor ?? "");
+      setFilteredObjectsPage(page);
+    } catch (error) {
+      const message = extractAxiosErrorMessage(error, "Failed to search objects");
+      setErrorMessage(message);
+      setFilteredObjects([]);
+    } finally {
+      setFilteredObjectsLoading(false);
+    }
+  };
+
   useEffect(() => {
+    if (hasObjectsFilter) {
+      return;
+    }
     loadObjectsPage("", [], 1);
-  }, [objectsPageSize]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [objectsPageSize, hasObjectsFilter]);
 
   useEffect(() => {
-    const query = objectsSearchQuery.trim().toLowerCase();
-    const dataset = objectsDatasetFilter.trim();
-    const hasFilter = Boolean(query || dataset);
-    let cancelled = false;
-
-    const run = async () => {
-      if (!hasFilter) {
-        setFilteredObjects(null);
-        setFilteredObjectsLoading(false);
-        return;
-      }
-      setFilteredObjectsLoading(true);
-      try {
-        const all: ObjectListItem[] = [];
-        let cursor = "";
-        let safety = 0;
-        const maxPages = 200;
-        const pageLimit = 256;
-
-        while (!cancelled && safety < maxPages) {
-          safety += 1;
-          const response = await axios.get<ObjectListResponse>("/api/storage/objects", {
-            params: {
-              limit: pageLimit,
-              ...(cursor ? { cursor } : {}),
-            },
-          });
-          const items = Array.isArray(response.data?.items) ? response.data.items : [];
-          all.push(...items);
-          const nextCursor = String(response.data?.next_cursor || "").trim();
-          if (!nextCursor) break;
-          cursor = nextCursor;
-        }
-
-        if (cancelled) return;
-        const next = all.filter((item) => {
-          if (dataset && item.bucket !== dataset) {
-            return false;
-          }
-          if (!query) {
-            return true;
-          }
-          const haystack = [
-            item.object_id,
-            item.storage_path,
-            item.bucket,
-            item.key,
-            item.content_type,
-          ]
-            .join(" ")
-            .toLowerCase();
-          return haystack.includes(query);
-        });
-        setFilteredObjects(next);
-      } catch (error) {
-        if (cancelled) return;
-        const message = extractAxiosErrorMessage(error, "Failed to search objects");
-        setErrorMessage(message);
-        setFilteredObjects([]);
-      } finally {
-        if (!cancelled) {
-          setFilteredObjectsLoading(false);
-        }
-      }
-    };
-
-    const timer = setTimeout(run, 300);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [objectsSearchQuery, objectsDatasetFilter]);
-
-  useEffect(() => {
-    setFilteredObjectsPage(1);
-  }, [objectsSearchQuery, objectsDatasetFilter, objectsPageSize]);
+    if (!hasObjectsFilter) {
+      setFilteredObjects(null);
+      setFilteredObjectsLoading(false);
+      setFilteredObjectsPage(1);
+      setFilteredObjectsCursor("");
+      setFilteredObjectsPrevCursors([]);
+      setFilteredObjectsNextCursor("");
+      return;
+    }
+    const query = normalizedObjectsQuery;
+    const dataset = objectsDatasetFilter.trim().toLowerCase();
+    const timer = setTimeout(() => {
+      loadFilteredObjectsPage("", [], 1, query, dataset);
+    }, 300);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [normalizedObjectsQuery, objectsDatasetFilter, objectsPageSize, hasObjectsFilter]);
 
   useEffect(() => {
     if (!stats) return;
@@ -1386,6 +1383,44 @@ export default function StoragePanel({
     await loadObjectsPage(prevCursor, nextPrev, Math.max(1, objectsPage - 1));
   };
 
+  const goToNextFilteredObjectsPage = async () => {
+    if (!filteredObjectsNextCursor || filteredObjectsLoading) return;
+    await loadFilteredObjectsPage(
+      filteredObjectsNextCursor,
+      [...filteredObjectsPrevCursors, filteredObjectsCursor],
+      filteredObjectsPage + 1,
+      normalizedObjectsQuery,
+      objectsDatasetFilter.trim().toLowerCase()
+    );
+  };
+
+  const goToPrevFilteredObjectsPage = async () => {
+    if (filteredObjectsPrevCursors.length === 0 || filteredObjectsLoading) return;
+    const prevCursor = filteredObjectsPrevCursors[filteredObjectsPrevCursors.length - 1] ?? "";
+    const nextPrev = filteredObjectsPrevCursors.slice(0, -1);
+    await loadFilteredObjectsPage(
+      prevCursor,
+      nextPrev,
+      Math.max(1, filteredObjectsPage - 1),
+      normalizedObjectsQuery,
+      objectsDatasetFilter.trim().toLowerCase()
+    );
+  };
+
+  const reloadCurrentObjectsView = async () => {
+    if (hasObjectsFilter) {
+      await loadFilteredObjectsPage(
+        filteredObjectsCursor,
+        filteredObjectsPrevCursors,
+        filteredObjectsPage,
+        normalizedObjectsQuery,
+        objectsDatasetFilter.trim().toLowerCase()
+      );
+      return;
+    }
+    await loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage);
+  };
+
   const deleteObject = async (objectId: string) => {
     openConfirmDialog({
       title: "Delete object",
@@ -1403,10 +1438,23 @@ export default function StoragePanel({
             ? objectsPrevCursors.slice(0, -1)
             : objectsPrevCursors;
           const page = shouldGoPrev ? Math.max(1, objectsPage - 1) : objectsPage;
-          await Promise.all([
-            loadStats(false),
-            loadObjectsPage(cursor, prevCursors, page),
-          ]);
+          if (hasObjectsFilter) {
+            await Promise.all([
+              loadStats(false),
+              loadFilteredObjectsPage(
+                filteredObjectsCursor,
+                filteredObjectsPrevCursors,
+                filteredObjectsPage,
+                normalizedObjectsQuery,
+                objectsDatasetFilter.trim().toLowerCase()
+              ),
+            ]);
+          } else {
+            await Promise.all([
+              loadStats(false),
+              loadObjectsPage(cursor, prevCursors, page),
+            ]);
+          }
           if (previewObjectId === objectId) {
             setPreviewObjectId(null);
           }
@@ -1503,7 +1551,7 @@ export default function StoragePanel({
           );
           await Promise.all([
             loadStats(false),
-            loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
+            reloadCurrentObjectsView(),
           ]);
         });
       },
@@ -1538,7 +1586,7 @@ export default function StoragePanel({
           );
           await Promise.all([
             loadStats(false),
-            loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
+            reloadCurrentObjectsView(),
           ]);
           if (failed > 0) {
             setCleanupWarningMessage("Часть сцен не удалена. Проверьте детали в ответе API/логах.");
@@ -1610,7 +1658,11 @@ export default function StoragePanel({
           setStorageStatusMessage(
             `Датасет '${dataset}' обработан: выбрано ${selected}, удалено ${deletedTotal}, осталось ${remaining}, ошибок ${failedTotal}.`
           );
-          await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
+          if (hasObjectsFilter) {
+            await Promise.all([loadStats(false), reloadCurrentObjectsView()]);
+          } else {
+            await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
+          }
           if (failedTotal > 0 || remaining > 0) {
             setStorageWarningMessage(
               `При удалении датасета '${dataset}' остались проблемы: осталось ${remaining}, ошибок ${failedTotal}.`
@@ -1796,7 +1848,11 @@ export default function StoragePanel({
       }
       setTransferFile(null);
       setTransferFileInputKey((value) => value + 1);
-      await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
+      if (hasObjectsFilter) {
+        await Promise.all([loadStats(false), reloadCurrentObjectsView()]);
+      } else {
+        await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
+      }
     }, "snapshot");
 
     stopSnapshotImportProgressPoll();
@@ -1834,7 +1890,7 @@ export default function StoragePanel({
     try {
       await Promise.all([
         loadStats(false),
-        loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
+        reloadCurrentObjectsView(),
       ]);
     } finally {
       setIsRefreshing(false);
@@ -1916,18 +1972,7 @@ export default function StoragePanel({
     }
   );
 
-  const normalizedObjectsQuery = objectsSearchQuery.trim().toLowerCase();
-  const hasObjectsFilter = Boolean(objectsDatasetFilter || normalizedObjectsQuery);
-  const filteredTotalPages = Math.max(
-    1,
-    Math.ceil((filteredObjects?.length ?? 0) / Math.max(1, objectsPageSize))
-  );
-  const safeFilteredPage = Math.min(filteredObjectsPage, filteredTotalPages);
-  const filteredStart = (safeFilteredPage - 1) * Math.max(1, objectsPageSize);
-  const filteredEnd = filteredStart + Math.max(1, objectsPageSize);
-  const objectsToRender = hasObjectsFilter
-    ? (filteredObjects ?? []).slice(filteredStart, filteredEnd)
-    : objects;
+  const objectsToRender = hasObjectsFilter ? filteredObjects ?? [] : objects;
   const allDatasetBuckets = (stats.storage.all_bucket_stats || stats.storage.bucket_stats).map(
     (bucket) => bucket.bucket
   );
@@ -2261,7 +2306,7 @@ export default function StoragePanel({
               </p>
               {hasObjectsFilter && (
                 <p className="mt-1 text-xs text-slate-500">
-                  Поиск выполняется по всем объектам storage.
+                  Поиск выполняется с поэтапным сканированием и постраничной выдачей.
                 </p>
               )}
             </div>
@@ -2375,7 +2420,7 @@ export default function StoragePanel({
           <div className="mt-4 flex items-center justify-between">
             <div className="text-sm text-slate-600">
               {hasObjectsFilter
-                ? `Найдено: ${objectsToRender.length} ${filteredObjectsLoading ? "• loading..." : ""}`
+                ? `Фильтр: страница ${filteredObjectsPage} ${filteredObjectsLoading ? "• loading..." : ""}`
                 : `Страница ${objectsPage} ${objectsLoading ? "• loading..." : ""}`}
             </div>
             <div className="flex items-center gap-2">
@@ -2383,14 +2428,14 @@ export default function StoragePanel({
                 type="button"
                 onClick={() => {
                   if (hasObjectsFilter) {
-                    setFilteredObjectsPage((current) => Math.max(1, current - 1));
+                    goToPrevFilteredObjectsPage();
                     return;
                   }
                   goToPrevObjectsPage();
                 }}
                 disabled={
                   hasObjectsFilter
-                    ? filteredObjectsLoading || safeFilteredPage <= 1
+                    ? filteredObjectsLoading || filteredObjectsPrevCursors.length === 0
                     : objectsPrevCursors.length === 0 || objectsLoading
                 }
                 className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
@@ -2401,16 +2446,14 @@ export default function StoragePanel({
                 type="button"
                 onClick={() => {
                   if (hasObjectsFilter) {
-                    setFilteredObjectsPage((current) =>
-                      Math.min(filteredTotalPages, current + 1)
-                    );
+                    goToNextFilteredObjectsPage();
                     return;
                   }
                   goToNextObjectsPage();
                 }}
                 disabled={
                   hasObjectsFilter
-                    ? filteredObjectsLoading || safeFilteredPage >= filteredTotalPages
+                    ? filteredObjectsLoading || !filteredObjectsNextCursor
                     : !objectsNextCursor || objectsLoading
                 }
                 className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
@@ -2713,7 +2756,7 @@ export default function StoragePanel({
                                 );
                                 await Promise.all([
                                   loadStats(false),
-                                  loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
+                                  reloadCurrentObjectsView(),
                                 ]);
                               }, "storage");
                             },
@@ -2814,7 +2857,7 @@ export default function StoragePanel({
                                   });
                                   await Promise.all([
                                     loadStats(false),
-                                    loadObjectsPage(objectsCursor, objectsPrevCursors, objectsPage),
+                                    reloadCurrentObjectsView(),
                                   ]);
                                 }, "storage");
                               },
