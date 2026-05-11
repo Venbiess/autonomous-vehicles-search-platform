@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import axios from "axios";
 import { Cog6ToothIcon } from "@heroicons/react/24/outline";
 import {
@@ -10,10 +11,6 @@ import {
 
 import SearchBar from "../components/SearchBar";
 import ImageGallery from "../components/ImageGallery";
-import SystemMonitor from "../components/SystemMonitor";
-import VlmPanel from "../components/VlmPanel";
-import AnnotationPanel from "../components/AnnotationPanel";
-import StoragePanel from "../components/StoragePanel";
 import TransferToast from "../components/TransferToast";
 
 interface ImageResult {
@@ -66,6 +63,23 @@ const DEFAULT_UI_SETTINGS: UISettings = {
   showJobMonitorModels: true,
   showJobMonitorGpu: false,
 };
+
+const SystemMonitor = dynamic(() => import("../components/SystemMonitor"), {
+  ssr: false,
+  loading: () => <div className="text-sm text-gray-500">Loading Job Monitor...</div>,
+});
+const VlmPanel = dynamic(() => import("../components/VlmPanel"), {
+  ssr: false,
+  loading: () => <div className="px-4 py-8 text-sm text-gray-500">Loading VLM...</div>,
+});
+const AnnotationPanel = dynamic(() => import("../components/AnnotationPanel"), {
+  ssr: false,
+  loading: () => <div className="px-4 py-8 text-sm text-gray-500">Loading Annotation...</div>,
+});
+const StoragePanel = dynamic(() => import("../components/StoragePanel"), {
+  ssr: false,
+  loading: () => <div className="px-4 py-8 text-sm text-gray-500">Loading Storage...</div>,
+});
 
 function parseStoragePathMeta(storagePath?: string): {
   dataset: string;
@@ -618,6 +632,7 @@ export default function HomePageClient({
           <SystemMonitor
             showModelsPanel={uiSettings.showJobMonitorModels}
             showGpuPanel={uiSettings.showJobMonitorGpu}
+            isActive={searchMode === "Job Monitor"}
           />
         </section>
       ) : searchMode === "VLM" ? (
@@ -787,7 +802,10 @@ export default function HomePageClient({
           </section>
         </>
       )}
-      <TransferToast onOpenTransfer={openTransferSnapshotSection} />
+      <TransferToast
+        onOpenTransfer={openTransferSnapshotSection}
+        isStorageMode={searchMode === "STORAGE"}
+      />
 
       {embeddingMismatchDialog && (
         <div

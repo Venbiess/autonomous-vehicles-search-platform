@@ -90,6 +90,22 @@ From repository root:
 docker compose -f docker/docker-compose.yml up --build
 ```
 
+## Frontend fixes without image rebuild
+
+Frontend service in `docker/docker-compose.yml` is bind-mounted and starts in production mode.
+To apply frontend code fixes, image rebuild is not required.
+
+Use:
+
+```bash
+docker compose -f docker/docker-compose.yml restart frontend
+```
+
+What restart does for frontend:
+- re-runs `npm run build`
+- re-runs `npm run start`
+- reuses `node_modules` volume unless `package-lock.json` changed
+
 ## Optional: HTTP model services profile
 
 By default, AVSP uses RabbitMQ workers for model execution.

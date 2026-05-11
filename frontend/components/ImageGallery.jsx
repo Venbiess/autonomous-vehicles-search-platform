@@ -1,9 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+const GALLERY_VIRTUALIZE_MIN_ITEMS = 40;
+const GALLERY_ROW_HEIGHT_PX = 304;
+const GALLERY_ROW_GAP_PX = 16;
+const GALLERY_OVERSCAN_ROWS = 2;
 
 export default function ImageGallery({ images }) {
   const [selectedImage, setSelectedImage] = useState(null);
+  const [viewportWidth, setViewportWidth] = useState(
+    typeof window !== "undefined" ? window.innerWidth : 1280
+  );
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(640);
+  const viewportRef = useRef(null);
 
   useEffect(() => {
     if (!selectedImage) return undefined;
@@ -18,15 +29,71 @@ export default function ImageGallery({ images }) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [selectedImage]);
 
-  return (
+  useEffect(() => {
+    const updateViewportWidth = () => {
+      setViewportWidth(window.innerWidth);
+    };
+    window.addEventListener("resize", updateViewportWidth);
+    return () => window.removeEventListener("resize", updateViewportWidth);
+  }, []);
+
+  useEffect(() => {
+    const root = viewportRef.current;
+    if (!root) return;
+    const updateSize = () => {
+      setViewportHeight(Math.max(320, root.clientHeight || 0));
+      setScrollTop(root.scrollTop || 0);
+    };
+    updateSize();
+    const onScroll = () => {
+      setScrollTop(root.scrollTop || 0);
+    };
+    root.addEventListener("scroll", onScroll, { passive: true });
+
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(updateSize);
+      resizeObserver.observe(root);
+    }
+
+    return () => {
+      root.removeEventListener("scroll", onScroll);
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
+    };
+  }, [images.length]);
+
+  const columns = viewportWidth >= 1024 ? 3 : viewportWidth >= 640 ? 2 : 1;
+  const shouldVirtualize = images.length >= GALLERY_VIRTUALIZE_MIN_ITEMS;
+  const totalRows = Math.max(1, Math.ceil(images.length / columns));
+  const rowStride = GALLERY_ROW_HEIGHT_PX + GALLERY_ROW_GAP_PX;
+  const visibleRows = Math.max(1, Math.ceil(viewportHeight / rowStride));
+  const startRow = shouldVirtualize
+    ? Math.max(0, Math.floor(scrollTop / rowStride) - GALLERY_OVERSCAN_ROWS)
+    : 0;
+  const endRow = shouldVirtualize
+    ? Math.min(totalRows, startRow + visibleRows + GALLERY_OVERSCAN_ROWS * 2)
+    : totalRows;
+  const startIndex = startRow * columns;
+  const endIndex = Math.min(images.length, endRow * columns);
+  const topSpacerHeight = shouldVirtualize ? startRow * rowStride : 0;
+  const bottomSpacerHeight = shouldVirtualize ? Math.max(0, (totalRows - endRow) * rowStride) : 0;
+  const visibleImages = useMemo(
+    () => (shouldVirtualize ? images.slice(startIndex, endIndex) : images),
+    [endIndex, images, shouldVirtualize, startIndex]
+  );
+
+  const galleryGrid = (
     <>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 mt-4">
-        {images.map((img) => (
+      {topSpacerHeight > 0 && <div aria-hidden="true" style={{ height: `${topSpacerHeight}px` }} />}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {visibleImages.map((img) => (
           <button
             key={img.id}
             type="button"
             onClick={() => setSelectedImage(img)}
-            className="overflow-hidden rounded border bg-white text-left transition hover:-translate-y-0.5 hover:shadow-lg"
+            className="h-[300px] overflow-hidden rounded border bg-white text-left transition hover:-translate-y-0.5 hover:shadow-lg"
           >
             <img
               src={img.url}
@@ -35,7 +102,9 @@ export default function ImageGallery({ images }) {
               className="h-48 w-full object-cover"
             />
             <div className="p-2">
-              <div className="text-xs whitespace-pre-line break-all">{img.title}</div>
+              <div className="max-h-[64px] overflow-hidden text-xs whitespace-pre-line break-all">
+                {img.title}
+              </div>
               {img.score !== null && img.score !== undefined && (
                 <div className="text-xs text-gray-500">
                   score: {Number(img.score).toFixed(4)}
@@ -45,6 +114,19 @@ export default function ImageGallery({ images }) {
           </button>
         ))}
       </div>
+      {bottomSpacerHeight > 0 && <div aria-hidden="true" style={{ height: `${bottomSpacerHeight}px` }} />}
+    </>
+  );
+
+  return (
+    <>
+      {shouldVirtualize ? (
+        <div ref={viewportRef} className="mt-4 max-h-[72vh] overflow-auto">
+          {galleryGrid}
+        </div>
+      ) : (
+        <div className="mt-4">{galleryGrid}</div>
+      )}
 
       {selectedImage && (
         <div

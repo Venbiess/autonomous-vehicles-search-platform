@@ -161,9 +161,11 @@ type RuntimeServiceStatus = "online" | "starting" | "offline";
 export default function SystemMonitor({
   showModelsPanel = true,
   showGpuPanel = true,
+  isActive = true,
 }: {
   showModelsPanel?: boolean;
   showGpuPanel?: boolean;
+  isActive?: boolean;
 }) {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -246,27 +248,77 @@ export default function SystemMonitor({
   };
 
   useEffect(() => {
-    const loadData = async () => {
+    let cancelled = false;
+    let coreTimer: ReturnType<typeof setTimeout> | null = null;
+    let modelLogTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const getCoreDelay = (): number => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return 20000;
+      }
+      return isActive ? 5000 : 12000;
+    };
+
+    const getModelDelay = (): number => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return 30000;
+      }
+      return isActive ? 10000 : 20000;
+    };
+
+    const scheduleCore = () => {
+      const delay = getCoreDelay();
+      coreTimer = setTimeout(async () => {
+        if (cancelled) return;
+        await Promise.all([fetchSystemInfo(), fetchJobs()]);
+        if (!cancelled) {
+          scheduleCore();
+        }
+      }, delay);
+    };
+
+    const scheduleModel = () => {
+      const delay = getModelDelay();
+      modelLogTimer = setTimeout(async () => {
+        if (cancelled) return;
+        await fetchModelLogMeta();
+        if (!cancelled) {
+          scheduleModel();
+        }
+      }, delay);
+    };
+
+    const boot = async () => {
       setIsLoading(true);
       await Promise.all([fetchSystemInfo(), fetchJobs(), fetchModelLogMeta()]);
-      setIsLoading(false);
+      if (!cancelled) {
+        setIsLoading(false);
+        scheduleCore();
+        scheduleModel();
+      }
     };
-    
-    loadData();
-    const coreInterval = setInterval(() => {
+
+    const onVisibilityChange = () => {
+      if (cancelled) return;
+      if (coreTimer) clearTimeout(coreTimer);
+      if (modelLogTimer) clearTimeout(modelLogTimer);
       fetchSystemInfo();
       fetchJobs();
-    }, 5000);
-
-    const modelLogInterval = setInterval(() => {
       fetchModelLogMeta();
-    }, 10000);
+      scheduleCore();
+      scheduleModel();
+    };
+
+    boot();
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
-      clearInterval(coreInterval);
-      clearInterval(modelLogInterval);
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (coreTimer) clearTimeout(coreTimer);
+      if (modelLogTimer) clearTimeout(modelLogTimer);
     };
-  }, []);
+  }, [isActive]);
 
   useEffect(() => {
     const timer = setInterval(() => {
