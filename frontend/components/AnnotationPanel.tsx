@@ -440,7 +440,10 @@ export default function AnnotationPanel({
       }
 
       const statsResponse = await axios.get("/api/storage/stats", {
-        params: { include_storage_details: 0 },
+        params: {
+          include_storage_details: 1,
+          force_refresh: 1,
+        },
       });
       const pendingRows = Number(statsResponse.data?.embeddings?.pending_rows ?? 0);
       if (pendingRows <= 0) {
@@ -490,7 +493,10 @@ export default function AnnotationPanel({
       const resetEmbeddings = Number(resetResponse.data?.reset_embeddings || 0);
 
       const statsResponse = await axios.get("/api/storage/stats", {
-        params: { include_storage_details: 0 },
+        params: {
+          include_storage_details: 1,
+          force_refresh: 1,
+        },
       });
       const pendingRows = Number(statsResponse.data?.embeddings?.pending_rows ?? 0);
       const response = await axios.post("/api/backfill", {
@@ -648,7 +654,10 @@ export default function AnnotationPanel({
       });
 
       const statsResponse = await axios.get("/api/storage/stats", {
-        params: { include_storage_details: 0 },
+        params: {
+          include_storage_details: 1,
+          force_refresh: 1,
+        },
       });
       const pendingRows = Number(statsResponse.data?.vlm?.pending_rows ?? 0);
       if (pendingRows <= 0) {
