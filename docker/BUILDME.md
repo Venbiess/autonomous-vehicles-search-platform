@@ -1,101 +1,157 @@
-# Build via Docker Compose
-```
-cd docker/
-docker compose -f ./docker-compose.yml up
-```
+# AVSP Build and Run (Docker)
 
-# Install Docker and Docker Compose
-```
-# Update packages
+This guide covers local Docker-based setup for the full AVSP stack.
+
+## Prerequisites
+
+- Docker Engine + Docker Compose plugin (`docker compose`)
+- 12+ GB RAM recommended for smooth model + UI + datastore execution
+- Optional for GPU mode: NVIDIA drivers + NVIDIA Container Toolkit
+
+## Linux setup (Ubuntu/Debian)
+
+If Docker is not installed yet:
+
+```bash
 sudo apt update
-sudo apt upgrade -y
-
-# Download dependecies and add Docker GPG-key
 sudo apt install -y ca-certificates curl gnupg lsb-release
-sudo mkdir -p /etc/apt/keyrings
+sudo install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-
-# Add Docker
 echo \
   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
   $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-# Download Docker
 sudo apt update
 sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-# Check Docker
 sudo docker run hello-world
+```
 
-# Avoid using sudo
+Optional: run Docker without `sudo`:
+
+```bash
 sudo usermod -aG docker $USER
 newgrp docker
 ```
 
-# Install NVIDIA CUDA drivers for GPU support
-```
-# Install Drivers
+## NVIDIA/CUDA runtime for Docker (GPU mode)
+
+Install GPU drivers and NVIDIA Container Toolkit:
+
+```bash
 sudo apt update
 sudo apt install -y ubuntu-drivers-common
 sudo ubuntu-drivers autoinstall
-
-# Reboot and then check nvidia-smi
-sudo reboot
+# reboot, then:
 nvidia-smi
 
-# Install NVIDIA Container Toolkit
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit.gpg
-
+  sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit.gpg
 echo "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit.gpg] \
 https://nvidia.github.io/libnvidia-container/stable/deb/amd64 /" | \
-sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-
+  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
 sudo apt update
 sudo apt install -y nvidia-container-toolkit
-
-# Setup Docker runtime
 sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
-
-# Check if Docker can find GPU
-docker run --rm --gpus all \
-nvidia/cuda:12.3.0-base-ubuntu22.04 \
-nvidia-smi
 ```
 
-Fill torch version and CUDA version in in configs/hw_settings.py for models
-```
-from types import SimpleNamespace
-MASTER_SERVER_CONFIG = SimpleNamespace(
-)
+Validation:
 
-TORCH_CONFIG = SimpleNamespace(
-    TORCH_VERSION="2.9.1",  # https://pytorch.org/get-started/previous-versions/
-    TORCH_CUDA_TAG="cu126",   # cpu | cu121 | cu124 | etc. You can find out the cuda version of your machine 
-                            # using nvcc --version or nvidia-smi. Choose "cpu" if you are not using cuda
-    HF_HOME="/app/.cache/huggingface"  # Path to huggingface cache dir.
-)
-
-EMBEDDER_CONFIG = SimpleNamespace(
-    PORT=8000,
-    DEVICE="CUDA",           # CPU, CUDA, MPS
-)
-
-VLM_CONFIG = SimpleNamespace(
-    PORT=8001,
-    DEVICE="CUDA",           # CPU, CUDA, MPS
-    MODEL_NAME="HuggingFaceTB/SmolVLM-256M-Instruct"
-)
-
+```bash
+docker run --rm --gpus all nvidia/cuda:12.3.0-base-ubuntu22.04 nvidia-smi
 ```
 
-Build containers with GPUs
+## macOS (Colima)
+
+If you use Colima, start it with enough resources:
+
+```bash
+colima start --memory 12 --cpu 4 --disk 100
 ```
-cd docker/
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+
+## Run Full Stack (CPU)
+
+From repository root:
+
+```bash
+docker compose -f docker/docker-compose.yml up --build
 ```
-Check
+
+## Optional: HTTP model services profile
+
+By default, AVSP uses RabbitMQ workers for model execution.
+You can also run standalone HTTP model services:
+
+```bash
+docker compose -f docker/docker-compose.yml --profile model-http up
 ```
-docker exec -it avsp-embedder-worker-$USER python -c "import torch; print(f'{torch.__version__=};\n{torch.version.cuda=};\n{torch.cuda.is_available()=};\n{torch.cuda.device_count()=}')"
+
+## Scale workers
+
+```bash
+docker compose -f docker/docker-compose.yml up \
+  --scale embedder-worker=2 \
+  --scale vlm-worker=2
+```
+
+## GPU mode
+
+Run with the GPU override file:
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml up --build
+```
+
+Quick runtime check:
+
+```bash
+docker exec -it avsp-embedder-worker-$USER python -c "import torch; print(f'{torch.__version__=};\\n{torch.version.cuda=};\\n{torch.cuda.is_available()=};\\n{torch.cuda.device_count()=}')"
+```
+
+## Storage-only compose profiles
+
+See dedicated guide: [storage/README.md](storage/README.md).
+
+## Helper scripts
+
+- Start stack and auto-run synthetic preprocessing:
+
+```bash
+./docker/server/up_full_with_synth.sh
+```
+
+- Rebuild selected services and start full stack without rebuilding model images:
+
+```bash
+./docker/server/up_full_no_model_rebuild.sh
+```
+
+## Waymo auth inside master container
+
+```bash
+docker exec -it avsp-master-$USER bash
+gcloud auth application-default login
+```
+
+## Run preprocessors from host (inside `master-server` container)
+
+```bash
+docker exec -it avsp-master-$USER python -m backend.processors.argoverse_preprocessor
+docker exec -it avsp-master-$USER python -m backend.processors.waymo_preprocessor
+docker exec -it avsp-master-$USER python -m backend.processors.nuimages_preprocessor
+docker exec -it avsp-master-$USER python -m backend.processors.once_preprocessor --extract --cameras FRONT --step-sec 1.0
+docker exec -it avsp-master-$USER python -m backend.processors.synthetic_preprocessor --num-images 32 --batch-size 8 --bucket synthetic --save-to-db
+```
+
+## Model image development workflow
+
+```bash
+cd docker/models
+./build_docker.sh
+./run_docker.sh
+```
+
+With Jupyter inside the model container:
+
+```bash
+./run_docker.sh --jupyter
 ```

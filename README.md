@@ -1,85 +1,44 @@
-# autonomous-vehicles-search-platform
+# Autonomous Vehicles Search Platform (AVSP)
 
-## Configs
+AVSP is a multimodal retrieval platform for autonomous driving datasets.
+It ingests scene data, generates embeddings and vision-language metadata, and provides search APIs and a web UI for exploration, analytics, and curation workflows.
 
-## Build
+## What AVSP Includes
 
-### Server
+- `master-server` (FastAPI): orchestration, search APIs, and model task routing
+- `storage-server` (Go): object metadata, vector search integration, and analytics endpoints
+- Model workers (Python): embedding and VLM task processing over RabbitMQ
+- Frontend (Next.js): operator UI for search, VLM fields, transfer, and dataset tools
+- Data services: PostgreSQL/pgvector (or Qdrant profile), MinIO, ClickHouse, RabbitMQ
+- Observability: Prometheus, Grafana, cAdvisor
 
-colima start --memory 12 --cpu 4 --disk 100
+## Repository Guide
 
-```
-docker compose -f docker/docker-compose.yml up
-```
+- Docker build/run docs: [docker/BUILDME.md](docker/BUILDME.md)
+- Docker docs index: [docker/README.md](docker/README.md)
+- Storage-only compose profiles: [docker/storage/README.md](docker/storage/README.md)
+- Kubernetes and Helm docs: [deploy/README.md](deploy/README.md)
+- Helm chart docs: [deploy/helm/avsp/README.md](deploy/helm/avsp/README.md)
+- Frontend app source: [`frontend/`](frontend)
+- Backend docs: [backend/README.md](backend/README.md)
+- Backend services and models source: [`backend/`](backend)
+- Storage server source: [`storage/`](storage)
+- Config docs: [configs/README.md](configs/README.md)
+- Dataset/model runtime config source: [`configs/`](configs)
 
-```bash
-# optional: run standalone HTTP model services (embedder/vlm) in addition to RabbitMQ workers
-docker compose -f ./docker-compose.yml --profile model-http up
-```
+## Quick Start
 
-```bash
-# scale queue workers
-docker compose -f docker/docker-compose.yml up -d --scale embedder-worker=2 --scale vlm-worker=2
-```
+For local development with Docker Compose, use the guide in [docker/BUILDME.md](docker/BUILDME.md).
 
-### Storage-only profiles
-```bash
-# pgvector (default)
-docker-compose -f docker/storage/docker-compose.yml up -d --build
+Typical local endpoints after `docker compose` startup:
 
-# qdrant
-docker-compose -f docker/storage/docker-compose.qdrant.yml up -d --build
-```
+- Frontend: `http://localhost:3000`
+- Master API: `http://localhost:9002` (`/health` on the master service)
+- Storage API: `http://localhost:9013`
+- RabbitMQ UI: `http://localhost:15672`
+- Grafana: `http://localhost:3004`
+- Prometheus: `http://localhost:9090`
 
-For Waymo:
-```
-docker exec -it avsp-master-$USER bash
-gcloud auth application-default login
-```
+## Deployment
 
-Run package inside docker container:
-```
-python -m backend.processors.argoverse_preprocessor
-
-python -m backend.processors.waymo_preprocessor
-
-python -m backend.processors.nuimages_preprocessor
-
-python -m backend.processors.once_preprocessor --extract --cameras FRONT --step-sec 1.0
-
-python -m backend.processors.synthetic_preprocessor --num-images 32 --batch-size 8 --bucket synthetic --save-to-db
-```
-
-### Models
-```
-cd docker/models/
-source ./build_docker.sh
-source ./run_docker.sh
-```
- 
- ### Frontend
-
- ```
- cd frontend/
- npm install
- npm run dev
- ```
-Frontend будет доступен на `http://localhost:3001`.
-
-## Helm / k3s
-
-```bash
-./deploy/k3s/deploy_avsp_k3s.sh
-```
-
-```bash
-helm upgrade --install avsp ./deploy/helm/avsp \
-  --namespace avsp --create-namespace \
-  -f ./deploy/helm/avsp/values-k3s.yaml
-```
-
-```bash
-helm -n avsp uninstall avsp
-kubectl -n avsp get pods
-kubectl -n avsp get svc
-```
+For k3s + Helm deployment, start with [deploy/README.md](deploy/README.md).
