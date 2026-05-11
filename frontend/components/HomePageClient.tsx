@@ -61,7 +61,7 @@ const SEARCH_MODE_TABS: Array<{ mode: SearchMode; label: string }> = [
 
 const DEFAULT_UI_SETTINGS: UISettings = {
   showSnapshotSection: true,
-  showSyntheticInAnnotation: true,
+  showSyntheticInAnnotation: false,
   showSearchMeta: false,
   showJobMonitorModels: true,
   showJobMonitorGpu: false,
@@ -232,7 +232,10 @@ export default function HomePageClient({
       let gpuAvailableByDefault = false;
       try {
         const systemInfo = await axios.get("/api/system-info");
-        gpuAvailableByDefault = Boolean(systemInfo.data?.gpu?.available);
+        const gpuPayload = systemInfo.data?.gpu;
+        const hasGpuList = Array.isArray(gpuPayload?.gpus) && gpuPayload.gpus.length > 0;
+        const hasNoGpuError = typeof gpuPayload?.error !== "string" || gpuPayload.error.trim() === "";
+        gpuAvailableByDefault = Boolean(gpuPayload?.available && hasGpuList && hasNoGpuError);
       } catch {
         gpuAvailableByDefault = false;
       }
@@ -532,16 +535,28 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">Show Synthetic Dataset</div>
-                    <div className="text-xs text-slate-500">In annotation preprocessor list</div>
+                    <div className="text-sm font-medium text-slate-800">Show Job Monitor Models</div>
+                    <div className="text-xs text-slate-500">Model runtime block</div>
                   </div>
                   <IOSSwitch
-                    checked={uiSettings.showSyntheticInAnnotation}
+                    checked={uiSettings.showJobMonitorModels}
                     onChange={(next) =>
                       setUiSettings((prev) => ({
                         ...prev,
-                        showSyntheticInAnnotation: next,
+                        showJobMonitorModels: next,
                       }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">Show Job Monitor GPU</div>
+                    <div className="text-xs text-slate-500">GPU host block</div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showJobMonitorGpu}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({ ...prev, showJobMonitorGpu: next }))
                     }
                   />
                 </div>
@@ -559,25 +574,16 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">Show Job Monitor Models</div>
-                    <div className="text-xs text-slate-500">Model runtime block</div>
+                    <div className="text-sm font-medium text-slate-800">Show Synthetic Dataset</div>
+                    <div className="text-xs text-slate-500">In annotation preprocessor list</div>
                   </div>
                   <IOSSwitch
-                    checked={uiSettings.showJobMonitorModels}
+                    checked={uiSettings.showSyntheticInAnnotation}
                     onChange={(next) =>
-                      setUiSettings((prev) => ({ ...prev, showJobMonitorModels: next }))
-                    }
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium text-slate-800">Show Job Monitor GPU</div>
-                    <div className="text-xs text-slate-500">GPU host block</div>
-                  </div>
-                  <IOSSwitch
-                    checked={uiSettings.showJobMonitorGpu}
-                    onChange={(next) =>
-                      setUiSettings((prev) => ({ ...prev, showJobMonitorGpu: next }))
+                      setUiSettings((prev) => ({
+                        ...prev,
+                        showSyntheticInAnnotation: next,
+                      }))
                     }
                   />
                 </div>
