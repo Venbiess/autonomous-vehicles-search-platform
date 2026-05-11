@@ -49,12 +49,11 @@ JOBS_JOB_LOG_TAIL_LINES = 200
 VLM_RESPONSE_TYPES = {"short_text", "text", "yes_no", "number", "category"}
 VLM_RESPONSE_HINTS = {
     "short_text": (
-        "Answer briefly in a single short phrase (2-6 words). "
+        "Answer briefly in a single short phrase. "
         "No explanations, no punctuation-heavy formatting."
     ),
     "text": (
-        "Answer with a detailed description in 2-4 sentences. "
-        "Use plain text only."
+        "Answer with a detailed description in 3-5 sentences."
     ),
     "yes_no": (
         "Answer with exactly one token: Yes or No. "
