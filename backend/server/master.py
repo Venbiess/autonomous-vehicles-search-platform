@@ -1603,6 +1603,8 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
             "parse_warnings_total": 0,
             "parse_warnings_by_field": {},
             "parse_warnings_samples": [],
+            "saved_full_annotations": 0,
+            "saved_partial_annotations": 0,
             "job_log": [],
             "job_log_path": str(JOB_LOG_DIR / f"{job_id}.log"),
             "errors": [],
@@ -1616,6 +1618,8 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
     parse_warnings_total = 0
     parse_warnings_by_field: Dict[str, int] = {}
     parse_warnings_samples: List[Dict[str, str]] = []
+    saved_full_annotations = 0
+    saved_partial_annotations = 0
     parse_warning_log_step = 50
     annotated_object_ids: List[str] = []
     annotated_object_ids_seen: set[str] = set()
@@ -2135,6 +2139,16 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                             if upserted > 0 and object_id not in annotated_object_ids_seen:
                                 annotated_object_ids_seen.add(object_id)
                                 annotated_object_ids.append(object_id)
+                            if upserted > 0:
+                                saved_non_empty_fields = sum(
+                                    1
+                                    for field_name in field_names
+                                    if str(entry["values"].get(field_name, "")).strip()
+                                )
+                                if saved_non_empty_fields >= field_total:
+                                    saved_full_annotations += 1
+                                else:
+                                    saved_partial_annotations += 1
                     elif not entry["failed"]:
                         entry["failed"] = True
                         errors.append(
@@ -2177,6 +2191,8 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                     "parse_warnings_total": int(parse_warnings_total),
                                     "parse_warnings_by_field": dict(parse_warnings_by_field),
                                     "parse_warnings_samples": list(parse_warnings_samples),
+                                    "saved_full_annotations": int(saved_full_annotations),
+                                    "saved_partial_annotations": int(saved_partial_annotations),
                                     "errors": errors,
                                     "field_names": field_names,
                                     "updated_at": time.time(),
@@ -2199,7 +2215,10 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                     (
                                         f"Progress: scenes={total_seen}/{planned_total} ({progress}%), "
                                         f"tasks={completed_tasks}/{total_tasks_planned}, "
-                                        f"annotations_saved={total_inserted}, errors={len(errors)}"
+                                        f"annotations_saved={total_inserted}, "
+                                        f"saved_full={saved_full_annotations}, "
+                                        f"saved_partial={saved_partial_annotations}, "
+                                        f"errors={len(errors)}"
                                     ),
                                 )
                         last_progress_log_bucket = max(last_progress_log_bucket, current_bucket)
@@ -2227,6 +2246,8 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                         "parse_warnings_total": int(parse_warnings_total),
                         "parse_warnings_by_field": dict(parse_warnings_by_field),
                         "parse_warnings_samples": list(parse_warnings_samples),
+                        "saved_full_annotations": int(saved_full_annotations),
+                        "saved_partial_annotations": int(saved_partial_annotations),
                         "errors": errors,
                         "updated_at": time.time(),
                     }
@@ -2251,7 +2272,10 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                         f"Finished with status={final_status.value}, "
                         f"scenes={total_seen}/{planned_total}, "
                         f"tasks={completed_tasks}/{total_tasks_planned}, "
-                        f"annotations_saved={total_inserted}, errors={len(errors)}"
+                        f"annotations_saved={total_inserted}, "
+                        f"saved_full={saved_full_annotations}, "
+                        f"saved_partial={saved_partial_annotations}, "
+                        f"errors={len(errors)}"
                     ),
                 )
     except Exception as exc:
