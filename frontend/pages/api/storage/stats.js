@@ -44,6 +44,74 @@ const STORAGE_LIST_PAGE_LIMIT = Math.max(
 );
 const statsCache = new Map();
 
+function normalizeCategoryKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+    .replace(/[^a-z0-9_]/g, "");
+}
+
+function parseAllowedCategoryLabels(prompt) {
+  const text = String(prompt || "");
+  if (!text.trim()) return [];
+  const lines = text.split(/\r?\n/).map((line) => line.trim());
+  const labels = [];
+  let collect = false;
+
+  const pushLabelsFromLine = (line) => {
+    const cleaned = String(line || "")
+      .replace(/^[-*•]\s*/, "")
+      .replace(/\.$/, "")
+      .trim();
+    if (!cleaned) return;
+    for (const part of cleaned.split(",")) {
+      const token = normalizeCategoryKey(part);
+      if (!token) continue;
+      labels.push(token);
+    }
+  };
+
+  for (const line of lines) {
+    const lowered = line.toLowerCase();
+    if (!collect) {
+      if (!lowered.startsWith("allowed labels")) continue;
+      collect = true;
+      const inline = line.split(":").slice(1).join(":").trim();
+      if (inline) {
+        pushLabelsFromLine(inline);
+      }
+      continue;
+    }
+    if (!line) break;
+    if (/^(definitions?|examples?)\s*:?$/i.test(line)) break;
+    if (/^(if|choose|consider|do not)\b/i.test(line)) break;
+    pushLabelsFromLine(line);
+  }
+
+  return Array.from(new Set(labels));
+}
+
+function isValidByResponseType(responseType, value, allowedCategoryLabels) {
+  const normalizedType = String(responseType || "").trim().toLowerCase();
+  const normalizedValue = String(value ?? "").trim();
+  if (!normalizedValue) return false;
+  if (normalizedType === "yes_no") {
+    const lowered = normalizedValue.toLowerCase();
+    return lowered === "yes" || lowered === "no";
+  }
+  if (normalizedType === "number") {
+    return /^-?\d+(?:[.,]\d+)?$/.test(normalizedValue);
+  }
+  if (normalizedType === "category") {
+    if (!Array.isArray(allowedCategoryLabels) || allowedCategoryLabels.length === 0) {
+      return true;
+    }
+    return allowedCategoryLabels.includes(normalizeCategoryKey(normalizedValue));
+  }
+  return normalizedValue.length > 0;
+}
+
 function chunkArray(values, chunkSize) {
   const out = [];
   for (let i = 0; i < values.length; i += chunkSize) {
@@ -191,7 +259,7 @@ async function buildLiteStats() {
   return stats;
 }
 
-async function buildFullStats() {
+async function buildFullStats({ includeVlmFieldBreakdown = false } = {}) {
   const allObjects = await listStorageObjectsWithTimeout();
   const visibleObjects = filterVisibleObjects(allObjects);
   const stats = buildStorageStats(visibleObjects);
@@ -254,14 +322,42 @@ async function buildFullStats() {
   try {
     const fieldsPayload = await readAnalyticsJson("/fields", ANALYTICS_TIMEOUT_MS);
     const fields = Array.isArray(fieldsPayload?.fields) ? fieldsPayload.fields : [];
-    const fieldNames = fields
-      .map((field) => String(field.field_name || "").trim())
+    const normalizedFields = fields
+      .map((field) => ({
+        field_name: String(field?.field_name || "").trim(),
+        response_type: String(field?.response_type || "").trim(),
+        prompt: String(field?.prompt || ""),
+      }))
+      .filter((field) => field.field_name);
+    const fieldNames = normalizedFields
+      .map((field) => field.field_name)
       .filter(Boolean);
     stats.vlm.configured_fields = fieldNames.length;
 
     if (fieldNames.length > 0 && totalObjects > 0) {
       const completed = new Set();
       const partiallyAnnotated = new Set();
+      const fieldFilledSets = includeVlmFieldBreakdown
+        ? new Map(fieldNames.map((fieldName) => [fieldName, new Set()]))
+        : null;
+      const fieldInvalidSets = includeVlmFieldBreakdown
+        ? new Map(fieldNames.map((fieldName) => [fieldName, new Set()]))
+        : null;
+      const fieldInvalidExamples = includeVlmFieldBreakdown
+        ? new Map(fieldNames.map((fieldName) => [fieldName, new Map()]))
+        : null;
+      const fieldMetaByName = new Map(
+        normalizedFields.map((field) => [
+          field.field_name,
+          {
+            response_type: field.response_type,
+            allowed_labels: parseAllowedCategoryLabels(field.prompt),
+          },
+        ])
+      );
+      let filledCells = 0;
+      let validCells = 0;
+      let invalidCells = 0;
       const objectIDs = visibleObjects.map((item) => item.object_id).filter(Boolean);
       const chunks = chunkArray(objectIDs, 500);
       for (const objectIDsChunk of chunks) {
@@ -302,6 +398,39 @@ async function buildFullStats() {
           if (isComplete) {
             completed.add(objectID);
           }
+          if (fieldFilledSets) {
+            for (const fieldName of fieldNames) {
+              const fieldValue = String(values[fieldName] || "").trim();
+              if (!fieldValue) continue;
+              filledCells += 1;
+              const fieldMeta = fieldMetaByName.get(fieldName) || {};
+              const isValid = isValidByResponseType(
+                fieldMeta.response_type,
+                fieldValue,
+                fieldMeta.allowed_labels
+              );
+              if (isValid) {
+                validCells += 1;
+              } else {
+                invalidCells += 1;
+              }
+              const set = fieldFilledSets.get(fieldName);
+              if (set) {
+                set.add(objectID);
+              }
+              if (!isValid) {
+                const invalidSet = fieldInvalidSets?.get(fieldName);
+                if (invalidSet) {
+                  invalidSet.add(objectID);
+                }
+                const examples = fieldInvalidExamples?.get(fieldName);
+                if (examples) {
+                  const key = fieldValue.slice(0, 120);
+                  examples.set(key, (examples.get(key) || 0) + 1);
+                }
+              }
+            }
+          }
         }
       }
       const fullyAnnotated = Math.max(0, Math.min(totalObjects, completed.size));
@@ -318,6 +447,47 @@ async function buildFullStats() {
         totalObjects > 0 ? (partiallyAnnotatedCount / totalObjects) * 100 : 0;
       stats.vlm.partial_only_rows = partialOnly;
       stats.vlm.partial_only_percent = totalObjects > 0 ? (partialOnly / totalObjects) * 100 : 0;
+      if (fieldFilledSets) {
+        stats.vlm.field_coverage = normalizedFields.map((field) => {
+          const filledRows = Number(fieldFilledSets.get(field.field_name)?.size || 0);
+          const invalidRows = Number(fieldInvalidSets?.get(field.field_name)?.size || 0);
+          const validRows = Math.max(0, filledRows - invalidRows);
+          const missingRows = Math.max(0, totalObjects - filledRows);
+          const invalidExamplesMap = fieldInvalidExamples?.get(field.field_name) || new Map();
+          const invalidExamples = Array.from(invalidExamplesMap.entries())
+            .sort((left, right) => right[1] - left[1])
+            .slice(0, 3)
+            .map(([value, count]) => ({ value, count }));
+          return {
+            field_name: field.field_name,
+            response_type: field.response_type,
+            filled_rows: filledRows,
+            missing_rows: missingRows,
+            valid_rows: validRows,
+            invalid_rows: invalidRows,
+            filled_percent: totalObjects > 0 ? (filledRows / totalObjects) * 100 : 0,
+            missing_percent: totalObjects > 0 ? (missingRows / totalObjects) * 100 : 0,
+            invalid_percent: totalObjects > 0 ? (invalidRows / totalObjects) * 100 : 0,
+            invalid_examples: invalidExamples,
+          };
+        });
+        const totalCells = totalObjects * fieldNames.length;
+        const missingCells = Math.max(0, totalCells - filledCells);
+        stats.vlm.field_coverage_summary = {
+          total_cells: totalCells,
+          filled_cells: filledCells,
+          valid_cells: validCells,
+          invalid_cells: invalidCells,
+          missing_cells: missingCells,
+          filled_percent: totalCells > 0 ? (filledCells / totalCells) * 100 : 0,
+          valid_percent: totalCells > 0 ? (validCells / totalCells) * 100 : 0,
+          invalid_percent: totalCells > 0 ? (invalidCells / totalCells) * 100 : 0,
+          missing_percent: totalCells > 0 ? (missingCells / totalCells) * 100 : 0,
+        };
+      } else {
+        stats.vlm.field_coverage = [];
+        stats.vlm.field_coverage_summary = null;
+      }
     } else {
       stats.vlm.annotated_rows = 0;
       stats.vlm.pending_rows = totalObjects;
@@ -327,8 +497,12 @@ async function buildFullStats() {
       stats.vlm.partial_annotated_percent = 0;
       stats.vlm.partial_only_rows = 0;
       stats.vlm.partial_only_percent = 0;
+      stats.vlm.field_coverage = [];
+      stats.vlm.field_coverage_summary = null;
     }
   } catch (error) {
+    stats.vlm.field_coverage = [];
+    stats.vlm.field_coverage_summary = null;
     warnings.push(`vlm stats unavailable: ${error.message}`);
   }
 
@@ -375,15 +549,25 @@ export default async function handler(req, res) {
       req.query?.include_storage_details,
       true
     );
+    const includeVlmFieldBreakdown = parseBooleanFlag(
+      req.query?.include_vlm_field_breakdown,
+      false
+    );
     const forceRefresh = parseBooleanFlag(
       req.query?.force_refresh ?? req.query?.refresh,
       false
     );
-    const cacheKey = includeStorageDetails ? "full" : "lite";
+    const cacheKey = includeStorageDetails
+      ? includeVlmFieldBreakdown
+        ? "full:vlm_field_breakdown"
+        : "full"
+      : "lite";
     const cacheTtl = includeStorageDetails
       ? STORAGE_STATS_CACHE_TTL_MS
       : STORAGE_STATS_LITE_CACHE_TTL_MS;
-    const loader = includeStorageDetails ? buildFullStats : buildLiteStats;
+    const loader = includeStorageDetails
+      ? () => buildFullStats({ includeVlmFieldBreakdown })
+      : buildLiteStats;
     const stats = forceRefresh
       ? await loader()
       : await getCachedStats(cacheKey, cacheTtl, loader);

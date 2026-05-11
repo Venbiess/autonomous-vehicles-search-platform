@@ -30,6 +30,33 @@ interface VlmStats extends AnnotationStats {
   partial_annotated_percent?: number;
   partial_only_rows?: number;
   partial_only_percent?: number;
+  field_coverage?: VlmFieldCoverageRow[];
+  field_coverage_summary?: VlmFieldCoverageSummary | null;
+}
+
+interface VlmFieldCoverageRow {
+  field_name: string;
+  response_type?: string;
+  filled_rows: number;
+  valid_rows?: number;
+  invalid_rows?: number;
+  missing_rows: number;
+  filled_percent: number;
+  invalid_percent?: number;
+  missing_percent: number;
+  invalid_examples?: Array<{ value: string; count: number }>;
+}
+
+interface VlmFieldCoverageSummary {
+  total_cells: number;
+  filled_cells: number;
+  valid_cells: number;
+  invalid_cells: number;
+  missing_cells: number;
+  filled_percent: number;
+  valid_percent: number;
+  invalid_percent: number;
+  missing_percent: number;
 }
 
 interface BucketStats {
@@ -548,10 +575,195 @@ function PieChart({
   );
 }
 
+function VlmFieldCoverageChart({
+  rows,
+  summary,
+}: {
+  rows: VlmFieldCoverageRow[];
+  summary?: VlmFieldCoverageSummary | null;
+}) {
+  const [showValid, setShowValid] = useState(true);
+  const [showFallback, setShowFallback] = useState(true);
+  const [showMissing, setShowMissing] = useState(false);
+
+  if (!rows.length) {
+    return (
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-slate-900">VLM Field Coverage</h3>
+        <p className="mt-1 text-xs text-slate-500">
+          Разбивка по полям: где чаще всего остаются пропуски.
+        </p>
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+          Данные по полям пока недоступны (нет полей VLM или нет сцен в текущем scope).
+        </div>
+      </div>
+    );
+  }
+  const sortedRows = [...rows].sort((left, right) => {
+    if (right.missing_rows !== left.missing_rows) {
+      return right.missing_rows - left.missing_rows;
+    }
+    return left.field_name.localeCompare(right.field_name);
+  });
+
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+      <h3 className="text-lg font-semibold text-slate-900">VLM Field Coverage</h3>
+      <p className="mt-1 text-xs text-slate-500">
+        По каждому полю: валидные значения, вероятные parse-fallback, пропуски.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2 text-xs">
+        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-1 text-emerald-800">
+          <input
+            type="checkbox"
+            checked={showValid}
+            onChange={(event) => setShowValid(event.target.checked)}
+            className="h-3.5 w-3.5 accent-emerald-600"
+          />
+          valid
+        </label>
+        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-amber-800">
+          <input
+            type="checkbox"
+            checked={showFallback}
+            onChange={(event) => setShowFallback(event.target.checked)}
+            className="h-3.5 w-3.5 accent-amber-600"
+          />
+          fallback
+        </label>
+        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-slate-700">
+          <input
+            type="checkbox"
+            checked={showMissing}
+            onChange={(event) => setShowMissing(event.target.checked)}
+            className="h-3.5 w-3.5 accent-slate-600"
+          />
+          missing
+        </label>
+      </div>
+      {summary ? (
+        <div className="mt-4 grid gap-3 md:grid-cols-4">
+          <div
+            className={`rounded-xl border p-3 ${showValid ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50 opacity-50"}`}
+          >
+            <div className="text-[11px] uppercase tracking-wide text-emerald-700">Valid</div>
+            <div className="mt-1 text-lg font-semibold text-emerald-900">
+              {formatNumber(summary.valid_cells)}
+            </div>
+            <div className="text-xs text-emerald-700">{pct(summary.valid_percent)}</div>
+          </div>
+          <div
+            className={`rounded-xl border p-3 ${showFallback ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50 opacity-50"}`}
+          >
+            <div className="text-[11px] uppercase tracking-wide text-amber-700">
+              Parse fallback (est.)
+            </div>
+            <div className="mt-1 text-lg font-semibold text-amber-900">
+              {formatNumber(summary.invalid_cells)}
+            </div>
+            <div className="text-xs text-amber-700">{pct(summary.invalid_percent)}</div>
+          </div>
+          <div
+            className={`rounded-xl border p-3 ${showMissing ? "border-slate-300 bg-slate-100" : "border-slate-200 bg-slate-50 opacity-50"}`}
+          >
+            <div className="text-[11px] uppercase tracking-wide text-slate-600">Missing</div>
+            <div className="mt-1 text-lg font-semibold text-slate-900">
+              {formatNumber(summary.missing_cells)}
+            </div>
+            <div className="text-xs text-slate-600">{pct(summary.missing_percent)}</div>
+          </div>
+          <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3">
+            <div className="text-[11px] uppercase tracking-wide text-indigo-700">Filled</div>
+            <div className="mt-1 text-lg font-semibold text-indigo-900">
+              {formatNumber(summary.filled_cells)}
+            </div>
+            <div className="text-xs text-indigo-700">{pct(summary.filled_percent)}</div>
+          </div>
+        </div>
+      ) : null}
+      <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        {sortedRows.map((row) => {
+          const filledRows = Number(row.filled_rows || 0);
+          const validRows = Math.max(0, Number(row.valid_rows ?? filledRows));
+          const invalidRows = Math.max(0, Number(row.invalid_rows || 0));
+          const missingRows = Math.max(0, Number(row.missing_rows || 0));
+          const totalRows = Math.max(1, validRows + invalidRows + missingRows);
+          const activeDenominator =
+            (showValid ? validRows : 0) +
+            (showFallback ? invalidRows : 0) +
+            (showMissing ? missingRows : 0);
+          const normalizedDenominator = Math.max(1, activeDenominator);
+          const validWidth = showValid ? (validRows / normalizedDenominator) * 100 : 0;
+          const invalidWidth = showFallback ? (invalidRows / normalizedDenominator) * 100 : 0;
+          const missingWidth = showMissing ? (missingRows / normalizedDenominator) * 100 : 0;
+          const validPctOfAll = (validRows / totalRows) * 100;
+          const invalidPctOfAll = (invalidRows / totalRows) * 100;
+          const missingPctOfAll = (missingRows / totalRows) * 100;
+          return (
+            <div key={row.field_name} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                <div className="font-medium text-slate-800">
+                  {row.field_name}
+                  {row.response_type ? (
+                    <span className="ml-2 text-xs font-normal text-slate-500">
+                      ({row.response_type})
+                    </span>
+                  ) : null}
+                </div>
+                <div className="text-xs text-slate-600">
+                  valid {formatNumber(validRows)} • fallback {formatNumber(invalidRows)} • missing{" "}
+                  {formatNumber(missingRows)}
+                </div>
+              </div>
+              <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-slate-200">
+                <div className="flex h-full w-full">
+                  {showValid ? (
+                    <div
+                      className="h-full bg-emerald-500"
+                      style={{ width: `${validWidth}%` }}
+                    />
+                  ) : null}
+                  {showFallback ? (
+                    <div
+                      className="h-full bg-amber-400"
+                      style={{ width: `${invalidWidth}%` }}
+                    />
+                  ) : null}
+                  {showMissing ? (
+                    <div
+                      className="h-full bg-slate-400"
+                      style={{ width: `${missingWidth}%` }}
+                    />
+                  ) : null}
+                </div>
+              </div>
+              <div className="mt-1 flex flex-wrap justify-between gap-1 text-[11px] text-slate-500">
+                <span>valid: {pct(validPctOfAll)}</span>
+                <span>fallback: {pct(invalidPctOfAll)}</span>
+                <span>missing: {pct(missingPctOfAll)}</span>
+              </div>
+              {Array.isArray(row.invalid_examples) && row.invalid_examples.length > 0 ? (
+                <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                  Примеры:{" "}
+                  {row.invalid_examples
+                    .map((item) => `${item.value || "∅"} (${formatNumber(Number(item.count || 0))})`)
+                    .join(", ")}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function StoragePanel({
   showSnapshotSection = true,
+  showVlmFieldBreakdown = false,
 }: {
   showSnapshotSection?: boolean;
+  showVlmFieldBreakdown?: boolean;
 }) {
   const [stats, setStats] = useState<StorageStatsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -1128,6 +1340,7 @@ export default function StoragePanel({
             params: {
               include_storage_details: includeStorageDetails ? 1 : 0,
               force_refresh: forceRefresh ? 1 : 0,
+              include_vlm_field_breakdown: showVlmFieldBreakdown ? 1 : 0,
             },
           });
           setStats(response.data);
@@ -1167,6 +1380,12 @@ export default function StoragePanel({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!stats) return;
+    loadStats(false, true, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showVlmFieldBreakdown]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1982,6 +2201,9 @@ export default function StoragePanel({
   );
   const vlmRemainingBytes = Math.round(avgImageBytes * stats.vlm.pending_rows);
   const sourceTableMissing = stats.source_table_exists === false;
+  const vlmFieldCoverageRows = Array.isArray(stats.vlm.field_coverage)
+    ? stats.vlm.field_coverage
+    : [];
 
   const rowPalette = [
     "#2563eb",
@@ -2642,6 +2864,13 @@ export default function StoragePanel({
             </div>
           </div>
         </div>
+
+        {showVlmFieldBreakdown && (
+          <VlmFieldCoverageChart
+            rows={vlmFieldCoverageRows}
+            summary={stats.vlm.field_coverage_summary || null}
+          />
+        )}
 
         <div className="grid gap-6 xl:grid-cols-2">
           <PieChart

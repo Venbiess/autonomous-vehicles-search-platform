@@ -76,6 +76,8 @@ export function emptyStorageStats() {
       partial_only_rows: 0,
       partial_only_percent: 0,
       configured_fields: 0,
+      field_coverage: [],
+      field_coverage_summary: null,
     },
     storage: {
       tracked_buckets: [],

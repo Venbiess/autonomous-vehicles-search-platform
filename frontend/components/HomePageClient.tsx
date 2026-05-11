@@ -25,6 +25,7 @@ interface ImageResult {
 
 interface UISettings {
   showSnapshotSection: boolean;
+  showStorageVlmFieldAnalytics: boolean;
   showSyntheticInAnnotation: boolean;
   showSearchMeta: boolean;
   showJobMonitorModels: boolean;
@@ -58,27 +59,36 @@ const SEARCH_MODE_TABS: Array<{ mode: SearchMode; label: string }> = [
 
 const DEFAULT_UI_SETTINGS: UISettings = {
   showSnapshotSection: true,
+  showStorageVlmFieldAnalytics: false,
   showSyntheticInAnnotation: false,
   showSearchMeta: false,
   showJobMonitorModels: true,
   showJobMonitorGpu: false,
 };
 
+function centeredPanelLoader(text: string) {
+  return (
+    <div className="flex min-h-[60vh] items-center justify-center px-4 py-8 text-center text-sm text-gray-500">
+      {text}
+    </div>
+  );
+}
+
 const SystemMonitor = dynamic(() => import("../components/SystemMonitor"), {
   ssr: false,
-  loading: () => <div className="text-sm text-gray-500">Loading Job Monitor...</div>,
+  loading: () => centeredPanelLoader("Loading Job Monitor..."),
 });
 const VlmPanel = dynamic(() => import("../components/VlmPanel"), {
   ssr: false,
-  loading: () => <div className="px-4 py-8 text-sm text-gray-500">Loading VLM...</div>,
+  loading: () => centeredPanelLoader("Loading VLM..."),
 });
 const AnnotationPanel = dynamic(() => import("../components/AnnotationPanel"), {
   ssr: false,
-  loading: () => <div className="px-4 py-8 text-sm text-gray-500">Loading Annotation...</div>,
+  loading: () => centeredPanelLoader("Loading Annotation..."),
 });
 const StoragePanel = dynamic(() => import("../components/StoragePanel"), {
   ssr: false,
-  loading: () => <div className="px-4 py-8 text-sm text-gray-500">Loading Storage...</div>,
+  loading: () => centeredPanelLoader("Loading Storage..."),
 });
 
 function parseStoragePathMeta(storagePath?: string): {
@@ -122,7 +132,7 @@ function IOSSwitch({
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors duration-200 ${
+      className={`relative inline-flex h-7 w-12 min-w-12 shrink-0 items-center rounded-full transition-colors duration-200 ${
         checked ? "bg-emerald-500" : "bg-slate-300"
       }`}
     >
@@ -274,6 +284,10 @@ export default function HomePageClient({
             typeof parsed?.showSnapshotSection === "boolean"
               ? parsed.showSnapshotSection
               : DEFAULT_UI_SETTINGS.showSnapshotSection,
+          showStorageVlmFieldAnalytics:
+            typeof parsed?.showStorageVlmFieldAnalytics === "boolean"
+              ? parsed.showStorageVlmFieldAnalytics
+              : DEFAULT_UI_SETTINGS.showStorageVlmFieldAnalytics,
           showSyntheticInAnnotation:
             typeof parsed?.showSyntheticInAnnotation === "boolean"
               ? parsed.showSyntheticInAnnotation
@@ -576,6 +590,23 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
+                    <div className="text-sm font-medium text-slate-800">Detailed VLM Analytics</div>
+                    <div className="text-xs text-slate-500">
+                      Storage: per-field valid/fallback/missing breakdown
+                    </div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showStorageVlmFieldAnalytics}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({
+                        ...prev,
+                        showStorageVlmFieldAnalytics: next,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
                     <div className="text-sm font-medium text-slate-800">Show Search Metadata</div>
                     <div className="text-xs text-slate-500">Dataset and storage info in result titles</div>
                   </div>
@@ -644,7 +675,10 @@ export default function HomePageClient({
           showSyntheticMethod={uiSettings.showSyntheticInAnnotation}
         />
       ) : searchMode === "STORAGE" ? (
-        <StoragePanel showSnapshotSection={uiSettings.showSnapshotSection} />
+        <StoragePanel
+          showSnapshotSection={uiSettings.showSnapshotSection}
+          showVlmFieldBreakdown={uiSettings.showStorageVlmFieldAnalytics}
+        />
       ) : (
         <>
           <section className="px-4 pb-8 pt-10 sm:px-6 sm:pt-12">
