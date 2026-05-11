@@ -1109,7 +1109,11 @@ export default function StoragePanel({
     };
   }, []);
 
-  const loadStats = async (showLoader = false, includeStorageDetails = true) => {
+  const loadStats = async (
+    showLoader = false,
+    includeStorageDetails = true,
+    forceRefresh = false
+  ) => {
     if (showLoader) {
       setIsLoading(true);
     } else {
@@ -1123,6 +1127,7 @@ export default function StoragePanel({
           const response = await axios.get("/api/storage/stats", {
             params: {
               include_storage_details: includeStorageDetails ? 1 : 0,
+              force_refresh: forceRefresh ? 1 : 0,
             },
           });
           setStats(response.data);
@@ -1491,7 +1496,7 @@ export default function StoragePanel({
           const page = shouldGoPrev ? Math.max(1, objectsPage - 1) : objectsPage;
           if (hasObjectsFilter) {
             await Promise.all([
-              loadStats(false),
+              loadStats(false, true, true),
               loadFilteredObjectsPage(
                 filteredObjectsCursor,
                 filteredObjectsPrevCursors,
@@ -1502,7 +1507,7 @@ export default function StoragePanel({
             ]);
           } else {
             await Promise.all([
-              loadStats(false),
+              loadStats(false, true, true),
               loadObjectsPage(cursor, prevCursors, page),
             ]);
           }
@@ -1544,7 +1549,7 @@ export default function StoragePanel({
           setCleanupStatusMessage(
             `Сброшены embeddings: ${reset} из ${requested} выбранных сцен${shortageNote}${orphanNote}.`
           );
-          await loadStats(false);
+          await loadStats(false, true, true);
         });
       },
     });
@@ -1575,7 +1580,7 @@ export default function StoragePanel({
           setCleanupStatusMessage(
             `Сброшены VLM-аннотации: ${reset} из ${requested} выбранных сцен${shortageNote}.`
           );
-          await loadStats(false);
+          await loadStats(false, true, true);
         });
       },
     });
@@ -1601,7 +1606,7 @@ export default function StoragePanel({
             `Дубликаты обработаны: кандидатов ${candidates}, удалено ${deleted}, ошибок ${failed}.`
           );
           await Promise.all([
-            loadStats(false),
+            loadStats(false, true, true),
             reloadCurrentObjectsView(),
           ]);
         });
@@ -1636,7 +1641,7 @@ export default function StoragePanel({
             `Полное удаление сцен: выбрано ${selected} из ${requested}, удалено ${deleted}, ошибок ${failed}${shortageNote}.`
           );
           await Promise.all([
-            loadStats(false),
+            loadStats(false, true, true),
             reloadCurrentObjectsView(),
           ]);
           if (failed > 0) {
@@ -1710,9 +1715,9 @@ export default function StoragePanel({
             `Датасет '${dataset}' обработан: выбрано ${selected}, удалено ${deletedTotal}, осталось ${remaining}, ошибок ${failedTotal}.`
           );
           if (hasObjectsFilter) {
-            await Promise.all([loadStats(false), reloadCurrentObjectsView()]);
+            await Promise.all([loadStats(false, true, true), reloadCurrentObjectsView()]);
           } else {
-            await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
+            await Promise.all([loadStats(false, true, true), loadObjectsPage("", [], 1)]);
           }
           if (failedTotal > 0 || remaining > 0) {
             setStorageWarningMessage(
@@ -1900,9 +1905,9 @@ export default function StoragePanel({
       setTransferFile(null);
       setTransferFileInputKey((value) => value + 1);
       if (hasObjectsFilter) {
-        await Promise.all([loadStats(false), reloadCurrentObjectsView()]);
+        await Promise.all([loadStats(false, true, true), reloadCurrentObjectsView()]);
       } else {
-        await Promise.all([loadStats(false), loadObjectsPage("", [], 1)]);
+        await Promise.all([loadStats(false, true, true), loadObjectsPage("", [], 1)]);
       }
     }, "snapshot");
 
@@ -1940,7 +1945,7 @@ export default function StoragePanel({
     setIsRefreshing(true);
     try {
       await Promise.all([
-        loadStats(false),
+        loadStats(false, true, true),
         reloadCurrentObjectsView(),
       ]);
     } finally {
@@ -2862,7 +2867,7 @@ export default function StoragePanel({
                                   )
                                 );
                                 await Promise.all([
-                                  loadStats(false),
+                                  loadStats(false, true, true),
                                   reloadCurrentObjectsView(),
                                 ]);
                               }, "storage");
@@ -2963,7 +2968,7 @@ export default function StoragePanel({
                                     visible: !isVisible,
                                   });
                                   await Promise.all([
-                                    loadStats(false),
+                                    loadStats(false, true, true),
                                     reloadCurrentObjectsView(),
                                   ]);
                                 }, "storage");

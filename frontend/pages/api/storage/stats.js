@@ -375,15 +375,25 @@ export default async function handler(req, res) {
       req.query?.include_storage_details,
       true
     );
+    const forceRefresh = parseBooleanFlag(
+      req.query?.force_refresh ?? req.query?.refresh,
+      false
+    );
     const cacheKey = includeStorageDetails ? "full" : "lite";
     const cacheTtl = includeStorageDetails
       ? STORAGE_STATS_CACHE_TTL_MS
       : STORAGE_STATS_LITE_CACHE_TTL_MS;
-    const stats = await getCachedStats(
-      cacheKey,
-      cacheTtl,
-      includeStorageDetails ? buildFullStats : buildLiteStats
-    );
+    const loader = includeStorageDetails ? buildFullStats : buildLiteStats;
+    const stats = forceRefresh
+      ? await loader()
+      : await getCachedStats(cacheKey, cacheTtl, loader);
+    if (forceRefresh) {
+      statsCache.set(cacheKey, {
+        data: stats,
+        expiresAt: Date.now() + cacheTtl,
+        inFlight: null,
+      });
+    }
     return res.status(200).json(stats);
   } catch (error) {
     return res.status(error.status || 500).json(error.payload || { error: error.message });
