@@ -26,6 +26,10 @@ interface AnnotationStats {
 
 interface VlmStats extends AnnotationStats {
   configured_fields: number;
+  partial_annotated_rows?: number;
+  partial_annotated_percent?: number;
+  partial_only_rows?: number;
+  partial_only_percent?: number;
 }
 
 interface BucketStats {
@@ -2605,7 +2609,7 @@ export default function StoragePanel({
             <h3 className="text-lg font-semibold text-slate-900">VLM Annotation</h3>
             <div className="mt-4 text-sm text-slate-700">
               <div className="mb-2 flex justify-between">
-                <span>Размечено</span>
+                <span>Полностью размечено</span>
                 <span className="font-semibold">{pct(stats.vlm.annotated_percent)}</span>
               </div>
               <div className="h-2 w-full rounded-full bg-slate-200">
@@ -2615,7 +2619,16 @@ export default function StoragePanel({
                 />
               </div>
               <div className="mt-3">Осталось: {formatNumber(stats.vlm.pending_rows)}</div>
-              <div>Размечено: {formatNumber(stats.vlm.annotated_rows)}</div>
+              <div>Полностью размечено: {formatNumber(stats.vlm.annotated_rows)}</div>
+              <div>
+                Есть любая VLM разметка:{" "}
+                {formatNumber(Number(stats.vlm.partial_annotated_rows || 0))} (
+                {pct(Number(stats.vlm.partial_annotated_percent || 0))})
+              </div>
+              <div>
+                Частично размечено: {formatNumber(Number(stats.vlm.partial_only_rows || 0))} (
+                {pct(Number(stats.vlm.partial_only_percent || 0))})
+              </div>
               <div>Не размечено: {pct(stats.vlm.pending_percent)}</div>
               <div>Поля VLM: {formatNumber(stats.vlm.configured_fields)}</div>
               <div className="mt-2 text-xs text-slate-500">

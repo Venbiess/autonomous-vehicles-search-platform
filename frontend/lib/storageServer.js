@@ -71,6 +71,10 @@ export function emptyStorageStats() {
       pending_rows: 0,
       annotated_percent: 0,
       pending_percent: 0,
+      partial_annotated_rows: 0,
+      partial_annotated_percent: 0,
+      partial_only_rows: 0,
+      partial_only_percent: 0,
       configured_fields: 0,
     },
     storage: {

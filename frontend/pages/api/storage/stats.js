@@ -261,39 +261,72 @@ async function buildFullStats() {
 
     if (fieldNames.length > 0 && totalObjects > 0) {
       const completed = new Set();
+      const partiallyAnnotated = new Set();
       const objectIDs = visibleObjects.map((item) => item.object_id).filter(Boolean);
       const chunks = chunkArray(objectIDs, 500);
       for (const objectIDsChunk of chunks) {
         const payload = await readAnalyticsJson(
-          "/annotations/completed-object-ids",
+          "/annotations/get",
           ANALYTICS_TIMEOUT_MS,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               object_ids: objectIDsChunk,
-              field_names: fieldNames,
             }),
           }
         );
-        const ids = Array.isArray(payload?.object_ids) ? payload.object_ids : [];
-        for (const id of ids) {
-          if (id) {
-            completed.add(String(id));
+        const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+        for (const row of rows) {
+          const objectID = String(row?.object_id || "").trim();
+          if (!objectID) {
+            continue;
+          }
+          const valuesRaw =
+            row?.values && typeof row.values === "object" && !Array.isArray(row.values)
+              ? row.values
+              : {};
+          const values = {};
+          for (const [key, value] of Object.entries(valuesRaw)) {
+            const normalizedKey = String(key || "").trim();
+            const normalizedValue = String(value ?? "").trim();
+            if (!normalizedKey || !normalizedValue) continue;
+            values[normalizedKey] = normalizedValue;
+          }
+          const valueKeys = Object.keys(values);
+          if (valueKeys.length === 0) {
+            continue;
+          }
+          partiallyAnnotated.add(objectID);
+          const isComplete = fieldNames.every((fieldName) => String(values[fieldName] || "").trim());
+          if (isComplete) {
+            completed.add(objectID);
           }
         }
       }
-      const annotated = Math.max(0, Math.min(totalObjects, completed.size));
-      const pending = Math.max(0, totalObjects - annotated);
-      stats.vlm.annotated_rows = annotated;
+      const fullyAnnotated = Math.max(0, Math.min(totalObjects, completed.size));
+      const partiallyAnnotatedCount = Math.max(0, Math.min(totalObjects, partiallyAnnotated.size));
+      const pending = Math.max(0, totalObjects - fullyAnnotated);
+      const partialOnly = Math.max(0, partiallyAnnotatedCount - fullyAnnotated);
+
+      stats.vlm.annotated_rows = fullyAnnotated;
       stats.vlm.pending_rows = pending;
-      stats.vlm.annotated_percent = totalObjects > 0 ? (annotated / totalObjects) * 100 : 0;
+      stats.vlm.annotated_percent = totalObjects > 0 ? (fullyAnnotated / totalObjects) * 100 : 0;
       stats.vlm.pending_percent = totalObjects > 0 ? (pending / totalObjects) * 100 : 0;
+      stats.vlm.partial_annotated_rows = partiallyAnnotatedCount;
+      stats.vlm.partial_annotated_percent =
+        totalObjects > 0 ? (partiallyAnnotatedCount / totalObjects) * 100 : 0;
+      stats.vlm.partial_only_rows = partialOnly;
+      stats.vlm.partial_only_percent = totalObjects > 0 ? (partialOnly / totalObjects) * 100 : 0;
     } else {
       stats.vlm.annotated_rows = 0;
       stats.vlm.pending_rows = totalObjects;
       stats.vlm.annotated_percent = 0;
       stats.vlm.pending_percent = totalObjects > 0 ? 100 : 0;
+      stats.vlm.partial_annotated_rows = 0;
+      stats.vlm.partial_annotated_percent = 0;
+      stats.vlm.partial_only_rows = 0;
+      stats.vlm.partial_only_percent = 0;
     }
   } catch (error) {
     warnings.push(`vlm stats unavailable: ${error.message}`);
