@@ -2149,6 +2149,19 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                     saved_full_annotations += 1
                                 else:
                                     saved_partial_annotations += 1
+                                    missing_fields = [
+                                        field_name
+                                        for field_name in field_names
+                                        if not str(entry["values"].get(field_name, "")).strip()
+                                    ]
+                                    _log_partial_scene_parse_details(
+                                        entry,
+                                        (
+                                            "saved_partial_after_upsert "
+                                            f"({saved_non_empty_fields}/{field_total}), "
+                                            f"missing={','.join(missing_fields[:20])}"
+                                        ),
+                                    )
                     elif not entry["failed"]:
                         entry["failed"] = True
                         errors.append(
