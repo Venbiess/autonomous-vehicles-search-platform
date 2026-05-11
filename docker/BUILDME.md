@@ -32,6 +32,14 @@ sudo usermod -aG docker $USER
 newgrp docker
 ```
 
+## Run Full Stack (CPU)
+
+From repository root:
+
+```bash
+docker compose -f docker/docker-compose.yml up --build
+```
+
 ## NVIDIA/CUDA runtime for Docker (GPU mode)
 
 Install GPU drivers and NVIDIA Container Toolkit:
@@ -74,6 +82,12 @@ Quick runtime check:
 docker exec -it avsp-embedder-worker-$USER python -c "import torch; print(f'{torch.__version__=};\\n{torch.version.cuda=};\\n{torch.cuda.is_available()=};\\n{torch.cuda.device_count()=}')"
 ```
 
+To build with flash_attention_2
+```
+EMBEDDER_ATTN_IMPLEMENTATION=flash_attention_2 \
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml up --build
+```
+
 ## macOS (Colima)
 
 If you use Colima, start it with enough resources:
@@ -81,11 +95,6 @@ If you use Colima, start it with enough resources:
 ```bash
 colima start --memory 12 --cpu 4 --disk 100
 ```
-
-## Run Full Stack (CPU)
-
-From repository root:
-
 ```bash
 docker compose -f docker/docker-compose.yml up --build
 ```
