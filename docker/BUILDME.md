@@ -37,11 +37,16 @@ newgrp docker
 From repository root:
 
 ```bash
-cd docker
-docker compose -f docker-compose.yml up --build
+docker compose -f docker/docker-compose.yml up --build
 ```
 
-`docker compose` in this directory automatically reads `docker/.env`.
+Env file options when running from repository root:
+- Option A (no extra flags): create root `.env` (use [`.env.example`](../.env.example))
+- Option B: keep env in `docker/.env` and run with:
+
+```bash
+docker compose --env-file docker/.env -f docker/docker-compose.yml up --build
+```
 
 ## NVIDIA/CUDA runtime for Docker (GPU mode)
 
@@ -76,8 +81,7 @@ docker run --rm --gpus all nvidia/cuda:12.3.0-base-ubuntu22.04 nvidia-smi
 Run with the GPU override file:
 
 ```bash
-cd docker
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml up --build
 ```
 
 Quick runtime check:
@@ -89,7 +93,7 @@ docker exec -it avsp-embedder-worker-$USER python -c "import torch; print(f'{tor
 To build with flash_attention_2
 ```
 EMBEDDER_ATTN_IMPLEMENTATION=flash_attention_2 \
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml up --build
 ```
 
 ## macOS (Colima)
@@ -100,8 +104,7 @@ If you use Colima, start it with enough resources:
 colima start --memory 12 --cpu 4 --disk 100
 ```
 ```bash
-cd docker
-docker compose -f docker-compose.yml up --build
+docker compose -f docker/docker-compose.yml up --build
 ```
 
 ## Frontend fixes without image rebuild
@@ -112,8 +115,7 @@ To apply frontend code fixes, image rebuild is not required.
 Use:
 
 ```bash
-cd docker
-docker compose -f docker-compose.yml restart frontend
+docker compose -f docker/docker-compose.yml restart frontend
 ```
 
 What restart does for frontend:
@@ -129,17 +131,20 @@ You can enable a compose dev mode with hot reload for:
 
 Models/workers are unchanged (no reload for embedder/vlm workers).
 
-Set flag in `docker/.env`:
+Set flag in env:
 
 ```bash
 AVSP_DEV_RELOAD=1
 ```
 
+If you run from repository root:
+- either put it in root `.env`
+- or pass `--env-file docker/.env`
+
 Then start as usual:
 
 ```bash
-cd docker
-docker compose -f docker-compose.yml up --build
+docker compose -f docker/docker-compose.yml up --build
 ```
 
 Default is off:
@@ -154,15 +159,13 @@ By default, AVSP uses RabbitMQ workers for model execution.
 You can also run standalone HTTP model services:
 
 ```bash
-cd docker
-docker compose -f docker-compose.yml --profile model-http up
+docker compose -f docker/docker-compose.yml --profile model-http up
 ```
 
 ## Scale workers
 
 ```bash
-cd docker
-docker compose -f docker-compose.yml up \
+docker compose -f docker/docker-compose.yml up \
   --scale embedder-worker=2 \
   --scale vlm-worker=2
 ```

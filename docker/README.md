@@ -13,6 +13,7 @@ This directory contains all Docker-related build and runtime documentation for A
 
 - Main compose stack: [`docker-compose.yml`](docker-compose.yml)
 - GPU override compose: [`docker-compose.gpu.yml`](docker-compose.gpu.yml)
+- Root compose env example (for run-from-root): [`../.env.example`](../.env.example)
 - Compose env overrides template: [`.env.example`](.env.example)
 - Frontend k8s Dockerfile: [`frontend/frontend.k8s.Dockerfile`](frontend/frontend.k8s.Dockerfile)
 - Model image build/runtime scripts: [`models/`](models)

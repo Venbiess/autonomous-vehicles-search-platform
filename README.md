@@ -30,6 +30,7 @@ It ingests scene data, generates embeddings and vision-language metadata, and pr
 ## Quick Start
 
 For local development with Docker Compose, use the guide in [docker/BUILDME.md](docker/BUILDME.md).
+If you run compose from repository root, use root `.env` (see [`.env.example`](.env.example)) or pass `--env-file docker/.env`.
 
 Typical local endpoints after `docker compose` startup:
 
