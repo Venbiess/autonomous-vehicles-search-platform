@@ -48,11 +48,26 @@ JOBS_JOB_LOG_TAIL_LINES = 200
 
 VLM_RESPONSE_TYPES = {"short_text", "text", "yes_no", "number", "category"}
 VLM_RESPONSE_HINTS = {
-    "short_text": "Answer briefly in a single short phrase. Do not explain.",
-    "text": "Answer with a detailed description in 2-4 sentences.",
-    "yes_no": "Answer with exactly one token: Yes or No.",
-    "number": "Answer with a single integer number only.",
-    "category": "Answer with a single short category label only.",
+    "short_text": (
+        "Answer briefly in a single short phrase (2-6 words). "
+        "No explanations, no punctuation-heavy formatting."
+    ),
+    "text": (
+        "Answer with a detailed description in 2-4 sentences. "
+        "Use plain text only."
+    ),
+    "yes_no": (
+        "Answer with exactly one token: Yes or No. "
+        "Do not add any extra words."
+    ),
+    "number": (
+        "Answer with exactly one integer number only, for example: 0, 1, 2. "
+        "Do not add units or text."
+    ),
+    "category": (
+        "Answer with exactly one category label from the allowed list. "
+        "Do not add explanations or extra words."
+    ),
 }
 
 
@@ -342,34 +357,51 @@ def _build_vlm_prompt(prompt: str, response_type: str) -> str:
     return f"{prompt.strip()}\n\nFormat requirement: {suffix}"
 
 
-def _normalize_vlm_response(response_text: str, response_type: str) -> str:
-    value = response_text.strip()
+def _normalize_vlm_response(response_text: str, response_type: str) -> Tuple[str, bool, str]:
+    raw = str(response_text or "")
+    value = raw.strip()
     if response_type == "yes_no":
         lowered = value.lower()
-        if "yes" in lowered:
-            return "Yes"
-        if "no" in lowered:
-            return "No"
+        if re.search(r"\byes\b", lowered):
+            return "Yes", True, ""
+        if re.search(r"\bno\b", lowered):
+            return "No", True, ""
+        if re.search(r"\bда\b", lowered):
+            return "Yes", True, ""
+        if re.search(r"\bнет\b", lowered):
+            return "No", True, ""
         cleaned = re.sub(r"[^a-zA-Z]", "", value)
         if cleaned.lower().startswith("yes"):
-            return "Yes"
+            return "Yes", True, ""
         if cleaned.lower().startswith("no"):
-            return "No"
-        return cleaned or value
+            return "No", True, ""
+        fallback = (value or raw).strip()
+        return fallback, False, "yes_no_parse_failed_fallback_raw"
 
     if response_type == "number":
         match = re.search(r"-?\d+(?:[.,]\d+)?", value)
         if match:
-            return match.group(0).replace(",", ".")
+            return match.group(0).replace(",", "."), True, ""
         cleaned = re.sub(r"[^\d\-.,]", "", value)
-        return cleaned
+        cleaned = cleaned.strip()
+        if cleaned:
+            return cleaned, True, ""
+        fallback = (value or raw).strip()
+        return fallback, False, "number_parse_failed_fallback_raw"
 
     if response_type == "category":
-        value = re.sub(r"[^\w\s-]", "", value, flags=re.UNICODE)
-        value = re.sub(r"\s+", " ", value).strip()
-        return value
+        cleaned = re.sub(r"[^\w\s-]", "", value, flags=re.UNICODE)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if cleaned:
+            return cleaned, True, ""
+        fallback = (value or raw).strip()
+        return fallback, False, "category_parse_failed_fallback_raw"
 
-    return value
+    normalized = value
+    if normalized:
+        return normalized, True, ""
+    fallback = (value or raw).strip()
+    return fallback, False, "text_parse_failed_fallback_raw"
 
 
 def _validate_existing_vlm_fields(field_names: List[str]) -> List[Dict[str, str]]:
@@ -1569,6 +1601,9 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
             "current_scene_tasks_total": 0,
             "current_scene_index": 0,
             "field_names": payload.field_names,
+            "parse_warnings_total": 0,
+            "parse_warnings_by_field": {},
+            "parse_warnings_samples": [],
             "job_log": [],
             "job_log_path": str(JOB_LOG_DIR / f"{job_id}.log"),
             "errors": [],
@@ -1579,6 +1614,10 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
     total_seen = 0
     total_inserted = 0
     errors = []
+    parse_warnings_total = 0
+    parse_warnings_by_field: Dict[str, int] = {}
+    parse_warnings_samples: List[Dict[str, str]] = []
+    parse_warning_log_step = 50
     annotated_object_ids: List[str] = []
     annotated_object_ids_seen: set[str] = set()
     last_progress_log_bucket = -1
@@ -1854,10 +1893,50 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                 if entry["failed"]:
                                     break
                                 try:
-                                    entry["values"][field["field_name"]] = _normalize_vlm_response(
+                                    normalized_value, parsed_ok, parse_note = _normalize_vlm_response(
                                         response_text,
                                         field["response_type"],
                                     )
+                                    entry["values"][field["field_name"]] = normalized_value
+                                    if not parsed_ok:
+                                        parse_warnings_total += 1
+                                        warning_key = (
+                                            f"{field['field_name']}[{field['response_type']}]::{parse_note or 'fallback'}"
+                                        )
+                                        parse_warnings_by_field[warning_key] = (
+                                            int(parse_warnings_by_field.get(warning_key, 0)) + 1
+                                        )
+                                        if len(parse_warnings_samples) < 30:
+                                            parse_warnings_samples.append(
+                                                {
+                                                    "object_id": str(entry["object_id"]),
+                                                    "field_name": str(field["field_name"]),
+                                                    "response_type": str(field["response_type"]),
+                                                    "normalized_value": normalized_value[:200],
+                                                    "raw_response": str(response_text)[:500],
+                                                    "note": parse_note or "fallback",
+                                                }
+                                            )
+                                        if parse_warnings_total % parse_warning_log_step == 0:
+                                            with jobs_lock:
+                                                if job_id in jobs_store:
+                                                    jobs_store[job_id].update(
+                                                        {
+                                                            "parse_warnings_total": int(parse_warnings_total),
+                                                            "parse_warnings_by_field": dict(parse_warnings_by_field),
+                                                            "parse_warnings_samples": list(parse_warnings_samples),
+                                                            "updated_at": time.time(),
+                                                        }
+                                                    )
+                                                    _append_job_log(
+                                                        jobs_store[job_id],
+                                                        (
+                                                            "VLM parse fallback used "
+                                                            f"{parse_warnings_total} times "
+                                                            f"(latest: object_id={entry['object_id']}, "
+                                                            f"field={field['field_name']}, note={parse_note})"
+                                                        ),
+                                                    )
                                     entry["scene_tasks_completed"] += 1
                                     completed_tasks += 1
                                     with jobs_lock:
@@ -1871,6 +1950,9 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                                         "scene_tasks_completed"
                                                     ],
                                                     "current_scene_tasks_total": field_total,
+                                                    "parse_warnings_total": int(parse_warnings_total),
+                                                    "parse_warnings_by_field": dict(parse_warnings_by_field),
+                                                    "parse_warnings_samples": list(parse_warnings_samples),
                                                     "updated_at": time.time(),
                                                 }
                                             )
@@ -1908,10 +1990,50 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                         field_name=field["field_name"],
                                         object_id=entry["object_id"],
                                     )
-                                    entry["values"][field["field_name"]] = _normalize_vlm_response(
+                                    normalized_value, parsed_ok, parse_note = _normalize_vlm_response(
                                         response_text,
                                         field["response_type"],
                                     )
+                                    entry["values"][field["field_name"]] = normalized_value
+                                    if not parsed_ok:
+                                        parse_warnings_total += 1
+                                        warning_key = (
+                                            f"{field['field_name']}[{field['response_type']}]::{parse_note or 'fallback'}"
+                                        )
+                                        parse_warnings_by_field[warning_key] = (
+                                            int(parse_warnings_by_field.get(warning_key, 0)) + 1
+                                        )
+                                        if len(parse_warnings_samples) < 30:
+                                            parse_warnings_samples.append(
+                                                {
+                                                    "object_id": str(entry["object_id"]),
+                                                    "field_name": str(field["field_name"]),
+                                                    "response_type": str(field["response_type"]),
+                                                    "normalized_value": normalized_value[:200],
+                                                    "raw_response": str(response_text)[:500],
+                                                    "note": parse_note or "fallback",
+                                                }
+                                            )
+                                        if parse_warnings_total % parse_warning_log_step == 0:
+                                            with jobs_lock:
+                                                if job_id in jobs_store:
+                                                    jobs_store[job_id].update(
+                                                        {
+                                                            "parse_warnings_total": int(parse_warnings_total),
+                                                            "parse_warnings_by_field": dict(parse_warnings_by_field),
+                                                            "parse_warnings_samples": list(parse_warnings_samples),
+                                                            "updated_at": time.time(),
+                                                        }
+                                                    )
+                                                    _append_job_log(
+                                                        jobs_store[job_id],
+                                                        (
+                                                            "VLM parse fallback used "
+                                                            f"{parse_warnings_total} times "
+                                                            f"(latest: object_id={entry['object_id']}, "
+                                                            f"field={field['field_name']}, note={parse_note})"
+                                                        ),
+                                                    )
                                     entry["scene_tasks_completed"] += 1
                                     completed_tasks += 1
                                     with jobs_lock:
@@ -1925,6 +2047,9 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                                         "scene_tasks_completed"
                                                     ],
                                                     "current_scene_tasks_total": field_total,
+                                                    "parse_warnings_total": int(parse_warnings_total),
+                                                    "parse_warnings_by_field": dict(parse_warnings_by_field),
+                                                    "parse_warnings_samples": list(parse_warnings_samples),
                                                     "updated_at": time.time(),
                                                 }
                                             )
@@ -1986,6 +2111,9 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                     "current_scene_index": display_scene_index,
                                     "current_scene_tasks_completed": display_scene_tasks_completed,
                                     "current_scene_tasks_total": field_total,
+                                    "parse_warnings_total": int(parse_warnings_total),
+                                    "parse_warnings_by_field": dict(parse_warnings_by_field),
+                                    "parse_warnings_samples": list(parse_warnings_samples),
                                     "errors": errors,
                                     "field_names": field_names,
                                     "updated_at": time.time(),
@@ -2033,10 +2161,27 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                         "total_tasks_planned": total_tasks_planned,
                         "current_scene_tasks_completed": 0,
                         "current_scene_tasks_total": 0,
+                        "parse_warnings_total": int(parse_warnings_total),
+                        "parse_warnings_by_field": dict(parse_warnings_by_field),
+                        "parse_warnings_samples": list(parse_warnings_samples),
                         "errors": errors,
                         "updated_at": time.time(),
                     }
                 )
+                if parse_warnings_total > 0:
+                    top_parse_items = sorted(
+                        parse_warnings_by_field.items(),
+                        key=lambda item: int(item[1]),
+                        reverse=True,
+                    )[:5]
+                    _append_job_log(
+                        jobs_store[job_id],
+                        (
+                            f"Parse fallback summary: total={parse_warnings_total}, "
+                            "top="
+                            + ", ".join([f"{name}:{count}" for name, count in top_parse_items])
+                        ),
+                    )
                 _append_job_log(
                     jobs_store[job_id],
                     (
