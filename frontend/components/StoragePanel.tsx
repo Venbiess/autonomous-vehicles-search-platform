@@ -146,7 +146,7 @@ const SNAPSHOT_ACTION_IDS = [
   "download-vlm",
   "import-snapshot",
 ] as const;
-const OBJECT_BROWSER_ROW_HEIGHT_PX = 58;
+const OBJECT_BROWSER_ROW_HEIGHT_PX = 64;
 const OBJECT_BROWSER_VIRTUAL_OVERSCAN_ROWS = 6;
 
 type SnapshotActionId = (typeof SNAPSHOT_ACTION_IDS)[number];
@@ -2423,15 +2423,15 @@ export default function StoragePanel({
             </div>
           </div>
 
-          <div ref={objectBrowserViewportRef} className="mt-5 max-h-[65vh] overflow-auto">
-            <table className="min-w-full divide-y divide-slate-200">
+          <div ref={objectBrowserViewportRef} className="mt-5 h-[65vh] overflow-auto">
+            <table className="min-w-full w-full table-fixed divide-y divide-slate-200">
               <thead className="bg-slate-50">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Object ID</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Bucket / Key</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Size</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Created</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Actions</th>
+                  <th className="w-[16rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Object ID</th>
+                  <th className="w-[45%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Bucket / Key</th>
+                  <th className="w-[8rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Size</th>
+                  <th className="w-[13rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Created</th>
+                  <th className="w-[16rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
@@ -2455,18 +2455,26 @@ export default function StoragePanel({
                   </tr>
                 )}
                 {visibleObjectRows.map((item) => (
-                  <tr key={item.object_id}>
-                    <td className="px-4 py-3 text-xs text-slate-800">{item.object_id}</td>
-                    <td className="px-4 py-3 text-sm text-slate-700">
-                      <div className="font-medium">{item.bucket}</div>
-                      <div className="text-xs text-slate-500 break-all">{item.key}</div>
+                  <tr key={item.object_id} className="h-16">
+                    <td className="px-4 py-2 text-xs text-slate-800 align-middle">
+                      <div className="truncate" title={item.object_id}>
+                        {item.object_id}
+                      </div>
                     </td>
-                    <td className="px-4 py-3 text-sm text-slate-700">{formatBytes(item.size_bytes)}</td>
-                    <td className="px-4 py-3 text-sm text-slate-700">
+                    <td className="px-4 py-2 text-sm text-slate-700 align-middle">
+                      <div className="truncate font-medium" title={item.bucket}>
+                        {item.bucket}
+                      </div>
+                      <div className="truncate text-xs text-slate-500" title={item.key}>
+                        {item.key}
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 text-sm text-slate-700 align-middle">{formatBytes(item.size_bytes)}</td>
+                    <td className="px-4 py-2 text-sm text-slate-700 align-middle">
                       {item.created_at ? new Date(item.created_at).toLocaleString("ru-RU") : "-"}
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
+                    <td className="px-4 py-2 align-middle">
+                      <div className="flex items-center gap-2 whitespace-nowrap">
                         <button
                           type="button"
                           onClick={() => setPreviewObjectId(item.object_id)}
