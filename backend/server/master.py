@@ -1621,6 +1621,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
     annotated_object_ids_seen: set[str] = set()
     last_progress_log_bucket = -1
     last_progress_log_at = time.monotonic()
+    partial_scene_parse_log_limit = 30
 
     try:
         timeout = httpx.Timeout(VLM_TIMEOUT_SEC)
@@ -1718,6 +1719,40 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                         ),
                     )
 
+        def _log_partial_scene_parse_details(entry: Dict[str, Any], reason: str) -> None:
+            parse_items = entry.get("parse_failed_fields")
+            if not isinstance(parse_items, list) or not parse_items:
+                return
+            object_id = str(entry.get("object_id") or "").strip()
+            scene_index = int(entry.get("scene_index") or 0)
+            with jobs_lock:
+                job = jobs_store.get(job_id)
+                if not job:
+                    return
+                _append_job_log(
+                    job,
+                    (
+                        "Partial scene parse details: "
+                        f"object_id={object_id or '<unknown>'}, "
+                        f"scene={scene_index}, reason={reason}, "
+                        f"items={len(parse_items)}"
+                    ),
+                )
+                for item in parse_items[:partial_scene_parse_log_limit]:
+                    field_name = str(item.get("field_name") or "").strip() or "<unknown>"
+                    response_type = str(item.get("response_type") or "").strip() or "<unknown>"
+                    note = str(item.get("note") or "").strip() or "fallback"
+                    raw_response = str(item.get("raw_response") or "").replace("\n", "\\n").strip()
+                    normalized_value = str(item.get("normalized_value") or "").replace("\n", "\\n").strip()
+                    _append_job_log(
+                        job,
+                        (
+                            "  parse_failed: "
+                            f"field={field_name}, type={response_type}, note={note}, "
+                            f"raw={raw_response[:260]}, normalized={normalized_value[:260]}"
+                        ),
+                    )
+
         with jobs_lock:
             if job_id in jobs_store:
                 jobs_store[job_id].update(
@@ -1778,6 +1813,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                 "scene_index": scene_index,
                                 "values": {},
                                 "scene_tasks_completed": 0,
+                                "parse_failed_fields": [],
                                 "failed": False,
                             }
                         )
@@ -1899,6 +1935,17 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                     entry["values"][field["field_name"]] = normalized_value
                                     if not parsed_ok:
                                         parse_warnings_total += 1
+                                        parse_failed_fields = entry.get("parse_failed_fields")
+                                        if isinstance(parse_failed_fields, list):
+                                            parse_failed_fields.append(
+                                                {
+                                                    "field_name": str(field["field_name"]),
+                                                    "response_type": str(field["response_type"]),
+                                                    "note": parse_note or "fallback",
+                                                    "raw_response": str(response_text)[:500],
+                                                    "normalized_value": normalized_value[:200],
+                                                }
+                                            )
                                         warning_key = (
                                             f"{field['field_name']}[{field['response_type']}]::{parse_note or 'fallback'}"
                                         )
@@ -1996,6 +2043,17 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                     entry["values"][field["field_name"]] = normalized_value
                                     if not parsed_ok:
                                         parse_warnings_total += 1
+                                        parse_failed_fields = entry.get("parse_failed_fields")
+                                        if isinstance(parse_failed_fields, list):
+                                            parse_failed_fields.append(
+                                                {
+                                                    "field_name": str(field["field_name"]),
+                                                    "response_type": str(field["response_type"]),
+                                                    "note": parse_note or "fallback",
+                                                    "raw_response": str(response_text)[:500],
+                                                    "normalized_value": normalized_value[:200],
+                                                }
+                                            )
                                         warning_key = (
                                             f"{field['field_name']}[{field['response_type']}]::{parse_note or 'fallback'}"
                                         )
@@ -2088,6 +2146,12 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                 ),
                             }
                         )
+                        _log_partial_scene_parse_details(
+                            entry,
+                            f"incomplete_values_{scene_tasks_completed}_of_{field_total}",
+                        )
+                    elif entry["failed"]:
+                        _log_partial_scene_parse_details(entry, "scene_failed")
                     total_seen += 1
                     progress = min(int((total_seen / max(len(object_ids), 1)) * 100), 100)
                     next_scene_index = min(total_seen + 1, len(object_ids))
