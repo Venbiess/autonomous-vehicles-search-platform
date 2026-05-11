@@ -2423,7 +2423,7 @@ export default function StoragePanel({
             </div>
           </div>
 
-          <div ref={objectBrowserViewportRef} className="mt-5 h-[65vh] overflow-auto">
+          <div ref={objectBrowserViewportRef} className="mt-5 max-h-[65vh] overflow-auto">
             <table className="min-w-full w-full table-fixed divide-y divide-slate-200">
               <thead className="bg-slate-50">
                 <tr>
