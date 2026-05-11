@@ -239,6 +239,7 @@ services:
       RABBITMQ_PREFETCH: 1
       RABBITMQ_HEARTBEAT_SEC: 900
       RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SEC: 960
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     networks:
       - avsp-net
 
