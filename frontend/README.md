@@ -1,36 +1,84 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AVSP Frontend
 
-## Getting Started
+This frontend is the operator UI for **Autonomous Vehicles Search Platform (AVSP)**.
+It provides a single web interface for search, VLM workflows, storage operations, and runtime observability.
 
-First, run the development server:
+## What This UI Does in AVSP
+
+- Multimodal search:
+  - text-to-image search
+  - image-to-image search
+- VLM workflow:
+  - define VLM fields/schema
+  - run VLM backfill jobs
+  - filter/search by VLM annotations
+- Storage operations:
+  - dataset visibility toggles
+  - object/embedding cleanup actions
+  - import/export snapshots and transfer progress
+- Runtime monitoring:
+  - model/system info
+  - job status and job logs
+
+## Frontend Architecture
+
+- Next.js app with React UI components
+- Hybrid routing:
+  - `app/` for page shell (`app/page.tsx`)
+  - `pages/api/` for server-side proxy and orchestration endpoints
+- Custom Node entrypoint: `server.js`
+  - supports configurable host/port
+  - supports request timeout via env
+
+## AVSP Integration Model
+
+The browser talks to frontend API routes (`/api/*`), and those routes call AVSP backend services:
+
+- `MASTER_ENDPOINT` (default `http://localhost:9002`): search, VLM, jobs, system-info
+- `STORAGE_SERVER_ENDPOINT` (default `http://localhost:9013`): object/vector/storage operations
+- `ANALYTICS_SERVER_ENDPOINT` (optional): analytics/annotation reads (falls back to storage endpoint in some routes)
+
+This keeps backend topology and tokens on the server side, not in browser code.
+
+## Key API Route Groups
+
+- `pages/api/search.js`: text/image search proxy + result normalization
+- `pages/api/vlm/*`: VLM schema/backfill/search/clear endpoints
+- `pages/api/storage/*`: storage stats, dataset visibility, cleanup, transfer
+- `pages/api/jobs/*`: list/cancel/retry job execution
+- `pages/api/system-info.js`: system and model runtime status
+- `pages/api/waymo/auth/*`: Waymo auth flow helpers
+
+## Environment Variables
+
+Common runtime variables used by AVSP frontend:
+
+- `MASTER_ENDPOINT`
+- `MASTER_PROXY_TIMEOUT_MS`
+- `STORAGE_SERVER_ENDPOINT`
+- `ANALYTICS_SERVER_ENDPOINT`
+- `STORAGE_WRITE_TOKEN`
+- `MINIO_PUBLIC_ENDPOINT`
+- `MINIO_BUCKET`
+- `FRONTEND_REQUEST_TIMEOUT_MS`
+
+See `docker/docker-compose.yml` for current defaults used in local stack.
+
+## Local Development
+
+From repository root:
 
 ```bash
+cd frontend
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Default local URL:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- `http://localhost:3000`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Docker Runtime Notes
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- In local Docker Compose, frontend runs in dev mode with bind mounts and hot reload.
+- In Kubernetes/k3s flows, frontend is packaged with `docker/frontend/frontend.k8s.Dockerfile` and runs as a production build.

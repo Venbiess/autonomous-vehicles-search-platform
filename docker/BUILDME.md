@@ -60,6 +60,20 @@ Validation:
 docker run --rm --gpus all nvidia/cuda:12.3.0-base-ubuntu22.04 nvidia-smi
 ```
 
+## GPU mode
+
+Run with the GPU override file:
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml up --build
+```
+
+Quick runtime check:
+
+```bash
+docker exec -it avsp-embedder-worker-$USER python -c "import torch; print(f'{torch.__version__=};\\n{torch.version.cuda=};\\n{torch.cuda.is_available()=};\\n{torch.cuda.device_count()=}')"
+```
+
 ## macOS (Colima)
 
 If you use Colima, start it with enough resources:
@@ -91,20 +105,6 @@ docker compose -f docker/docker-compose.yml --profile model-http up
 docker compose -f docker/docker-compose.yml up \
   --scale embedder-worker=2 \
   --scale vlm-worker=2
-```
-
-## GPU mode
-
-Run with the GPU override file:
-
-```bash
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml up --build
-```
-
-Quick runtime check:
-
-```bash
-docker exec -it avsp-embedder-worker-$USER python -c "import torch; print(f'{torch.__version__=};\\n{torch.version.cuda=};\\n{torch.cuda.is_available()=};\\n{torch.cuda.device_count()=}')"
 ```
 
 ## Storage-only compose profiles
