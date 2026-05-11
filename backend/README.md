@@ -38,6 +38,7 @@ This directory contains AVSP application logic: API orchestration, model executi
 - Dataset visibility is controlled by `/app/storage/config/dataset_visibility.json` via `server/dataset_visibility.py`.
 - Write operations to storage/analytics use `X-Storage-Write-Token` when configured.
 - Service endpoints/timeouts are sourced from `configs/common.py` (with env-driven overrides).
+- Runtime env reference is documented in `configs/ENVIRONMENT.md`.
 
 ## Entrypoints
 

@@ -6,6 +6,7 @@ This directory contains runtime and dataset configuration used by AVSP backend s
 
 - `common.py`: shared runtime settings (service endpoints, DB/S3 credentials, dataset list)
 - `hw_settings.py`: model runtime settings (device, backend, dtype, model names)
+- `ENVIRONMENT.md`: centralized environment variable catalog (defaults, scope, and where to set)
 - `waymo.py`, `argoverse.py`, `once.py`, `nuscenes.py`: dataset-specific defaults
 
 ## Important Logic
@@ -29,5 +30,6 @@ This directory contains runtime and dataset configuration used by AVSP backend s
 ## Practical Notes
 
 - For containerized runs, prefer changing endpoint/credentials via environment variables in compose/helm, not by editing `common.py` defaults.
+- For a full runtime env reference, use [`ENVIRONMENT.md`](ENVIRONMENT.md).
 - Keep secrets out of git-managed config files.
 - If you change model backends or dtype settings, validate both worker startup and inference endpoints after restart.

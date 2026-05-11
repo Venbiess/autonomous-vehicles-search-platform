@@ -23,9 +23,13 @@ from configs.common import (
     ANALYTICS_SERVER_TIMEOUT_SEC,
     EMBEDDER_ENDPOINT,
     EMBEDDER_TIMEOUT_SEC,
+    MODEL_BACKEND_READY_POLL_SEC,
+    MODEL_BACKEND_READY_WAIT_SEC,
     STORAGE_SERVER_ENDPOINT,
     STORAGE_SERVER_TIMEOUT_SEC,
     STORAGE_WRITE_TOKEN,
+    VLM_BACKFILL_FIELD_CHUNK_SIZE,
+    VLM_RETRY_EMPTY_VALUES,
     VLM_ENDPOINT,
     VLM_TIMEOUT_SEC,
 )
@@ -378,6 +382,9 @@ def _normalize_vlm_response(response_text: str, response_type: str) -> Tuple[str
         return fallback, False, "yes_no_parse_failed_fallback_raw"
 
     if response_type == "number":
+        lowered = value.lower()
+        if lowered in {"o", "о"}:  # latin/cyrillic letter that often appears instead of zero
+            return "0", True, "number_letter_o_coerced_to_zero"
         match = re.search(r"-?\d+(?:[.,]\d+)?", value)
         if match:
             return match.group(0).replace(",", "."), True, ""
@@ -722,8 +729,14 @@ def _search_dependencies_ready(
     require_vlm: bool = True,
     allow_embedder_http_fallback: bool = False,
 ) -> tuple[bool, str]:
-    wait_timeout_sec = max(0.0, float(os.getenv("MODEL_BACKEND_READY_WAIT_SEC", "45")))
-    poll_interval_sec = max(0.1, float(os.getenv("MODEL_BACKEND_READY_POLL_SEC", "1")))
+    wait_timeout_sec = max(
+        0.0,
+        float(os.getenv("MODEL_BACKEND_READY_WAIT_SEC", str(MODEL_BACKEND_READY_WAIT_SEC))),
+    )
+    poll_interval_sec = max(
+        0.1,
+        float(os.getenv("MODEL_BACKEND_READY_POLL_SEC", str(MODEL_BACKEND_READY_POLL_SEC))),
+    )
 
     def _embedder_http_ready() -> bool:
         endpoint = str(EMBEDDER_ENDPOINT or "").strip().rstrip("/")
@@ -1626,6 +1639,27 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
     last_progress_log_bucket = -1
     last_progress_log_at = time.monotonic()
     partial_scene_parse_log_limit = 30
+    retry_empty_values_raw = str(
+        os.getenv(
+            "VLM_RETRY_EMPTY_VALUES",
+            "1" if bool(VLM_RETRY_EMPTY_VALUES) else "0",
+        )
+    ).strip().lower()
+    retry_empty_values = retry_empty_values_raw not in {"0", "false", "no", "off"}
+    field_chunk_size_raw = str(
+        os.getenv(
+            "VLM_BACKFILL_FIELD_CHUNK_SIZE",
+            str(VLM_BACKFILL_FIELD_CHUNK_SIZE),
+        )
+    ).strip()
+    try:
+        field_chunk_size_env = int(field_chunk_size_raw)
+    except ValueError:
+        field_chunk_size_env = int(VLM_BACKFILL_FIELD_CHUNK_SIZE)
+    field_chunk_size_override = max(
+        1,
+        field_chunk_size_env if field_chunk_size_env > 0 else int(payload.batch_size),
+    )
 
     try:
         timeout = httpx.Timeout(VLM_TIMEOUT_SEC)
@@ -1746,8 +1780,8 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                     field_name = str(item.get("field_name") or "").strip() or "<unknown>"
                     response_type = str(item.get("response_type") or "").strip() or "<unknown>"
                     note = str(item.get("note") or "").strip() or "fallback"
-                    raw_response = str(item.get("raw_response") or "").replace("\n", "\\n").strip()
-                    normalized_value = str(item.get("normalized_value") or "").replace("\n", "\\n").strip()
+                    raw_response = repr(str(item.get("raw_response") or ""))
+                    normalized_value = repr(str(item.get("normalized_value") or ""))
                     _append_job_log(
                         job,
                         (
@@ -1756,6 +1790,58 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                             f"raw={raw_response[:260]}, normalized={normalized_value[:260]}"
                         ),
                     )
+
+        def _effective_max_new_tokens_for_response_type(response_type: str) -> int:
+            base = int(payload.max_new_tokens)
+            normalized_type = str(response_type or "").strip().lower()
+            minimum = {
+                "yes_no": 4,
+                "number": 4,
+                "category": 8,
+                "short_text": 16,
+                "text": 32,
+            }.get(normalized_type, 8)
+            return max(base, minimum)
+
+        def _normalize_with_retry_if_empty(
+            *,
+            client: httpx.Client,
+            entry: Dict[str, Any],
+            field: Dict[str, str],
+            response_text: str,
+            task_index: int,
+            max_new_tokens: int,
+        ) -> Tuple[str, bool, str]:
+            normalized_value, parsed_ok, parse_note = _normalize_vlm_response(
+                response_text,
+                field["response_type"],
+            )
+            if str(normalized_value).strip() or not retry_empty_values:
+                return normalized_value, parsed_ok, parse_note
+
+            retry_prompt = (
+                f"{field['prompt']}\n\n"
+                "Important: previous answer was empty. "
+                "Return a non-empty answer now and strictly follow the format requirement."
+            )
+            retry_text = _run_vlm(
+                client,
+                entry["image_bytes"],
+                retry_prompt,
+                max_new_tokens,
+                job_id=job_id,
+                task_index=task_index,
+                task_total=total_tasks_planned if total_tasks_planned > 0 else None,
+                field_name=field["field_name"],
+                object_id=entry["object_id"],
+            )
+            retry_value, retry_parsed_ok, retry_note = _normalize_vlm_response(
+                retry_text,
+                field["response_type"],
+            )
+            if str(retry_value).strip():
+                return retry_value, retry_parsed_ok, f"{retry_note or 'retry'}_after_empty"
+            return retry_value, retry_parsed_ok, f"{retry_note or 'retry'}_still_empty"
 
         with jobs_lock:
             if job_id in jobs_store:
@@ -1773,6 +1859,15 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                         f"limit={payload.limit}, batch_size={payload.batch_size}, "
                         f"fields={len(field_names)}, dry_run={payload.dry_run}, "
                         f"overwrite_existing={payload.overwrite_existing}"
+                    ),
+                )
+                _append_job_log(
+                    jobs_store[job_id],
+                    (
+                        "Backfill VLM runtime options: "
+                        f"retry_empty_values={retry_empty_values}, "
+                        f"field_chunk_size={field_chunk_size_override}, "
+                        f"base_max_new_tokens={payload.max_new_tokens}"
                     ),
                 )
                 _append_job_log(
@@ -1875,7 +1970,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                         for field in prepared_fields
                         if field["field_name"] not in entry["values"]
                     ]
-                    chunk_size = max(1, int(payload.batch_size))
+                    chunk_size = field_chunk_size_override
 
                     for field_offset in range(0, len(remaining_fields), chunk_size):
                         if _job_cancel_requested(job_id):
@@ -1887,6 +1982,10 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                             break
 
                         field_chunk = remaining_fields[field_offset : field_offset + chunk_size]
+                        chunk_max_new_tokens = max(
+                            _effective_max_new_tokens_for_response_type(field["response_type"])
+                            for field in field_chunk
+                        )
                         task_items = [
                             {
                                 "image_bytes": entry["image_bytes"],
@@ -1906,7 +2005,7 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                             responses = _run_vlm_batch(
                                 client,
                                 task_items,
-                                payload.max_new_tokens,
+                                chunk_max_new_tokens,
                             )
                         except Exception as exc:
                             logger.exception(
@@ -1932,9 +2031,15 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                 if entry["failed"]:
                                     break
                                 try:
-                                    normalized_value, parsed_ok, parse_note = _normalize_vlm_response(
-                                        response_text,
-                                        field["response_type"],
+                                    normalized_value, parsed_ok, parse_note = _normalize_with_retry_if_empty(
+                                        client=client,
+                                        entry=entry,
+                                        field=field,
+                                        response_text=response_text,
+                                        task_index=completed_tasks + 1,
+                                        max_new_tokens=_effective_max_new_tokens_for_response_type(
+                                            field["response_type"]
+                                        ),
                                     )
                                     entry["values"][field["field_name"]] = normalized_value
                                     if not parsed_ok:
@@ -2033,16 +2138,24 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                                         client,
                                         entry["image_bytes"],
                                         field["prompt"],
-                                        payload.max_new_tokens,
+                                        _effective_max_new_tokens_for_response_type(
+                                            field["response_type"]
+                                        ),
                                         job_id=job_id,
                                         task_index=completed_tasks + 1,
                                         task_total=total_tasks_planned if total_tasks_planned > 0 else None,
                                         field_name=field["field_name"],
                                         object_id=entry["object_id"],
                                     )
-                                    normalized_value, parsed_ok, parse_note = _normalize_vlm_response(
-                                        response_text,
-                                        field["response_type"],
+                                    normalized_value, parsed_ok, parse_note = _normalize_with_retry_if_empty(
+                                        client=client,
+                                        entry=entry,
+                                        field=field,
+                                        response_text=response_text,
+                                        task_index=completed_tasks + 1,
+                                        max_new_tokens=_effective_max_new_tokens_for_response_type(
+                                            field["response_type"]
+                                        ),
                                     )
                                     entry["values"][field["field_name"]] = normalized_value
                                     if not parsed_ok:
@@ -2131,20 +2244,21 @@ def _run_vlm_backfill_job(job_id: str, payload: VLMBackfillRequest):
                     object_id = str(entry["object_id"])
                     scene_tasks_completed = int(entry["scene_tasks_completed"])
                     if not entry["failed"] and scene_tasks_completed == field_total:
+                        filtered_values = {
+                            field_name: str(entry["values"].get(field_name, "")).strip()
+                            for field_name in field_names
+                            if str(entry["values"].get(field_name, "")).strip()
+                        }
                         if not payload.dry_run:
                             upserted = _upsert_vlm_annotations(
-                                [{"object_id": object_id, "values": dict(entry["values"])}]
+                                [{"object_id": object_id, "values": filtered_values}]
                             )
                             total_inserted += upserted
                             if upserted > 0 and object_id not in annotated_object_ids_seen:
                                 annotated_object_ids_seen.add(object_id)
                                 annotated_object_ids.append(object_id)
                             if upserted > 0:
-                                saved_non_empty_fields = sum(
-                                    1
-                                    for field_name in field_names
-                                    if str(entry["values"].get(field_name, "")).strip()
-                                )
+                                saved_non_empty_fields = len(filtered_values)
                                 if saved_non_empty_fields >= field_total:
                                     saved_full_annotations += 1
                                 else:

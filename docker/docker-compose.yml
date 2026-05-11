@@ -187,6 +187,7 @@ services:
       - ../:/app
     environment:
       HF_HOME: /app/.cache/huggingface
+      VLM_DEBUG_EMPTY_OUTPUT: ${VLM_DEBUG_EMPTY_OUTPUT:-0}
     command: >
       /bin/sh -c "
       uvicorn backend.models.vlm.vlm:app
@@ -271,6 +272,7 @@ services:
       - "9109"
     environment:
       VLM_PORT: 8001
+      VLM_DEBUG_EMPTY_OUTPUT: ${VLM_DEBUG_EMPTY_OUTPUT:-0}
       WORKER_METRICS_PORT: 9109
       WORKER_HTTP_ENABLED: 1
       LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/site-packages/nvidia/nccl/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvjitlink/lib
@@ -356,11 +358,15 @@ services:
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
       RABBITMQ_RPC_TIMEOUT_SEC: 900
+      MODEL_BACKEND_READY_WAIT_SEC: ${MODEL_BACKEND_READY_WAIT_SEC:-45}
+      MODEL_BACKEND_READY_POLL_SEC: ${MODEL_BACKEND_READY_POLL_SEC:-1}
       ANALYTICS_SERVER_ENDPOINT: http://storage-server:9012
       ANALYTICS_SERVER_TIMEOUT_SEC: 30
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012
       STORAGE_SERVER_TIMEOUT_SEC: 30
       STORAGE_WRITE_TOKEN: change-me-storage-write-token
+      VLM_RETRY_EMPTY_VALUES: ${VLM_RETRY_EMPTY_VALUES:-1}
+      VLM_BACKFILL_FIELD_CHUNK_SIZE: ${VLM_BACKFILL_FIELD_CHUNK_SIZE:-0}
     networks:
       - avsp-net
 

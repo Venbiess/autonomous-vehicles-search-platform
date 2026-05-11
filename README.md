@@ -24,6 +24,7 @@ It ingests scene data, generates embeddings and vision-language metadata, and pr
 - Backend services and models source: [`backend/`](backend)
 - Storage server source: [`storage/`](storage)
 - Config docs: [configs/README.md](configs/README.md)
+- Environment variables catalog: [configs/ENVIRONMENT.md](configs/ENVIRONMENT.md)
 - Dataset/model runtime config source: [`configs/`](configs)
 
 ## Quick Start

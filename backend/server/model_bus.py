@@ -381,6 +381,8 @@ class ModelGateway:
             "metadata": metadata,
         }
         result = self._rpc.call(self._rpc.cfg.vlm_queue, payload)
+        if "response" not in result:
+            raise RabbitRPCError("invalid generate_vlm response: missing 'response'")
         return str(result.get("response", "")).strip()
 
     def run_vlm_batch(
