@@ -35,8 +35,7 @@ This file is the single reference for runtime environment variables used by AVSP
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `VLM_PORT` | `8001` | VLM worker HTTP port (when HTTP is enabled). |
-| `WORKER_HTTP_ENABLED` | `1` | Enable worker HTTP server alongside RabbitMQ worker. |
+| `VLM_PORT` | `8001` | Reserved VLM HTTP port. Current `vlm` worker runs queue-only and does not expose HTTP. |
 | `WORKER_METRICS_PORT` | `9109` | Prometheus metrics port for worker. |
 | `VLM_BACKEND` | from `configs.hw_settings` (`SMOLVLM`) | VLM backend selection (`SMOLVLM`, `QWEN`). |
 | `VLM_MODEL_NAME` | backend default | HF model id override. |
@@ -50,8 +49,7 @@ This file is the single reference for runtime environment variables used by AVSP
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `EMBEDDER_PORT` | `8000` | Embedder worker HTTP port (when HTTP is enabled). |
-| `WORKER_HTTP_ENABLED` | `1` | Enable worker HTTP server alongside RabbitMQ worker. |
+| `EMBEDDER_PORT` | `8000` | Embedder worker HTTP port. `embedder` worker always exposes HTTP alongside RabbitMQ. |
 | `WORKER_METRICS_PORT` | `9108` | Prometheus metrics port for worker. |
 | `EMBEDDER_BACKEND` | from `configs.hw_settings` (`ALIGN`) | Embedder backend selection (`ALIGN`, `QWEN`). |
 | `EMBEDDER_MODEL_NAME` | backend default | HF model id override. |

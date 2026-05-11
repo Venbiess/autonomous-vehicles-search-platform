@@ -99,9 +99,6 @@ class Preprocessor:
         digest = hashlib.sha1(str(local_path).encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
         return f"{dataset_type}/{digest}_{base_name}"
 
-    def upload_to_s3(self, local_path: str, bucket: str, object_name: str) -> Optional[dict]:
-        return self.upload_to_storage(local_path, bucket, object_name)
-
     def _resolve_local_source_path(self, row: Any) -> Optional[Path]:
         source_link = str(getattr(row, "get", lambda *_: "")("source_link", "")).strip()
         if not source_link.startswith("local://"):

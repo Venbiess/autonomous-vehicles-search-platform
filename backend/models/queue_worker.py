@@ -124,22 +124,12 @@ def _connect_with_retry(params: pika.URLParameters) -> pika.BlockingConnection:
 
 
 def _start_http_server(worker_type: str) -> threading.Thread | None:
-    if str(os.getenv("WORKER_HTTP_ENABLED", "1")).strip().lower() not in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        return None
-
     if worker_type == "embedder":
         from backend.models.embedder.embedder import app as model_app
 
         port = int(os.getenv("EMBEDDER_PORT", "8000"))
     else:
-        from backend.models.vlm.vlm import app as model_app
-
-        port = int(os.getenv("VLM_PORT", "8001"))
+        return None
 
     log_level = str(os.getenv("WORKER_HTTP_LOG_LEVEL", "info")).strip().lower() or "info"
     _suppress_healthcheck_access_logs()

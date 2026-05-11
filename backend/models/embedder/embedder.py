@@ -8,9 +8,7 @@ from typing import Literal
 from typing import Optional
 
 from fastapi import FastAPI
-from fastapi import File
 from fastapi import Request
-from fastapi import UploadFile
 from PIL import Image
 
 from backend.models.common.hf import configure_hf_download_logging
@@ -142,20 +140,6 @@ async def inference_text(text: str):
 
     return {
         "text": text,
-        "embedding": embedding,
-        "dim": len(embedding),
-    }
-
-
-@app.post("/embedding/image")
-async def inference_image(file: UploadFile = File(...)):
-    image_bytes = file.file.read()
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    embedding = get_embedding(image, type="image")
-
-    return {
-        "filename": file.filename,
-        "image_shape": image.size,
         "embedding": embedding,
         "dim": len(embedding),
     }

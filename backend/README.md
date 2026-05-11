@@ -7,7 +7,6 @@ This directory contains AVSP application logic: API orchestration, model executi
 - `server/`: master API and orchestration layer (`FastAPI`)
 - `models/`: embedder and VLM runtimes, worker entrypoint, backend factories
 - `processors/`: dataset ingest/preprocessing pipelines
-- `db/`: database helpers
 - `observability/`: worker metrics instrumentation
 - `tests/`: backend integration/unit tests
 
@@ -25,7 +24,7 @@ This directory contains AVSP application logic: API orchestration, model executi
 
 3. `queue_worker.py` is the worker runtime.
 - Runs embedder or VLM worker loops against RabbitMQ queues.
-- Can also host HTTP inference endpoints in the same process (`WORKER_HTTP_ENABLED=1`).
+- `embedder` worker also hosts HTTP inference in the same process.
 - Uses HTTP-priority polling to avoid starving direct HTTP requests when both modes are enabled.
 
 4. `processors/runner.py` is the install/preprocess dispatcher.
