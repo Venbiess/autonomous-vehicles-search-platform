@@ -20,7 +20,9 @@ type ObjectStoreConfig struct {
 	AccessKey      string `yaml:"access_key"`
 	SecretKey      string `yaml:"secret_key"`
 	SessionToken   string `yaml:"session_token"`
+	AuthToken      string `yaml:"auth_token"`
 	Region         string `yaml:"region"`
+	PathPrefix     string `yaml:"path_prefix"`
 	UseSSL         bool   `yaml:"use_ssl"`
 	ForcePathStyle bool   `yaml:"force_path_style"`
 }
@@ -128,6 +130,10 @@ func (m *S3Adapter) Delete(ctx context.Context, bucket, key string) error {
 func (m *S3Adapter) Health(ctx context.Context) error {
 	_, err := m.client.ListBuckets(ctx)
 	return err
+}
+
+func (m *S3Adapter) CanonicalPath(bucket, key string) string {
+	return fmt.Sprintf("s3://%s/%s", strings.Trim(strings.TrimSpace(bucket), "/"), strings.Trim(strings.TrimSpace(key), "/"))
 }
 
 func isMinioNotFound(err error) bool {

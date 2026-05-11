@@ -18,6 +18,7 @@ type ObjectAdapter interface {
 	PutStream(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) (PutResult, error)
 	Delete(ctx context.Context, bucket, key string) error
 	Health(ctx context.Context) error
+	CanonicalPath(bucket, key string) string
 }
 
 type VectorQueryResult struct {
@@ -42,7 +43,6 @@ type VectorBatchGetter interface {
 	GetByObjectIDs(ctx context.Context, objectIDs []string) (map[string][]float64, error)
 }
 
-// Optional capability for deleting vectors that do not have matching metadata objects.
 type VectorOrphanCleaner interface {
 	CleanupOrphaned(ctx context.Context, metadataSchema string, metadataTable string) (int, error)
 }

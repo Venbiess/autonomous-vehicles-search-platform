@@ -21,16 +21,18 @@ const pgvectorDefaultANNLists = 100
 const pgvectorDefaultHNSWEfSearch = 40
 
 type VectorIndexConfig struct {
-	Provider    string `yaml:"provider"`
-	ConnStr     string `yaml:"conn_str"`
-	Schema      string `yaml:"schema"`
-	Table       string `yaml:"table"`
-	EndpointURL string `yaml:"endpoint_url"`
-	APIKey      string `yaml:"api_key"`
-	Collection  string `yaml:"collection"`
-	Distance    string `yaml:"distance"`
-	VectorSize  int    `yaml:"vector_size"`
-	TimeoutSec  int    `yaml:"timeout_sec"`
+	Provider      string `yaml:"provider"`
+	ConnStr       string `yaml:"conn_str"`
+	Schema        string `yaml:"schema"`
+	Table         string `yaml:"table"`
+	IndexName     string `yaml:"index_name"`
+	EndpointURL   string `yaml:"endpoint_url"`
+	APIKey        string `yaml:"api_key"`
+	Collection    string `yaml:"collection"`
+	Distance      string `yaml:"distance"`
+	VectorSize    int    `yaml:"vector_size"`
+	SearchTopSize int    `yaml:"search_top_size"`
+	TimeoutSec    int    `yaml:"timeout_sec"`
 }
 
 type PgVectorAdapter struct {
@@ -111,9 +113,6 @@ func (p *PgVectorAdapter) ensureVectorDimensions(ctx context.Context) error {
 		if !hasDimensions {
 			return nil
 		}
-		// Allow mixed embedding dimensions when vector_size is unset.
-		// This is useful when users switch embedder models (e.g. 640 -> 2048)
-		// and rebuild vectors without recreating metadata storage.
 		query := fmt.Sprintf(
 			"ALTER TABLE %s ALTER COLUMN embedding TYPE vector USING embedding::vector",
 			p.qualifiedTable(),

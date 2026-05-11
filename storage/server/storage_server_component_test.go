@@ -1,8 +1,8 @@
 package server
 
 import (
-	"context"
 	infra "avsp/storage/infra"
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -52,6 +52,10 @@ func (f *fakeObjectAdapter) Health(ctx context.Context) error {
 	return nil
 }
 
+func (f *fakeObjectAdapter) CanonicalPath(bucket, key string) string {
+	return "s3://" + bucket + "/" + key
+}
+
 type fakeVectorAdapter struct {
 	upserted   []string
 	deleted    []string
@@ -89,6 +93,52 @@ func (f *fakeVectorAdapter) Health(ctx context.Context) error {
 	return nil
 }
 
+type fakeBatchVectorAdapter struct {
+	fakeVectorAdapter
+	batchObjectIDs  []string
+	batchEmbeddings [][]float64
+}
+
+func (f *fakeBatchVectorAdapter) UpsertBatch(ctx context.Context, objectIDs []string, embeddings [][]float64) error {
+	_ = ctx
+	f.batchObjectIDs = append([]string(nil), objectIDs...)
+	f.batchEmbeddings = make([][]float64, 0, len(embeddings))
+	for _, embedding := range embeddings {
+		f.batchEmbeddings = append(f.batchEmbeddings, append([]float64(nil), embedding...))
+	}
+	return nil
+}
+
+type fakeLookupVectorAdapter struct {
+	fakeVectorAdapter
+	existingIDs map[string]bool
+	byObjectID  map[string][]float64
+}
+
+func (f *fakeLookupVectorAdapter) ExistingObjectIDs(ctx context.Context, objectIDs []string) ([]string, error) {
+	_ = ctx
+	out := make([]string, 0, len(objectIDs))
+	for _, objectID := range objectIDs {
+		if f.existingIDs[objectID] {
+			out = append(out, objectID)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeLookupVectorAdapter) GetByObjectIDs(ctx context.Context, objectIDs []string) (map[string][]float64, error) {
+	_ = ctx
+	out := make(map[string][]float64, len(objectIDs))
+	for _, objectID := range objectIDs {
+		vector, ok := f.byObjectID[objectID]
+		if !ok {
+			continue
+		}
+		out[objectID] = append([]float64(nil), vector...)
+	}
+	return out, nil
+}
+
 func TestStorageServerUpsertVectorsValidatesAndDelegates(t *testing.T) {
 	server := &StorageServer{vectorAdapter: &fakeVectorAdapter{}}
 
@@ -107,6 +157,25 @@ func TestStorageServerUpsertVectorsValidatesAndDelegates(t *testing.T) {
 	}
 	if len(fake.upserted) != 2 {
 		t.Fatalf("expected 2 upserts, got %d", len(fake.upserted))
+	}
+}
+
+func TestStorageServerUpsertVectorsUsesBatchUpserter(t *testing.T) {
+	batch := &fakeBatchVectorAdapter{}
+	server := &StorageServer{vectorAdapter: batch}
+
+	err := server.UpsertVectors(context.Background(), []UpsertVector{
+		{ObjectID: "obj-1", Embedding: []float64{0.1, 0.2}},
+		{ObjectID: "obj-2", Embedding: []float64{0.3, 0.4}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected UpsertVectors error: %v", err)
+	}
+	if strings.Join(batch.batchObjectIDs, ",") != "obj-1,obj-2" {
+		t.Fatalf("unexpected batch object ids: %v", batch.batchObjectIDs)
+	}
+	if len(batch.upserted) != 0 {
+		t.Fatalf("expected single-row Upsert not to be called, got %v", batch.upserted)
 	}
 }
 
@@ -133,6 +202,36 @@ func TestStorageServerQueryAndDeleteVectors(t *testing.T) {
 	}
 	if strings.Join(fake.deleted, ",") != "obj-1,obj-2" {
 		t.Fatalf("unexpected deleted ids: %v", fake.deleted)
+	}
+}
+
+func TestStorageServerLookupHelpers(t *testing.T) {
+	fake := &fakeLookupVectorAdapter{
+		existingIDs: map[string]bool{"obj-1": true, "obj-3": true},
+		byObjectID: map[string][]float64{
+			"obj-1": {0.1, 0.2},
+			"obj-3": {0.3, 0.4},
+		},
+	}
+	server := &StorageServer{vectorAdapter: fake}
+
+	existing, err := server.ExistingVectorObjectIDs(context.Background(), []string{"obj-1", "", "obj-2", "obj-3"})
+	if err != nil {
+		t.Fatalf("unexpected ExistingVectorObjectIDs error: %v", err)
+	}
+	if strings.Join(existing, ",") != "obj-1,obj-3" {
+		t.Fatalf("unexpected existing ids: %v", existing)
+	}
+
+	vectors, err := server.GetVectors(context.Background(), []string{"obj-3", "obj-1", "obj-3", ""})
+	if err != nil {
+		t.Fatalf("unexpected GetVectors error: %v", err)
+	}
+	if len(vectors) != 2 {
+		t.Fatalf("unexpected vectors length: %d", len(vectors))
+	}
+	if vectors[0].ObjectID != "obj-3" || vectors[1].ObjectID != "obj-1" {
+		t.Fatalf("unexpected vectors order/content: %+v", vectors)
 	}
 }
 

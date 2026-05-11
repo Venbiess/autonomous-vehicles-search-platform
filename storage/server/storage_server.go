@@ -111,7 +111,7 @@ func (s *StorageServer) UploadObject(ctx context.Context, bucket, key, filename,
 		return ObjectMetadata{}, invalidArgument("key is required")
 	}
 
-	canonicalPath := fmt.Sprintf("s3://%s/%s", bucket, key)
+	canonicalPath := s.objectAdapter.CanonicalPath(bucket, key)
 	objectID := objectIDFromStoragePath(canonicalPath)
 
 	res, err := s.objectAdapter.PutStream(ctx, bucket, key, reader, size, strings.TrimSpace(contentType))
@@ -174,7 +174,6 @@ func (s *StorageServer) ListObjects(ctx context.Context, limit int, cursor strin
 
 	nextCursor := ""
 	if len(out) > limit {
-		// Continue from the last returned object id so no rows are skipped.
 		nextCursor = out[limit-1].ObjectID
 		out = out[:limit]
 	}

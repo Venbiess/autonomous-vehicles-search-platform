@@ -33,19 +33,14 @@ services:
       - avsp-net
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
     container_name: "cadvisor-${USER}"
     privileged: true
-    command:
-      - --docker_only=true
-      - --store_container_labels=true
-      - --containerd=/run/containerd/containerd.sock
     devices:
       - /dev/kmsg:/dev/kmsg
     volumes:
       - /:/rootfs:ro
-      - /var/run:/var/run:rw
-      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      - /var/run:/var/run:ro
       - /sys:/sys:ro
       - /var/lib/docker:/var/lib/docker:ro
       - /dev/disk:/dev/disk:ro
@@ -56,21 +51,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.13-management
-    container_name: "avsp-rabbitmq-${USER}"
-    hostname: rabbitmq
-    user: "0:0"
-    restart: unless-stopped
-    environment:
-      RABBITMQ_NODENAME: rabbit@rabbitmq
-    tmpfs:
-      - /var/lib/rabbitmq
-    volumes:
-      - ./rabbitmq/conf.d/20-logging.conf:/etc/rabbitmq/conf.d/20-logging.conf:ro
-    entrypoint: >
-      /bin/sh -c "
-      chown -R rabbitmq:rabbitmq /var/lib/rabbitmq &&
-      exec docker-entrypoint.sh rabbitmq-server
-      "
+    container_name: "rabbitmq-${USER}"
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -115,96 +96,64 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./server/postgres-init:/docker-entrypoint-initdb.d
     ports:
-      - "127.0.0.1:5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d avsp"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 10s
+      - "5432:5432"
     networks:
       - avsp-net
 
-  minio:
-    image: minio/minio:latest
-    container_name: "avsp-minio-${USER}"
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+  seaweedfs-master:
+    image: chrislusf/seaweedfs:3.74
+    container_name: "avsp-seaweedfs-master-${USER}"
+    command: "weed master -ip=seaweedfs-master -mdir=/data"
     volumes:
-      - minio-data:/data
+      - seaweedfs-master-data:/data
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9333:9333"
     networks:
       - avsp-net
 
-  minio-init:
-    image: minio/mc:latest
-    container_name: "avsp-minio-init-${USER}"
+  seaweedfs-volume:
+    image: chrislusf/seaweedfs:3.74
+    container_name: "avsp-seaweedfs-volume-${USER}"
     depends_on:
-      - minio
-    entrypoint: >
-      /bin/sh -c '
-      until mc alias set local http://minio:9000 minioadmin minioadmin; do
-        sleep 2;
-      done &&
-      for bucket in waymo argoverse nuimages nuscenes avsp synthetic; do
-        mc mb --ignore-existing local/$$bucket;
-        mc anonymous set download local/$$bucket;
-      done
-      '
+      - seaweedfs-master
+    command: "weed volume -mserver=seaweedfs-master:9333 -ip=seaweedfs-volume -dir=/data"
+    volumes:
+      - seaweedfs-volume-data:/data
+    ports:
+      - "8080:8080"
     networks:
       - avsp-net
 
-  embedder:
-    build:
-      context: ..
-      dockerfile: docker/models/models.Dockerfile
-      args:
-        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
-    container_name: "embedder-${USER}"
-    profiles: ["model-http"]
-    volumes:
-      - ../:/app
-    environment:
-      HF_HOME: /app/.cache/huggingface
+  seaweedfs-filer:
+    image: chrislusf/seaweedfs:3.74
+    container_name: "avsp-seaweedfs-filer-${USER}"
+    depends_on:
+      - seaweedfs-master
+      - seaweedfs-volume
+    command: "weed filer -master=seaweedfs-master:9333"
     ports:
-      - "8000:8000"
+      - "8888:8888"
     networks:
       - avsp-net
 
-  vlm:
-    build:
-      context: ..
-      dockerfile: docker/models/models.Dockerfile
-      args:
-        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
-    container_name: "vlm-${USER}"
-    profiles: ["model-http"]
+  seaweedfs-s3:
+    image: chrislusf/seaweedfs:3.74
+    container_name: "avsp-seaweedfs-s3-${USER}"
+    depends_on:
+      - seaweedfs-filer
+    command: "weed s3 -filer=seaweedfs-filer:8888 -ip.bind=0.0.0.0 -port=8333 -config=/etc/seaweedfs/s3-config.json"
     volumes:
-      - ../:/app
-    environment:
-      HF_HOME: /app/.cache/huggingface
-      VLM_DEBUG_EMPTY_OUTPUT: ${VLM_DEBUG_EMPTY_OUTPUT:-0}
-    command: >
-      /bin/sh -c "
-      uvicorn backend.models.vlm.vlm:app --host 0.0.0.0 --port 8001 --log-level debug
-      "
+      - ./seaweedfs/s3-config.json:/etc/seaweedfs/s3-config.json:ro
     ports:
-      - "8001:8001"
+      - "8333:8333"
     networks:
       - avsp-net
 
   embedder-worker:
-    image: avsp-embedder-worker
-    container_name: "avsp-embedder-worker-${USER}"
+    image: avsp-models-cpu
     build:
       context: ..
       dockerfile: docker/models/models.Dockerfile
-      args:
-        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
     healthcheck:
       test: ["CMD", "true"]
       interval: 30s
@@ -213,7 +162,7 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-    restart: ${EMBEDDER_WORKER_RESTART_POLICY:-no}
+    restart: unless-stopped
     command: >
       /bin/sh -c "
       python -m backend.models.queue_worker --worker embedder
@@ -226,29 +175,18 @@ services:
     environment:
       EMBEDDER_PORT: 8000
       WORKER_METRICS_PORT: 9108
-      WORKER_HTTP_ENABLED: 1
-      LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/site-packages/nvidia/nccl/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvjitlink/lib
-      HF_HOME: /app/.cache/huggingface
-      HF_HUB_DISABLE_PROGRESS_BARS: "0"
-      TQDM_POSITION: "-1"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
       RABBITMQ_PREFETCH: 1
-      RABBITMQ_HEARTBEAT_SEC: 900
-      RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SEC: 960
-      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     networks:
       - avsp-net
 
   vlm-worker:
-    image: avsp-vlm-worker
-    container_name: "avsp-vlm-worker-${USER}"
+    image: avsp-models-cpu
     build:
       context: ..
       dockerfile: docker/models/models.Dockerfile
-      args:
-        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
     healthcheck:
       test: ["CMD", "true"]
       interval: 30s
@@ -257,7 +195,7 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-    restart: ${VLM_WORKER_RESTART_POLICY:-no}
+    restart: unless-stopped
     command: >
       /bin/sh -c "
       python -m backend.models.queue_worker --worker vlm
@@ -269,19 +207,11 @@ services:
       - "9109"
     environment:
       VLM_PORT: 8001
-      VLM_DEBUG_EMPTY_OUTPUT: ${VLM_DEBUG_EMPTY_OUTPUT:-0}
       WORKER_METRICS_PORT: 9109
-      WORKER_HTTP_ENABLED: 1
-      LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/site-packages/nvidia/nccl/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvjitlink/lib
-      HF_HOME: /app/.cache/huggingface
-      HF_HUB_DISABLE_PROGRESS_BARS: "0"
-      TQDM_POSITION: "-1"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
       RABBITMQ_PREFETCH: 1
-      RABBITMQ_HEARTBEAT_SEC: 900
-      RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SEC: 960
     networks:
       - avsp-net
 
@@ -293,20 +223,17 @@ services:
     container_name: "avsp-storage-${USER}"
     depends_on:
       postgres:
-        condition: service_healthy
-      minio:
         condition: service_started
-      minio-init:
-        condition: service_completed_successfully
+      seaweedfs-s3:
+        condition: service_started
       clickhouse:
         condition: service_healthy
-    restart: unless-stopped
     environment:
       STORAGE_CONFIG_PATH: /app/storage/config/storage.yaml
-      OBJECT_STORE_PROVIDER: s3
-      OBJECT_STORE_ENDPOINT_URL: http://minio:9000
-      OBJECT_STORE_ACCESS_KEY: minioadmin
-      OBJECT_STORE_SECRET_KEY: minioadmin
+      OBJECT_STORE_PROVIDER: seaweedfs
+      OBJECT_STORE_ENDPOINT_URL: http://seaweedfs-s3:8333
+      OBJECT_STORE_ACCESS_KEY: seaweedfs
+      OBJECT_STORE_SECRET_KEY: seaweedfs-secret
       OBJECT_STORE_REGION: us-east-1
       OBJECT_STORE_USE_SSL: "false"
       OBJECT_STORE_FORCE_PATH_STYLE: "true"
@@ -317,16 +244,15 @@ services:
     networks:
       - avsp-net
 
-  master-server:
+  avsp-server:
     build:
       context: ..
       dockerfile: docker/server/server.Dockerfile
-    image: avsp-master
-    container_name: "avsp-master-${USER}"
+    image: avsp-analytics-service
+    container_name: "avsp-analytics-service-${USER}"
     depends_on:
       - postgres
-      - minio
-      - minio-init
+      - seaweedfs-s3
       - rabbitmq
       - embedder-worker
       - vlm-worker
@@ -338,42 +264,33 @@ services:
       - "9002:9002"
     command: >
       /bin/sh -c "
-      if [ \"${AVSP_DEV_RELOAD:-0}\" = \"1\" ]; then
-        echo 'master-server: DEV reload mode enabled';
-        exec uvicorn backend.server.master:app --host 0.0.0.0 --port 9002 --log-level debug --reload --reload-dir /app/backend --reload-dir /app/configs;
-      else
-        exec uvicorn backend.server.master:app --host 0.0.0.0 --port 9002 --log-level debug;
-      fi
+      uvicorn backend.server.master:app
+      --host 0.0.0.0
+      --port 9002
+      --log-level debug
+      --reload
       "
     environment:
-      AVSP_DEV_RELOAD: ${AVSP_DEV_RELOAD:-0}
-      PYTHONWARNINGS: "ignore::FutureWarning:google.api_core._python_version_support"
-      CUDA_VISIBLE_DEVICES: ""
-      S3_ENDPOINT_URL: http://minio:9000
-      S3_ACCESS_KEY_ID: minioadmin
-      S3_SECRET_ACCESS_KEY: minioadmin
+      S3_ENDPOINT_URL: http://seaweedfs-s3:8333
+      S3_ACCESS_KEY_ID: seaweedfs
+      S3_SECRET_ACCESS_KEY: seaweedfs-secret
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: avsp
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       EMBEDDER_ENDPOINT: http://embedder-worker:8000
-      VLM_ENDPOINT: http://vlm-worker:8001
       EMBEDDER_ENDPOINTS: http://embedder-worker:8000
       MODEL_EXECUTION_MODE: rabbitmq
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
       RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
       RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
-      RABBITMQ_RPC_TIMEOUT_SEC: 900
-      MODEL_BACKEND_READY_WAIT_SEC: ${MODEL_BACKEND_READY_WAIT_SEC:-45}
-      MODEL_BACKEND_READY_POLL_SEC: ${MODEL_BACKEND_READY_POLL_SEC:-1}
+      RABBITMQ_RPC_TIMEOUT_SEC: 120
       ANALYTICS_SERVER_ENDPOINT: http://storage-server:9012
       ANALYTICS_SERVER_TIMEOUT_SEC: 30
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012
       STORAGE_SERVER_TIMEOUT_SEC: 30
       STORAGE_WRITE_TOKEN: change-me-storage-write-token
-      VLM_RETRY_EMPTY_VALUES: ${VLM_RETRY_EMPTY_VALUES:-1}
-      VLM_BACKFILL_FIELD_CHUNK_SIZE: ${VLM_BACKFILL_FIELD_CHUNK_SIZE:-0}
     networks:
       - avsp-net
 
@@ -381,7 +298,7 @@ services:
     image: node:20
     container_name: "avsp-frontend-${USER}"
     depends_on:
-      - master-server
+      - avsp-server
     working_dir: /app/frontend
     command: >
       /bin/sh -c '
@@ -395,18 +312,10 @@ services:
       else
         echo "Reusing existing frontend deps from volume";
       fi;
-      if [ "${AVSP_DEV_RELOAD:-0}" = "1" ]; then
-        echo "frontend: DEV reload mode enabled";
-        exec npm run dev -- --hostname 0.0.0.0 --port 3000;
-      fi;
-      rm -rf .next;
-      npm run build;
-      test -f .next/server/middleware-manifest.json;
-      exec npm run start -- --hostname 0.0.0.0 --port 3000
+      npm run dev -- --hostname 0.0.0.0 --webpack
       '
     volumes:
       - ../frontend:/app/frontend
-      - ../storage/config:/app/storage/config
       - "frontend-node-modules:/app/frontend/node_modules"
     ports:
       - "3000:3000"
@@ -415,19 +324,21 @@ services:
         soft: 0
         hard: 0
     environment:
-      AVSP_DEV_RELOAD: ${AVSP_DEV_RELOAD:-0}
-      MASTER_ENDPOINT: http://master-server:9002
+      MASTER_ENDPOINT: http://avsp-server:9002
       MASTER_PROXY_TIMEOUT_MS: 10000
       STORAGE_SERVER_ENDPOINT: http://storage-server:9012
       ANALYTICS_SERVER_ENDPOINT: http://storage-server:9012
       STORAGE_WRITE_TOKEN: change-me-storage-write-token
-      OBJECT_STORE_PUBLIC_ENDPOINT: http://localhost:9000
+      OBJECT_STORE_PUBLIC_ENDPOINT: http://localhost:8333
       OBJECT_STORE_DEFAULT_BUCKET: avsp
-      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
+      MINIO_PUBLIC_ENDPOINT: http://localhost:8333
       MINIO_BUCKET: avsp
-      NODE_OPTIONS: --max-old-space-size=2048
+      NODE_OPTIONS: --max-old-space-size=16384
       FRONTEND_REQUEST_TIMEOUT_MS: "0"
       STORAGE_TRANSFER_IMPORT_MAX_BYTES: "17179869184"
+      WATCHPACK_POLLING: "true"
+      WATCHPACK_POLLING_INTERVAL: "1000"
+      CHOKIDAR_USEPOLLING: "true"
     networks:
       - avsp-net
 
@@ -435,9 +346,10 @@ volumes:
   clickhouse-data:
   frontend-node-modules:
   grafana-data:
-  minio-data:
   postgres-data:
   prometheus-data:
+  seaweedfs-master-data:
+  seaweedfs-volume-data:
   vscode-server:
 
 networks:

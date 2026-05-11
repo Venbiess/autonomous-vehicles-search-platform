@@ -1,0 +1,127 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: "avsp-storage-postgres-${USER}"
+    environment:
+      POSTGRES_DB: avsp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - storage-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d avsp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - storage-net
+
+  seaweedfs-master:
+    image: chrislusf/seaweedfs:3.74
+    container_name: "avsp-storage-seaweedfs-master-${USER}"
+    command: "weed master -ip=seaweedfs-master -mdir=/data"
+    volumes:
+      - storage-seaweedfs-master-data:/data
+    ports:
+      - "9333:9333"
+    networks:
+      - storage-net
+
+  seaweedfs-volume:
+    image: chrislusf/seaweedfs:3.74
+    container_name: "avsp-storage-seaweedfs-volume-${USER}"
+    depends_on:
+      - seaweedfs-master
+    command: "weed volume -mserver=seaweedfs-master:9333 -ip=seaweedfs-volume -dir=/data"
+    volumes:
+      - storage-seaweedfs-volume-data:/data
+    ports:
+      - "8080:8080"
+    networks:
+      - storage-net
+
+  seaweedfs-filer:
+    image: chrislusf/seaweedfs:3.74
+    container_name: "avsp-storage-seaweedfs-filer-${USER}"
+    depends_on:
+      - seaweedfs-master
+      - seaweedfs-volume
+    command: "weed filer -master=seaweedfs-master:9333"
+    ports:
+      - "8888:8888"
+    networks:
+      - storage-net
+
+  seaweedfs-s3:
+    image: chrislusf/seaweedfs:3.74
+    container_name: "avsp-storage-seaweedfs-s3-${USER}"
+    depends_on:
+      - seaweedfs-filer
+    command: "weed s3 -filer=seaweedfs-filer:8888 -ip.bind=0.0.0.0 -port=8333 -config=/etc/seaweedfs/s3-config.json"
+    volumes:
+      - ../seaweedfs/s3-config.json:/etc/seaweedfs/s3-config.json:ro
+    ports:
+      - "8333:8333"
+    networks:
+      - storage-net
+
+  storage-server:
+    build:
+      context: ../..
+      dockerfile: docker/storage/storage-server.Dockerfile
+    container_name: "avsp-storage-storage-server-${USER}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      seaweedfs-s3:
+        condition: service_started
+      clickhouse:
+        condition: service_healthy
+    environment:
+      STORAGE_CONFIG_PATH: /app/storage/config/storage.pgvector.yaml
+      OBJECT_STORE_PROVIDER: seaweedfs
+      OBJECT_STORE_ENDPOINT_URL: http://seaweedfs-s3:8333
+      OBJECT_STORE_ACCESS_KEY: seaweedfs
+      OBJECT_STORE_SECRET_KEY: seaweedfs-secret
+      OBJECT_STORE_REGION: us-east-1
+      OBJECT_STORE_USE_SSL: "false"
+      OBJECT_STORE_FORCE_PATH_STYLE: "true"
+    volumes:
+      - ../../storage/config:/app/storage/config:ro
+    ports:
+      - "9012:9012"
+    networks:
+      - storage-net
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: "avsp-storage-clickhouse-${USER}"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - storage-clickhouse-data:/var/lib/clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "default", "--password", "clickhouse", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    networks:
+      - storage-net
+
+volumes:
+  storage-postgres-data:
+  storage-clickhouse-data:
+  storage-seaweedfs-master-data:
+  storage-seaweedfs-volume-data:
+
+networks:
+  storage-net:
+    driver: bridge

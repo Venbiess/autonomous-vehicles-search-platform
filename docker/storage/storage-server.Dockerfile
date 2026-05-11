@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine
+FROM golang:1.25-alpine
 
 WORKDIR /app/storage
 COPY storage/go.mod storage/go.sum ./

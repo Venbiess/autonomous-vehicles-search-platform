@@ -15,7 +15,10 @@ function buildImageUrl(storagePath, defaultBucket) {
   const [bucket, ...rest] = normalized.split("/");
   const key = rest.join("/");
   if (!bucket || !key) return null;
-  const baseUrl = process.env.MINIO_PUBLIC_ENDPOINT || "http://localhost:9000";
+  const baseUrl =
+    process.env.OBJECT_STORE_PUBLIC_ENDPOINT ||
+    process.env.MINIO_PUBLIC_ENDPOINT ||
+    "http://localhost:9000";
   return `${baseUrl.replace(/\/$/, "")}/${bucket || defaultBucket}/${key
     .split("/")
     .map((segment) => encodeURIComponent(segment))
@@ -29,7 +32,10 @@ export default async function handler(req, res) {
 
   try {
     const hiddenDatasets = new Set(loadDatasetVisibility().hidden_datasets || []);
-    const defaultBucket = process.env.MINIO_BUCKET || "avsp";
+    const defaultBucket =
+      process.env.OBJECT_STORE_DEFAULT_BUCKET ||
+      process.env.MINIO_BUCKET ||
+      "avsp";
     const response = await fetch(`${masterEndpoint}/search/vlm`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

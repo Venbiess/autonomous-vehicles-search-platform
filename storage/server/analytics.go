@@ -745,8 +745,6 @@ func (s *clickHouseAnalyticsShard) completedObjectIDs(ctx context.Context, objec
 	if len(normalizedIDs) == 0 || len(normalizedFields) == 0 {
 		return []string{}, nil
 	}
-	// Large IN(...) lists can exceed ClickHouse max_query_size. Chunk IDs to keep
-	// each generated query small regardless of client payload size.
 	completedSet := make(map[string]struct{}, len(normalizedIDs))
 	for i := 0; i < len(normalizedIDs); i += analyticsScanBatchSize {
 		end := min(i+analyticsScanBatchSize, len(normalizedIDs))

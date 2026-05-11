@@ -97,7 +97,7 @@ function parseStoragePathMeta(storagePath?: string): {
 } {
   const raw = String(storagePath || "").trim();
   if (!raw) return { dataset: "", key: "" };
-  const normalized = raw.replace(/^s3:\/\//i, "").replace(/^\/+/, "");
+  const normalized = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/^\/+/, "");
   if (!normalized.includes("/")) {
     return { dataset: normalized, key: "" };
   }

@@ -1,0 +1,20 @@
+{
+  "identities": [
+    {
+      "name": "avsp",
+      "credentials": [
+        {
+          "accessKey": "seaweedfs",
+          "secretKey": "seaweedfs-secret"
+        }
+      ],
+      "actions": [
+        "Admin",
+        "Read",
+        "Write",
+        "List",
+        "Tagging"
+      ]
+    }
+  ]
+}

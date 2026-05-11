@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-COMPOSE_FILE="$ROOT_DIR/docker/storage/docker-compose.yml"
+COMPOSE_FILE="${STORAGE_TEST_COMPOSE_FILE:-$ROOT_DIR/docker/storage/docker-compose.yml}"
 TEST_DIR="$ROOT_DIR/storage/tests"
 VENV_DIR="$TEST_DIR/.venv"
 

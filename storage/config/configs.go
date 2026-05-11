@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	infra "avsp/storage/infra"
@@ -67,7 +68,14 @@ type RunnerConfig struct {
 }
 
 func LoadStorageServerConfig() (StorageServerConfig, error) {
-	cfg, err := loadStorageConfigFromPath(configPath())
+	return LoadStorageServerConfigFromPath("")
+}
+
+func LoadStorageServerConfigFromPath(path string) (StorageServerConfig, error) {
+	if strings.TrimSpace(path) == "" {
+		path = configPath()
+	}
+	cfg, err := loadStorageConfigFromPath(path)
 	if err != nil {
 		return StorageServerConfig{}, err
 	}
@@ -91,7 +99,48 @@ func loadStorageConfigFromPath(path string) (StorageConfig, error) {
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return StorageConfig{}, fmt.Errorf("parse storage config yaml: %w", err)
 	}
+	applyEnvOverrides(&cfg)
 	return cfg, nil
+}
+
+func applyEnvOverrides(cfg *StorageConfig) {
+	if cfg == nil {
+		return
+	}
+	overrideString(&cfg.StorageServer.ObjectStore.Provider, "OBJECT_STORE_PROVIDER")
+	overrideString(&cfg.StorageServer.ObjectStore.EndpointURL, "OBJECT_STORE_ENDPOINT_URL")
+	overrideString(&cfg.StorageServer.ObjectStore.AccessKey, "OBJECT_STORE_ACCESS_KEY")
+	overrideString(&cfg.StorageServer.ObjectStore.SecretKey, "OBJECT_STORE_SECRET_KEY")
+	overrideString(&cfg.StorageServer.ObjectStore.SessionToken, "OBJECT_STORE_SESSION_TOKEN")
+	overrideString(&cfg.StorageServer.ObjectStore.AuthToken, "OBJECT_STORE_AUTH_TOKEN")
+	overrideString(&cfg.StorageServer.ObjectStore.Region, "OBJECT_STORE_REGION")
+	overrideString(&cfg.StorageServer.ObjectStore.PathPrefix, "OBJECT_STORE_PATH_PREFIX")
+	overrideBool(&cfg.StorageServer.ObjectStore.UseSSL, "OBJECT_STORE_USE_SSL")
+	overrideBool(&cfg.StorageServer.ObjectStore.ForcePathStyle, "OBJECT_STORE_FORCE_PATH_STYLE")
+}
+
+func overrideString(dst *string, envKey string) {
+	if dst == nil {
+		return
+	}
+	if val := strings.TrimSpace(os.Getenv(envKey)); val != "" {
+		*dst = val
+	}
+}
+
+func overrideBool(dst *bool, envKey string) {
+	if dst == nil {
+		return
+	}
+	raw := strings.TrimSpace(os.Getenv(envKey))
+	if raw == "" {
+		return
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return
+	}
+	*dst = parsed
 }
 
 func LoadPreprocessorCatalog(path string) (PreprocessorCatalog, error) {

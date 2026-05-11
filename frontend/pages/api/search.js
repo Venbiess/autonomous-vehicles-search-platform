@@ -24,7 +24,10 @@ function buildImageUrl(storagePath, defaultBucket) {
   }
   if (!bucket || !key) return null;
 
-  const baseUrl = process.env.MINIO_PUBLIC_ENDPOINT || "http://localhost:9000";
+  const baseUrl =
+    process.env.OBJECT_STORE_PUBLIC_ENDPOINT ||
+    process.env.MINIO_PUBLIC_ENDPOINT ||
+    "http://localhost:9000";
   const safeKey = key
     .split("/")
     .map((segment) => encodeURIComponent(segment))
@@ -161,7 +164,10 @@ export default async function handler(req, res) {
 
   try {
     const masterEndpoint = process.env.MASTER_ENDPOINT || "http://localhost:9002";
-    const defaultBucket = process.env.MINIO_BUCKET || "avsp";
+    const defaultBucket =
+      process.env.OBJECT_STORE_DEFAULT_BUCKET ||
+      process.env.MINIO_BUCKET ||
+      "avsp";
 
     if (req.method === "POST") {
       const imageBytes = await readRawBody(req);

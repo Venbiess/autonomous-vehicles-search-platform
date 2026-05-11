@@ -49,7 +49,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.25"
 
       - name: Run storage Go tests
         working-directory: storage
@@ -115,12 +115,22 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - storage-go-tests
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: pgvector
+            compose_file: docker/storage/docker-compose.pgvector.yml
+          - name: qdrant
+            compose_file: docker/storage/docker-compose.qdrant.yml
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run storage integration tests
+      - name: Run storage integration tests (${{ matrix.name }})
+        env:
+          STORAGE_TEST_COMPOSE_FILE: ${{ github.workspace }}/${{ matrix.compose_file }}
         run: bash storage/tests/tests.sh --down
 
   full-stack-smoke:
