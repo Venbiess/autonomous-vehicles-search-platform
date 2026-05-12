@@ -53,6 +53,7 @@ func (h *StorageHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/health", h.handleHealth)
 	mux.HandleFunc("/preprocessors/methods", h.handlePreprocessorMethods)
 	mux.HandleFunc("/objects", h.handleObjects)
+	mux.HandleFunc("/objects/count", h.handleObjectCount)
 	mux.HandleFunc("/objects/upload", h.handleUploadObject)
 	mux.HandleFunc("/objects/get-batch", h.handleGetBatch)
 	mux.HandleFunc("/objects/", h.handleObjectByID)
@@ -156,6 +157,20 @@ func (h *StorageHandler) handleObjects(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
 	}
+}
+
+func (h *StorageHandler) handleObjectCount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	total, err := h.svc.CountObjects(r.Context())
+	if err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"count": total})
 }
 
 func (h *StorageHandler) handleUploadObject(w http.ResponseWriter, r *http.Request) {

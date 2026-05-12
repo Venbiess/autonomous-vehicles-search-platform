@@ -361,6 +361,15 @@ func (s *StorageServer) CountVectors(ctx context.Context) (int64, error) {
 	return s.vectorAdapter.Count(ctx)
 }
 
+func (s *StorageServer) CountObjects(ctx context.Context) (int64, error) {
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s.%s`, pqIdent(s.cfg.MetadataSchema), pqIdent(s.cfg.MetadataTable))
+	var total int64
+	if err := s.metaDB.QueryRowContext(ctx, query).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 func (s *StorageServer) ExistingVectorObjectIDs(ctx context.Context, objectIDs []string) ([]string, error) {
 	if len(objectIDs) == 0 {
 		return []string{}, nil

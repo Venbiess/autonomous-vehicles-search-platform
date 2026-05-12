@@ -61,6 +61,9 @@ Common runtime variables used by AVSP frontend:
 - `MINIO_PUBLIC_ENDPOINT`
 - `MINIO_BUCKET`
 - `FRONTEND_REQUEST_TIMEOUT_MS`
+- `NEXT_PUBLIC_GRAFANA_DASHBOARD_URL` (default `http://localhost:3004/d/avsp-observability/avsp-observability?orgId=1`): quick link button in Job Monitor
+- `NEXT_PUBLIC_GRAFANA_CONTAINER_DASHBOARD_URL` (default `http://localhost:3004/d/avsp-container-drilldown/avsp-container-drilldown?orgId=1`): per-container drilldown dashboard
+- `NEXT_PUBLIC_CADVISOR_CONTAINERS_URL` (default `http://localhost:8088/containers/`): container list with per-process tab in cAdvisor
 
 See `docker/docker-compose.yml` for current defaults used in local stack.
 

@@ -181,6 +181,12 @@ class StorageAPI:
         response.raise_for_status()
         return response.json()
 
+    def count_objects(self) -> int:
+        response = self._client.get(f"{self.endpoint}/objects/count")
+        response.raise_for_status()
+        payload = response.json()
+        return int(payload.get("count", 0))
+
     def upsert_vectors(self, vectors: List[Dict[str, Any]]) -> int:
         if not vectors:
             return 0

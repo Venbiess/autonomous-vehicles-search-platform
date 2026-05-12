@@ -180,6 +180,15 @@ async function listStorageObjectsWithTimeout(limit = STORAGE_LIST_PAGE_LIMIT) {
   return items;
 }
 
+async function countStorageObjectsWithTimeout() {
+  const payload = await readStorageJsonWithTimeout("/objects/count", STORAGE_TIMEOUT_MS);
+  const count = Number(payload?.count || 0);
+  if (!Number.isFinite(count) || count < 0) {
+    return 0;
+  }
+  return Math.floor(count);
+}
+
 async function readAnalyticsJson(path, timeoutMs, init = {}) {
   let lastError = null;
   for (const endpoint of DEFAULT_ANALYTICS_ENDPOINTS) {
@@ -247,13 +256,34 @@ async function buildLiteStats() {
   stats.details_ready = false;
 
   try {
-    await readStorageJsonWithTimeout("/objects?limit=1", STORAGE_TIMEOUT_MS);
+    const totalObjects = await countStorageObjectsWithTimeout();
     stats.source_table_exists = true;
     stats.source_table = "storage.objects";
+    stats.storage.total_objects = totalObjects;
+    stats.source.total_rows = totalObjects;
+    stats.source.rows_with_storage_path = totalObjects;
+    stats.source.distinct_storage_paths = totalObjects;
+    stats.embeddings.pending_rows = totalObjects;
+    stats.embeddings.pending_percent = totalObjects > 0 ? 100 : 0;
+    stats.vlm.pending_rows = totalObjects;
+    stats.vlm.pending_percent = totalObjects > 0 ? 100 : 0;
     stats.warning = null;
   } catch (error) {
-    stats.source_table_exists = false;
-    stats.warning = `storage unavailable: ${error.message}`;
+    try {
+      // Backward compatibility for older storage-server versions without /objects/count.
+      const fallbackObjects = await listStorageObjectsWithTimeout();
+      const fallbackVisibleObjects = filterVisibleObjects(fallbackObjects);
+      const fallbackStats = buildStorageStats(fallbackVisibleObjects);
+      fallbackStats.hidden_datasets = hiddenPayload.hidden_datasets || [];
+      fallbackStats.dataset_visibility = {};
+      fallbackStats.details_mode = "lite";
+      fallbackStats.details_ready = false;
+      fallbackStats.warning = `objects/count unavailable, used list scan fallback: ${error.message}`;
+      return fallbackStats;
+    } catch (fallbackError) {
+      stats.source_table_exists = false;
+      stats.warning = `storage unavailable: ${fallbackError.message}`;
+    }
   }
 
   return stats;

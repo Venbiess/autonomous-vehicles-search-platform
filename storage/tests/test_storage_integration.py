@@ -499,3 +499,47 @@ def test_write_endpoints_require_token(settings, http_session):
         timeout=settings.request_timeout_sec,
     )
     assert fields.status_code == 403
+
+
+def test_objects_count_endpoint(settings, http_session):
+    before = http_session.get(
+        f"{settings.storage_base_url}/objects/count",
+        timeout=settings.request_timeout_sec,
+    )
+    assert before.status_code == 200, before.text
+    before_count = int(before.json().get("count", 0))
+
+    headers = _write_headers(settings)
+    uploaded = _upload_object(
+        settings,
+        http_session,
+        headers,
+        _fake_jpeg(),
+        filename="count.jpg",
+        key=f"integration/{uuid.uuid4().hex}-count.jpg",
+    )
+    object_id = uploaded["object_id"]
+
+    after_upload = http_session.get(
+        f"{settings.storage_base_url}/objects/count",
+        timeout=settings.request_timeout_sec,
+    )
+    assert after_upload.status_code == 200, after_upload.text
+    after_upload_count = int(after_upload.json().get("count", 0))
+    assert after_upload_count >= before_count + 1
+
+    deleted = http_session.delete(
+        f"{settings.storage_base_url}/objects/{object_id}",
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json().get("deleted") is True
+
+    after_delete = http_session.get(
+        f"{settings.storage_base_url}/objects/count",
+        timeout=settings.request_timeout_sec,
+    )
+    assert after_delete.status_code == 200, after_delete.text
+    after_delete_count = int(after_delete.json().get("count", 0))
+    assert after_delete_count <= after_upload_count - 1

@@ -195,6 +195,15 @@ export default function SystemMonitor({
     embedder: { exists: false, updated_at: null },
     vlm: { exists: false, updated_at: null },
   });
+  const grafanaDashboardUrl =
+    process.env.NEXT_PUBLIC_GRAFANA_DASHBOARD_URL?.trim() ||
+    "http://localhost:3004/d/avsp-observability/avsp-observability?orgId=1";
+  const grafanaContainerDashboardUrl =
+    process.env.NEXT_PUBLIC_GRAFANA_CONTAINER_DASHBOARD_URL?.trim() ||
+    "http://localhost:3004/d/avsp-container-drilldown/avsp-container-drilldown?orgId=1";
+  const cadvisorContainersUrl =
+    process.env.NEXT_PUBLIC_CADVISOR_CONTAINERS_URL?.trim() ||
+    "http://localhost:8088/containers/";
 
   const fetchSystemInfo = async () => {
     try {
@@ -1268,6 +1277,35 @@ export default function SystemMonitor({
       <div className="max-w-[96rem] mx-auto bg-white rounded-lg shadow-lg p-6 mt-6">
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-bold text-gray-900">Джобы</h2>
+          <div className="flex items-center gap-2">
+            <a
+              href={grafanaDashboardUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+              title="Open AVSP Grafana dashboard"
+            >
+              Grafana
+            </a>
+            <a
+              href={grafanaContainerDashboardUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+              title="Open container drilldown dashboard"
+            >
+              Container Dash
+            </a>
+            <a
+              href={cadvisorContainersUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+              title="Open cAdvisor container list with process tabs"
+            >
+              Processes
+            </a>
+          </div>
         </div>
         
         {jobs.length === 0 ? (

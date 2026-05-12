@@ -23,6 +23,9 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
     volumes:
       - ./server/observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./server/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -426,6 +429,9 @@ services:
       NODE_OPTIONS: --max-old-space-size=2048
       FRONTEND_REQUEST_TIMEOUT_MS: "0"
       STORAGE_TRANSFER_IMPORT_MAX_BYTES: "17179869184"
+      NEXT_PUBLIC_GRAFANA_DASHBOARD_URL: http://localhost:3004/d/avsp-observability/avsp-observability?orgId=1
+      NEXT_PUBLIC_GRAFANA_CONTAINER_DASHBOARD_URL: http://localhost:3004/d/avsp-container-drilldown/avsp-container-drilldown?orgId=1
+      NEXT_PUBLIC_CADVISOR_CONTAINERS_URL: http://localhost:8088/containers/
     networks:
       - avsp-net
 
