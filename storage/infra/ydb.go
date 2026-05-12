@@ -291,7 +291,9 @@ CREATE TABLE IF NOT EXISTS %s (
 	updated_at Timestamp,
 	PRIMARY KEY (object_id)
 );`, y.quotedTable())
-	_, err := y.execute(ctx, query)
+	err := y.driver.Table().Do(ctx, func(ctx context.Context, s table.Session) error {
+		return s.ExecuteSchemeQuery(ctx, query)
+	}, table.WithIdempotent())
 	return err
 }
 

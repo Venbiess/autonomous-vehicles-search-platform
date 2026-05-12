@@ -3,18 +3,25 @@ from __future__ import annotations
 import os
 import resource
 from typing import Any
+from typing import TYPE_CHECKING
 from typing import Union
 
-import torch
+if TYPE_CHECKING:
+    import torch as _torch
 
-TorchDTypeLike = Union[torch.dtype, str, None]
+try:
+    import torch
+except ModuleNotFoundError:  # pragma: no cover - optional dependency for OpenAI-only runtime
+    torch = None  # type: ignore[assignment]
+
+TorchDTypeLike = Union["_torch.dtype", str, None]
 
 
 def resolve_device(configured_device: str) -> str:
     cfg_device = str(configured_device).strip().lower()
-    if cfg_device == "cuda" and torch.cuda.is_available():
+    if cfg_device == "cuda" and torch is not None and torch.cuda.is_available():
         return "cuda"
-    if cfg_device == "mps" and torch.backends.mps.is_available():
+    if cfg_device == "mps" and torch is not None and torch.backends.mps.is_available():
         return "mps"
     return "cpu"
 
@@ -43,12 +50,14 @@ def process_rss_mb() -> float:
 
 
 def runtime_payload(configured_device: str, selected_device: str) -> dict[str, Any]:
+    torch_cuda_available = bool(torch is not None and torch.cuda.is_available())
+    torch_mps_available = bool(torch is not None and torch.backends.mps.is_available())
     payload = {
         "configured_device": configured_device,
         "selected_device": selected_device,
-        "torch_cuda_available": bool(torch.cuda.is_available()),
-        "torch_mps_available": bool(torch.backends.mps.is_available()),
-        "cuda_device_count": int(torch.cuda.device_count() if torch.cuda.is_available() else 0),
+        "torch_cuda_available": torch_cuda_available,
+        "torch_mps_available": torch_mps_available,
+        "cuda_device_count": int(torch.cuda.device_count() if torch_cuda_available else 0) if torch is not None else 0,
         "cuda_device_name": None,
     }
 
@@ -60,7 +69,7 @@ def runtime_payload(configured_device: str, selected_device: str) -> dict[str, A
         "gpu_free_mb": 0.0,
     }
 
-    if selected_device == "cuda" and torch.cuda.is_available():
+    if torch is not None and selected_device == "cuda" and torch.cuda.is_available():
         try:
             current = torch.cuda.current_device()
             payload["cuda_device_name"] = torch.cuda.get_device_name(current)
@@ -91,6 +100,21 @@ def resolve_torch_dtype(
     normalized = str(configured_dtype).strip().lower() if configured_dtype is not None else ""
     if not normalized:
         normalized = default_cuda if device == "cuda" else default_other
+
+    if torch is None:
+        if normalized == "auto":
+            return "auto", "auto"
+        if normalized in {"fp32", "float32", "float"}:
+            return "float32", "float32"
+        if normalized in {"fp16", "float16", "half"}:
+            return "float16", "float16"
+        if normalized in {"bf16", "bfloat16"}:
+            return "bfloat16", "bfloat16"
+        supported = "auto, bf16, bfloat16, float, float16, float32, fp16, fp32, half"
+        raise ValueError(
+            f"Unsupported torch dtype '{configured_dtype}'. "
+            f"Supported values: {supported}"
+        )
 
     aliases: dict[str, TorchDTypeLike] = {
         "auto": "auto",
