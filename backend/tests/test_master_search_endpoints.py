@@ -34,7 +34,9 @@ def test_search_text_returns_empty_when_dependencies_not_ready(monkeypatch) -> N
 
     result = master.search_text(master.TextSearchRequest(query="road", top_k=5))
 
-    assert result == {"mode": "vector_server", "results": []}
+    assert result["mode"] == "vector_server"
+    assert result["results"] == []
+    assert result["warning"]["reason"] == "embedder down"
 
 
 def test_search_text_happy_path(monkeypatch) -> None:
@@ -123,4 +125,6 @@ def test_search_image_bytes_returns_empty_when_dependencies_not_ready(monkeypatc
 
     result = asyncio.run(master.search_image_bytes(_FakeRequest(b"jpeg-bytes"), top_k=4))
 
-    assert result == {"mode": "vector_server", "results": []}
+    assert result["mode"] == "vector_server"
+    assert result["results"] == []
+    assert result["warning"]["reason"] == "storage down"

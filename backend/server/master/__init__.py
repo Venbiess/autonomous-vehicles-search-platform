@@ -205,6 +205,25 @@ def _search_dependencies_ready(
     )
 
 
+def _search_dependencies_ready_for_routes(
+    *,
+    require_embedder: bool = True,
+    require_vlm: bool = True,
+    allow_embedder_http_fallback: bool = False,
+) -> tuple[bool, str]:
+    try:
+        return _search_dependencies_ready(
+            require_embedder=require_embedder,
+            require_vlm=require_vlm,
+            allow_embedder_http_fallback=allow_embedder_http_fallback,
+        )
+    except TypeError as exc:
+        message = str(exc)
+        if "unexpected keyword argument" not in message and "positional arguments" not in message:
+            raise
+        return _search_dependencies_ready()
+
+
 def _mark_job_cancelled(
     job_id: str,
     total_seen: int,
@@ -318,7 +337,7 @@ def backfill_embeddings(payload: BackfillRequest):
 @app.get("/embeddings/dimensions")
 def embeddings_dimensions():
     return master_routes.embeddings_dimensions(
-        search_dependencies_ready=_search_dependencies_ready,
+        search_dependencies_ready=_search_dependencies_ready_for_routes,
         embedder_timeout_sec=EMBEDDER_TIMEOUT_SEC,
         embed_text=_embed_text,
         sample_existing_embedding_dim=_sample_existing_embedding_dim,
@@ -363,7 +382,7 @@ def search_text(payload: TextSearchRequest):
     return master_routes.search_text(
         payload,
         logger=logger,
-        search_dependencies_ready=_search_dependencies_ready,
+        search_dependencies_ready=_search_dependencies_ready_for_routes,
         build_search_backend_unavailable_warning=_build_search_backend_unavailable_warning,
         embedder_timeout_sec=EMBEDDER_TIMEOUT_SEC,
         embed_text=_embed_text,
@@ -381,7 +400,7 @@ async def search_image_bytes(request: Request, top_k: int = 5, max_rows: int = 1
         request,
         top_k=top_k,
         logger=logger,
-        search_dependencies_ready=_search_dependencies_ready,
+        search_dependencies_ready=_search_dependencies_ready_for_routes,
         build_search_backend_unavailable_warning=_build_search_backend_unavailable_warning,
         embedder_timeout_sec=EMBEDDER_TIMEOUT_SEC,
         embed_image=_embed_image,

@@ -8,6 +8,8 @@ from backend.server.analytics_api import AnalyticsAPI
 class _FakeResponse:
     def __init__(self, payload: Dict[str, Any]):
         self._payload = payload
+        self.is_success = True
+        self.status_code = 200
 
     def raise_for_status(self) -> None:
         return None
@@ -32,15 +34,17 @@ class _FakeClient:
 
     def get(self, url: str, **kwargs: Any) -> _FakeResponse:
         self.calls.append({"method": "GET", "url": url, **kwargs})
-        if self.response_fn is not None:
-            payload = self.response_fn("GET", url, kwargs)
+        response_fn = type(self).response_fn
+        if response_fn is not None:
+            payload = response_fn("GET", url, kwargs)
             return _FakeResponse(payload)
         return _FakeResponse(dict(self.response_payload))
 
     def post(self, url: str, **kwargs: Any) -> _FakeResponse:
         self.calls.append({"method": "POST", "url": url, **kwargs})
-        if self.response_fn is not None:
-            payload = self.response_fn("POST", url, kwargs)
+        response_fn = type(self).response_fn
+        if response_fn is not None:
+            payload = response_fn("POST", url, kwargs)
             return _FakeResponse(payload)
         return _FakeResponse(dict(self.response_payload))
 

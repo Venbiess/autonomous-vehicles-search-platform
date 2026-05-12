@@ -265,6 +265,7 @@ def search_text(
     build_embedding_dim_warning: Callable[[List[float], str], Any],
     raise_upstream_http_error: Callable[[httpx.HTTPStatusError], None],
 ) -> Dict[str, Any]:
+    warning = None
     try:
         ready, reason = search_dependencies_ready(
             require_embedder=True,
@@ -308,11 +309,13 @@ def search_text(
         raise_upstream_http_error(exc)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {
+    payload = {
         "mode": "vector_server",
         "results": results,
-        "warning": warning,
     }
+    if warning is not None:
+        payload["warning"] = warning
+    return payload
 
 
 async def search_image_bytes(
@@ -329,6 +332,7 @@ async def search_image_bytes(
     build_embedding_dim_warning: Callable[[List[float], str], Any],
     raise_upstream_http_error: Callable[[httpx.HTTPStatusError], None],
 ) -> Dict[str, Any]:
+    warning = None
     image_bytes = await request.body()
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Image bytes are required")
@@ -376,11 +380,13 @@ async def search_image_bytes(
         raise_upstream_http_error(exc)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {
+    payload = {
         "mode": "vector_server",
         "results": results,
-        "warning": warning,
     }
+    if warning is not None:
+        payload["warning"] = warning
+    return payload
 
 
 def upsert_vlm_fields(payload: Any, *, analytics_api: Any, normalize_vlm_fields: Callable[[Any], List[Dict[str, str]]]) -> Dict[str, Any]:

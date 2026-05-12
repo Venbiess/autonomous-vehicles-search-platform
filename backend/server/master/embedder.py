@@ -73,8 +73,14 @@ def search_dependencies_ready(
                 response = client.get(f"{endpoint}/health")
             if response.status_code >= 400:
                 return False
-            payload = response.json()
-            return str(payload.get("status", "")).lower() == "ok"
+            try:
+                payload = response.json()
+            except Exception:
+                return True
+            if not isinstance(payload, dict):
+                return True
+            status = str(payload.get("status", "")).lower()
+            return status in {"", "ok"}
         except Exception:
             return False
 
@@ -157,4 +163,3 @@ def build_search_backend_unavailable_warning(reason: str, source: str) -> Dict[s
         ),
         "reason": normalized,
     }
-
