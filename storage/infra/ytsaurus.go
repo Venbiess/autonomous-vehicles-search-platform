@@ -173,10 +173,17 @@ func (y *YTsaurusAdapter) createNode(ctx context.Context, nodePath, nodeType str
 func (y *YTsaurusAdapter) objectPath(bucket, key string) string {
 	bucket = strings.Trim(strings.TrimSpace(bucket), "/")
 	key = strings.Trim(strings.TrimSpace(key), "/")
+	base := strings.TrimRight(strings.TrimSpace(y.pathPrefix), "/")
 	if key == "" {
-		return path.Join(y.pathPrefix, bucket)
+		if bucket == "" {
+			return base
+		}
+		return base + "/" + bucket
 	}
-	return path.Join(y.pathPrefix, bucket, key)
+	if bucket == "" {
+		return base + "/" + key
+	}
+	return base + "/" + bucket + "/" + key
 }
 
 func (y *YTsaurusAdapter) newRequest(ctx context.Context, method, command string, params map[string]string, body io.Reader) (*http.Request, error) {
