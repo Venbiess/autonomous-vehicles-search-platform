@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -364,7 +365,7 @@ func runSeed(adapter infra.VectorAdapter, cfg runnerConfig) (manifest, benchRepo
 			vectors := make([][]float64, 0, endIdx-startIdx)
 			t0 := time.Now()
 			for i := startIdx; i < endIdx; i++ {
-				ids = append(ids, benchObjectID(cfg.Prefix, i))
+				ids = append(ids, benchObjectID(cfg.Provider, cfg.Prefix, i))
 				vectors = append(vectors, deterministicVector(cfg.Seed, i, cfg.VectorSize))
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.TimeoutSec)*time.Second)
@@ -379,7 +380,7 @@ func runSeed(adapter infra.VectorAdapter, cfg runnerConfig) (manifest, benchRepo
 		for i := 0; i < cfg.SeedCount; i++ {
 			t0 := time.Now()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.TimeoutSec)*time.Second)
-			err := adapter.Upsert(ctx, benchObjectID(cfg.Prefix, i), deterministicVector(cfg.Seed, i, cfg.VectorSize))
+			err := adapter.Upsert(ctx, benchObjectID(cfg.Provider, cfg.Prefix, i), deterministicVector(cfg.Seed, i, cfg.VectorSize))
 			cancel()
 			recordOutcome(stats, time.Since(t0), err)
 			if err != nil {
@@ -445,7 +446,7 @@ func runMixed(adapter infra.VectorAdapter, cfg runnerConfig, provider string) (b
 				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.TimeoutSec)*time.Second)
 				if writeOp {
 					index := int(inserted.Add(1) - 1)
-					err = adapter.Upsert(ctx, benchObjectID(cfg.Prefix, index), deterministicVector(cfg.Seed, index, cfg.VectorSize))
+					err = adapter.Upsert(ctx, benchObjectID(cfg.Provider, cfg.Prefix, index), deterministicVector(cfg.Seed, index, cfg.VectorSize))
 				} else {
 					maxInserted := int(inserted.Load())
 					queryVec := mixedQueryVector(cfg, rng, maxInserted, opIndex)
@@ -485,8 +486,23 @@ func loadOrBuildManifest(cfg runnerConfig, provider string) (manifest, error) {
 	}, nil
 }
 
-func benchObjectID(prefix string, index int) string {
-	return fmt.Sprintf("%s-%09d", prefix, index)
+func benchObjectID(provider, prefix string, index int) string {
+	base := fmt.Sprintf("%s-%09d", prefix, index)
+	if strings.EqualFold(strings.TrimSpace(provider), "qdrant") {
+		sum := sha1.Sum([]byte(base))
+		raw := sum[:16]
+		raw[6] = (raw[6] & 0x0f) | 0x50
+		raw[8] = (raw[8] & 0x3f) | 0x80
+		return fmt.Sprintf(
+			"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+			raw[0], raw[1], raw[2], raw[3],
+			raw[4], raw[5],
+			raw[6], raw[7],
+			raw[8], raw[9],
+			raw[10], raw[11], raw[12], raw[13], raw[14], raw[15],
+		)
+	}
+	return base
 }
 
 func deterministicVector(seed int64, index, dim int) []float64 {

@@ -134,6 +134,9 @@ You can run one backend or `all`, tune `seed_count/query_count/vector_size/topk/
 ### Local Bench Script (single backend)
 
 ```bash
+storage/tests/run_benchervs_backend.sh
+# по умолчанию: all (pgvector -> qdrant -> ydb)
+
 BACKEND=pgvector storage/tests/run_benchervs_backend.sh
 # or BACKEND=qdrant / BACKEND=ydb
 ```

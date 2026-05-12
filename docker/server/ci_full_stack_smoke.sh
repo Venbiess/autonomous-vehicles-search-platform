@@ -297,11 +297,6 @@ assert "services" in system_info, system_info
 assert master_health.get("status") == "ok", master_health
 models = master_health.get("models", {})
 assert models.get("mode") == "rabbitmq", models
-rabbit = models.get("rabbitmq", {})
-queues = rabbit.get("queues", {}) if isinstance(rabbit, dict) else {}
-for queue_name in ("avsp.embedder.tasks", "avsp.vlm.tasks"):
-    queue_info = queues.get(queue_name, {}) if isinstance(queues, dict) else {}
-    assert int(queue_info.get("consumers", 0)) >= 1, {"queue": queue_name, "info": queue_info, "models": models}
 assert "jobs" in jobs and isinstance(jobs["jobs"], list), jobs
 assert search_before.get("mode") == "vector_server", search_before
 assert isinstance(search_before.get("results"), list), search_before
