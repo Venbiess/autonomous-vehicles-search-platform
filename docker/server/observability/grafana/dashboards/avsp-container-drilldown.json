@@ -254,7 +254,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (service) (label_replace(container_processes{container_label_com_docker_compose_service=\"$service\"}, \"service\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\"))",
+          "expr": "sum by (service) (label_replace(container_processes{container_label_com_docker_compose_service=\"$service\"}, \"service\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\")) or sum by (service) (label_replace(container_tasks_state{container_label_com_docker_compose_service=\"$service\"}, \"service\", \"$1\", \"container_label_com_docker_compose_service\", \"(.+)\"))",
           "legendFormat": "{{service}} total",
           "range": true,
           "refId": "A"

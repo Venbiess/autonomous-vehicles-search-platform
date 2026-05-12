@@ -42,6 +42,7 @@ services:
     command:
       - --docker_only=true
       - --store_container_labels=true
+      - --enable_metrics=cpu,memory,network,disk,process
       - --containerd=/run/containerd/containerd.sock
     devices:
       - /dev/kmsg:/dev/kmsg
