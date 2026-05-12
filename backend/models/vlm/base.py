@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from typing import List
 
-import torch
 from PIL import Image
 
 from backend.models.common.runtime import TorchDTypeLike
 from backend.models.common.runtime import runtime_payload
+
+try:
+    import torch
+except ModuleNotFoundError:  # pragma: no cover - OpenAI-only runtime may not install torch
+    torch = None  # type: ignore[assignment]
 
 
 class BaseVLM(ABC):
@@ -41,7 +46,8 @@ class BaseVLM(ABC):
         ]
 
     def generate_text(self, image: Image.Image, prompt_text: str, max_new_tokens: int) -> str:
-        with self._inference_lock, torch.inference_mode():
+        inference_ctx = torch.inference_mode() if torch is not None else nullcontext()
+        with self._inference_lock, inference_ctx:
             return self._generate(image=image, prompt_text=prompt_text, max_new_tokens=max_new_tokens)
 
     def generate_text_batch(
@@ -56,7 +62,8 @@ class BaseVLM(ABC):
             )
         if not images:
             return []
-        with self._inference_lock, torch.inference_mode():
+        inference_ctx = torch.inference_mode() if torch is not None else nullcontext()
+        with self._inference_lock, inference_ctx:
             return self._generate_batch(
                 images=images,
                 prompt_texts=prompt_texts,
