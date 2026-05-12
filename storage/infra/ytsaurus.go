@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"time"
 )
@@ -79,7 +78,7 @@ func (y *YTsaurusAdapter) GetBytes(ctx context.Context, bucket, key string) ([]b
 
 func (y *YTsaurusAdapter) PutStream(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) (PutResult, error) {
 	objectPath := y.objectPath(bucket, key)
-	if err := y.createNode(ctx, path.Dir(objectPath), "map_node", true, true); err != nil {
+	if err := y.createNode(ctx, y.parentPath(objectPath), "map_node", true, true); err != nil {
 		return PutResult{}, err
 	}
 	if err := y.createNode(ctx, objectPath, "file", false, true); err != nil {
@@ -184,6 +183,23 @@ func (y *YTsaurusAdapter) objectPath(bucket, key string) string {
 		return base + "/" + key
 	}
 	return base + "/" + bucket + "/" + key
+}
+
+func (y *YTsaurusAdapter) parentPath(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return y.pathPrefix
+	}
+	idx := strings.LastIndex(trimmed, "/")
+	if idx <= 1 {
+		return y.pathPrefix
+	}
+	parent := trimmed[:idx]
+	if strings.HasPrefix(parent, "//") {
+		return parent
+	}
+	// Preserve YPath requirement for leading double slash.
+	return "/" + parent
 }
 
 func (y *YTsaurusAdapter) newRequest(ctx context.Context, method, command string, params map[string]string, body io.Reader) (*http.Request, error) {
