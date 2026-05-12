@@ -13,6 +13,7 @@ numpy
 pandas
 tqdm
 requests
+openai
 
 fastapi
 uvicorn[standard]

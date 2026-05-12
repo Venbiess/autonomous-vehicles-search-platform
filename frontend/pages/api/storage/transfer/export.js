@@ -43,6 +43,7 @@ const OBJECTS_PAGE_SIZE = 256;
 const OBJECT_CONTENT_BATCH_SIZE = 2;
 const VECTOR_BATCH_SIZE = 256;
 const VLM_BATCH_SIZE = 400;
+let supportsGetBatchIncludeContent = null;
 
 function formatBytes(value) {
   const bytes = Math.max(0, Number(value || 0));
@@ -89,11 +90,6 @@ function createAbortState(req, res) {
   });
   return {
     isAborted: () => state.aborted,
-    assertNotAborted: () => {
-      if (state.aborted) {
-        throw createTransferCancelledError();
-      }
-    },
   };
 }
 
@@ -178,6 +174,35 @@ async function forEachObjectPage({
       break;
     }
   }
+}
+
+async function readObjectBatchWithContent(objectIDs) {
+  if (supportsGetBatchIncludeContent !== false) {
+    try {
+      const payload = await readStorageJson("/objects/get-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ object_ids: objectIDs, include_content: true }),
+      });
+      supportsGetBatchIncludeContent = true;
+      return payload;
+    } catch (error) {
+      const message = String(error?.message || "").toLowerCase();
+      const isUnknownIncludeContent =
+        Number(error?.status || 0) === 400 &&
+        message.includes("unknown field") &&
+        message.includes("include_content");
+      if (!isUnknownIncludeContent) {
+        throw error;
+      }
+      supportsGetBatchIncludeContent = false;
+    }
+  }
+  return await readStorageJson("/objects/get-batch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ object_ids: objectIDs }),
+  });
 }
 
 async function exportEmbeddingsToNdjson(
@@ -321,7 +346,7 @@ async function exportVlmAnnotationsToNdjson(
 
 async function exportObjectsToArchive(
   rootDir,
-  { assertNotAborted, onPreparedBytes, onPreparedObject, isVisibleObject }
+  { assertNotAborted, onPreparedBytes, onPreparedObject, onSkippedObject, isVisibleObject }
 ) {
   const objectsDir = path.join(rootDir, "objects");
   await mkdir(objectsDir, { recursive: true });
@@ -335,6 +360,14 @@ async function exportObjectsToArchive(
     },
   });
   let count = 0;
+  let skipped = 0;
+
+  const markSkipped = (objectId, reason) => {
+    skipped += 1;
+    if (typeof onSkippedObject === "function") {
+      onSkippedObject(objectId, reason, skipped);
+    }
+  };
 
   try {
     await forEachObjectPage({
@@ -345,11 +378,7 @@ async function exportObjectsToArchive(
         for (const metaChunk of chunkArray(metas, OBJECT_CONTENT_BATCH_SIZE)) {
           assertNotAborted();
           const chunkIDs = metaChunk.map((item) => item.object_id);
-          const payload = await readStorageJson("/objects/get-batch", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ object_ids: chunkIDs }),
-          });
+          const payload = await readObjectBatchWithContent(chunkIDs);
           const items = Array.isArray(payload?.items) ? payload.items : [];
           const itemsByID = new Map(
             items
@@ -360,17 +389,21 @@ async function exportObjectsToArchive(
           for (const meta of metaChunk) {
             const contentItem = itemsByID.get(meta.object_id);
             if (!contentItem) {
-              throw new Error(`Missing object payload for ${meta.object_id}`);
+              markSkipped(meta.object_id, "missing object payload");
+              continue;
             }
             if (contentItem?.error) {
-              throw new Error(
-                `Failed to fetch object content for ${meta.object_id}: ${String(contentItem.error)}`
+              markSkipped(
+                meta.object_id,
+                `storage returned error: ${String(contentItem.error).trim() || "unknown error"}`
               );
+              continue;
             }
 
             const contentBase64 = String(contentItem?.content_base64 || "").trim();
             if (!contentBase64) {
-              throw new Error(`Object content is empty for ${meta.object_id}`);
+              markSkipped(meta.object_id, "empty object content");
+              continue;
             }
 
             const buffer = Buffer.from(contentBase64, "base64");
@@ -401,7 +434,7 @@ async function exportObjectsToArchive(
     await writer.close();
   }
 
-  return count;
+  return { exportedCount: count, skippedCount: skipped };
 }
 
 async function streamArchiveFile(res, archivePath) {
@@ -429,7 +462,7 @@ export default async function handler(req, res) {
   const exportId = normalizeExportId(req.query?.export_id);
   const workDir = await createTempDir("avsp-transfer-export-");
   const archiveDir = await createTempDir("avsp-transfer-archive-");
-  const { isAborted, assertNotAborted: assertClientNotAborted } = createAbortState(req, res);
+  const { isAborted } = createAbortState(req, res);
   const jobId = randomUUID().replace(/-/g, "").slice(0, 16);
   const jobType = `snapshot_export_${kind}`;
   let preparedBytes = 0;
@@ -437,6 +470,8 @@ export default async function handler(req, res) {
   let nextPreparedLogAt = 64 * 1024 * 1024;
   let manifestPayload = null;
   let manifestBytesWritten = 0;
+  let hasStartedStreaming = false;
+  let archiveBytesForCompletion = 0;
 
   const updateProgress = (patch) => {
     if (!exportId) return;
@@ -498,12 +533,11 @@ export default async function handler(req, res) {
     });
   };
   const assertNotAborted = () => {
-    assertClientNotAborted();
     if (isSnapshotTransferJobCancelRequested(jobId)) {
       throw createTransferCancelledError("Transfer cancelled by user");
     }
   };
-  const isStopped = () => isAborted() || isSnapshotTransferJobCancelRequested(jobId);
+  const isStopped = () => isSnapshotTransferJobCancelRequested(jobId);
 
   try {
     const createdAt = new Date().toISOString();
@@ -598,13 +632,23 @@ export default async function handler(req, res) {
       const fieldsRaw = JSON.stringify(fields);
       await writeFile(path.join(workDir, "fields.json"), fieldsRaw, "utf8");
       bumpPreparedBytes(Buffer.byteLength(fieldsRaw, "utf8"));
-      const fullObjectsCount = await exportObjectsToArchive(workDir, {
+      const { exportedCount: fullObjectsCount, skippedCount: skippedObjectsCount } =
+        await exportObjectsToArchive(workDir, {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
         onPreparedObject: bumpPreparedObjects,
+        onSkippedObject: (objectId, reason, skippedTotal) => {
+          if (skippedTotal <= 10 || skippedTotal % 100 === 0) {
+            appendLog(
+              `Skipped object ${objectId}: ${reason} (skipped total: ${skippedTotal}).`
+            );
+          }
+        },
         isVisibleObject,
       });
-      appendLog(`Objects prepared: ${fullObjectsCount}.`);
+      appendLog(
+        `Objects prepared: ${fullObjectsCount}. Skipped due to missing content/errors: ${skippedObjectsCount}.`
+      );
       await exportEmbeddingsToNdjson(path.join(workDir, "embeddings.ndjson"), {
         assertNotAborted,
         onPreparedBytes: bumpPreparedBytes,
@@ -678,6 +722,7 @@ export default async function handler(req, res) {
     assertNotAborted();
     const archiveStat = await stat(archivePath);
     const archiveBytes = Math.max(0, Number(archiveStat.size || 0));
+    archiveBytesForCompletion = archiveBytes;
     appendLog(`Archive created: ${formatBytes(archiveBytes)}.`);
     updateProgress({
       phase: "streaming",
@@ -702,6 +747,7 @@ export default async function handler(req, res) {
     if (Number.isFinite(Number(archiveStat.size)) && archiveStat.size > 0) {
       res.setHeader("Content-Length", String(archiveStat.size));
     }
+    hasStartedStreaming = true;
     await streamArchiveFile(res, archivePath);
     appendLog("Snapshot export completed.");
     updateProgress({
@@ -747,6 +793,26 @@ export default async function handler(req, res) {
       if (!res.writableEnded && !res.destroyed) {
         res.end();
       }
+      return;
+    }
+    if (isAborted() && hasStartedStreaming) {
+      appendLog("Client connection closed during snapshot export stream.");
+      updateProgress({
+        phase: "done",
+        status: "done",
+        bytes_written: archiveBytesForCompletion || preparedBytes,
+        prepared_objects: preparedObjects,
+        finished_at: new Date().toISOString(),
+      });
+      updateJob({
+        status: "success",
+        progress: 100,
+        total_seen: archiveBytesForCompletion || preparedBytes,
+        total_limit: archiveBytesForCompletion || 0,
+        total_planned: archiveBytesForCompletion || 0,
+        total_inserted: preparedObjects,
+      });
+      setTimeout(() => clearSnapshotExportProgress(exportId), 60_000);
       return;
     }
     const message = error?.message || "Failed to export snapshot";

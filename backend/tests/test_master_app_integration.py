@@ -71,3 +71,54 @@ def test_backfill_embeddings_route_returns_started_job(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"job_id": "job-123", "status": "started"}
+
+
+def test_backfill_vlm_route_accepts_combined_json_and_batch_flags(monkeypatch) -> None:
+    monkeypatch.setattr(master, "_start_vlm_backfill_job", lambda payload: "job-vlm-1")
+
+    client = TestClient(master.app)
+    response = client.post(
+        "/vlm/backfill",
+        json={
+            "limit": 10,
+            "batch_size": 2,
+            "combine_fields_into_json": True,
+            "combined_prompt": "Return compact JSON with all fields.",
+            "use_openai_batch_api": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"job_id": "job-vlm-1", "status": "started"}
+
+
+def test_openai_batch_status_route(monkeypatch) -> None:
+    class _FakeBatches:
+        def retrieve(self, batch_id: str):
+            assert batch_id == "batch_123"
+
+            class _Batch:
+                id = "batch_123"
+                status = "in_progress"
+                request_counts = {"total": 10, "completed": 3, "failed": 0}
+                input_file_id = "file_in"
+                output_file_id = None
+                error_file_id = None
+                endpoint = "/v1/chat/completions"
+                completion_window = "24h"
+                metadata = {"source": "test"}
+
+            return _Batch()
+
+    class _FakeClient:
+        batches = _FakeBatches()
+
+    monkeypatch.setattr(master, "_create_openai_client_for_vlm_batch", lambda: _FakeClient())
+
+    client = TestClient(master.app)
+    response = client.post("/vlm/openai/batch/status", json={"batch_id": "batch_123"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == "batch_123"
+    assert payload["status"] == "in_progress"

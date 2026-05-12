@@ -33,7 +33,17 @@ def create_vlm(
             dtype_label=dtype_label,
             attn_implementation=attn_implementation,
         )
+    if normalized_backend == "OPENAI":
+        from backend.models.vlm.openai_vlm_backend import OpenAIVLMBackend
+
+        return OpenAIVLMBackend(
+            model_name=model_name or OpenAIVLMBackend.DEFAULT_MODEL_NAME,
+            device=device,
+            torch_dtype=torch_dtype,
+            dtype_label=dtype_label,
+            attn_implementation=attn_implementation,
+        )
     raise ValueError(
         f"Unsupported VLM_BACKEND={backend_name!r}. "
-        "Supported values: SMOLVLM, QWEN."
+        "Supported values: SMOLVLM, QWEN, OPENAI."
     )

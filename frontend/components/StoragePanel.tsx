@@ -129,6 +129,70 @@ interface StorageStatsResponse {
   hidden_datasets?: string[];
 }
 
+const EMPTY_STORAGE_STATS: StorageStatsResponse = {
+  source_table_exists: true,
+  source_table: "storage.objects",
+  warning: null,
+  source: {
+    total_rows: 0,
+    rows_with_storage_path: 0,
+    distinct_storage_paths: 0,
+    duplicate_storage_rows: 0,
+  },
+  embeddings: {
+    annotated_rows: 0,
+    pending_rows: 0,
+    annotated_percent: 0,
+    pending_percent: 0,
+    dimensions: {
+      status: "unknown",
+      query_dim: null,
+      stored_dim: null,
+      mismatch: null,
+      reason: null,
+    },
+  },
+  vlm: {
+    annotated_rows: 0,
+    pending_rows: 0,
+    annotated_percent: 0,
+    pending_percent: 0,
+    configured_fields: 0,
+    partial_annotated_rows: 0,
+    partial_annotated_percent: 0,
+    partial_only_rows: 0,
+    partial_only_percent: 0,
+    field_coverage: [],
+    field_coverage_summary: null,
+  },
+  storage: {
+    tracked_buckets: [],
+    bucket_stats: [],
+    all_bucket_stats: [],
+    total_objects: 0,
+    total_bytes: 0,
+    total_gigabytes: 0,
+  },
+  datasets: {
+    rows_distribution: [],
+    memory_distribution: [],
+    memory_pie_segments: [],
+  },
+  disk: {
+    total_bytes: 0,
+    used_bytes: 0,
+    free_bytes: 0,
+    total_gigabytes: 0,
+    used_gigabytes: 0,
+    free_gigabytes: 0,
+    free_percent: 0,
+    used_percent: 0,
+  },
+  timestamp: "—",
+  dataset_visibility: {},
+  hidden_datasets: [],
+};
+
 interface ObjectListItem {
   object_id: string;
   storage_path: string;
@@ -177,6 +241,7 @@ const SNAPSHOT_ACTION_IDS = [
   "download-vlm",
   "import-snapshot",
 ] as const;
+const SNAPSHOT_UI_STATE_STORAGE_KEY = "avsp_snapshot_transfer_ui_v1";
 const OBJECT_BROWSER_ROW_HEIGHT_PX = 64;
 const OBJECT_BROWSER_VIRTUAL_OVERSCAN_ROWS = 6;
 
@@ -193,6 +258,16 @@ interface SnapshotProgressMeta {
   hint?: string;
 }
 
+interface SnapshotUiStateStorage {
+  actionInProgress: SnapshotActionId | null;
+  snapshotActionProgress: Partial<Record<SnapshotActionId, number>>;
+  snapshotTransferSize: Partial<Record<SnapshotActionId, SnapshotTransferSize>>;
+  snapshotProgressMeta: Partial<Record<SnapshotActionId, SnapshotProgressMeta>>;
+  snapshotExportInlineMessage: string | null;
+  snapshotImportInlineMessage: string | null;
+  snapshotWarningMessage: string | null;
+}
+
 function jobTypeToSnapshotActionId(jobType: string): SnapshotActionId | null {
   if (jobType === "snapshot_import") return "import-snapshot";
   if (jobType === "snapshot_export_full") return "download-full";
@@ -201,11 +276,63 @@ function jobTypeToSnapshotActionId(jobType: string): SnapshotActionId | null {
   return null;
 }
 
-function snapshotActionIdToJobType(actionId: SnapshotActionId): string {
-  if (actionId === "download-full") return "snapshot_export_full";
-  if (actionId === "download-embeddings") return "snapshot_export_embeddings";
-  if (actionId === "download-vlm") return "snapshot_export_vlm";
-  return "snapshot_import";
+function isRunningSnapshotActionJob(
+  job: Record<string, unknown>,
+  actionId: SnapshotActionId
+): boolean {
+  const status = String(job?.status || "").trim().toLowerCase();
+  if (status !== "running") return false;
+
+  const jobType = String(job?.job_type || "").trim();
+  const directAction = jobTypeToSnapshotActionId(jobType);
+  if (directAction === actionId) {
+    return true;
+  }
+
+  if (actionId === "import-snapshot") {
+    return false;
+  }
+
+  if (jobType !== "snapshot_export" && jobType !== "snapshot_transfer") {
+    return false;
+  }
+
+  const config =
+    job?.job_config && typeof job.job_config === "object"
+      ? (job.job_config as Record<string, unknown>)
+      : {};
+  const kind = String(config.kind || "").trim().toLowerCase();
+  if (actionId === "download-full") {
+    return !kind || kind === "full";
+  }
+  if (actionId === "download-embeddings") {
+    return kind === "embeddings";
+  }
+  if (actionId === "download-vlm") {
+    return kind === "vlm";
+  }
+  return false;
+}
+
+function resolveSnapshotActionIdFromJob(
+  job: Record<string, unknown>
+): SnapshotActionId | null {
+  const jobType = String(job?.job_type || "").trim();
+  const directAction = jobTypeToSnapshotActionId(jobType);
+  if (directAction) {
+    return directAction;
+  }
+  if (jobType !== "snapshot_export" && jobType !== "snapshot_transfer") {
+    return null;
+  }
+  const config =
+    job?.job_config && typeof job.job_config === "object"
+      ? (job.job_config as Record<string, unknown>)
+      : {};
+  const kind = String(config.kind || "").trim().toLowerCase();
+  if (kind === "embeddings") return "download-embeddings";
+  if (kind === "vlm") return "download-vlm";
+  return "download-full";
 }
 
 function isSnapshotActionId(value: string): value is SnapshotActionId {
@@ -765,7 +892,8 @@ export default function StoragePanel({
   showSnapshotSection?: boolean;
   showVlmFieldBreakdown?: boolean;
 }) {
-  const [stats, setStats] = useState<StorageStatsResponse | null>(null);
+  const [stats, setStats] = useState<StorageStatsResponse>(EMPTY_STORAGE_STATS);
+  const [hasLoadedStats, setHasLoadedStats] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
@@ -828,6 +956,117 @@ export default function StoragePanel({
   const objectBrowserViewportRef = useRef<HTMLDivElement | null>(null);
   const normalizedObjectsQuery = objectsSearchQuery.trim().toLowerCase();
   const hasObjectsFilter = Boolean(objectsDatasetFilter || normalizedObjectsQuery);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SNAPSHOT_UI_STATE_STORAGE_KEY);
+      if (!raw) {
+        return;
+      }
+      const parsed = JSON.parse(raw) as Partial<SnapshotUiStateStorage>;
+      const nextActionInProgress =
+        typeof parsed?.actionInProgress === "string" && isSnapshotActionId(parsed.actionInProgress)
+          ? parsed.actionInProgress
+          : null;
+      if (nextActionInProgress) {
+        setActionInProgress(nextActionInProgress);
+      }
+
+      const nextProgress: Partial<Record<SnapshotActionId, number>> = {};
+      const rawProgress =
+        parsed?.snapshotActionProgress && typeof parsed.snapshotActionProgress === "object"
+          ? parsed.snapshotActionProgress
+          : {};
+      for (const [key, value] of Object.entries(rawProgress)) {
+        if (!isSnapshotActionId(key)) continue;
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) continue;
+        nextProgress[key] = Math.max(0, Math.min(100, numeric));
+      }
+      if (Object.keys(nextProgress).length > 0) {
+        setSnapshotActionProgress(nextProgress);
+      }
+
+      const nextTransferSize: Partial<Record<SnapshotActionId, SnapshotTransferSize>> = {};
+      const rawTransferSize =
+        parsed?.snapshotTransferSize && typeof parsed.snapshotTransferSize === "object"
+          ? parsed.snapshotTransferSize
+          : {};
+      for (const [key, value] of Object.entries(rawTransferSize)) {
+        if (!isSnapshotActionId(key) || !value || typeof value !== "object") continue;
+        const loaded = Math.max(0, Number((value as SnapshotTransferSize).loadedBytes || 0));
+        const rawTotal = Number((value as SnapshotTransferSize).totalBytes);
+        const total =
+          Number.isFinite(rawTotal) && rawTotal >= 0 ? rawTotal : null;
+        nextTransferSize[key] = { loadedBytes: loaded, totalBytes: total };
+      }
+      if (Object.keys(nextTransferSize).length > 0) {
+        setSnapshotTransferSize(nextTransferSize);
+      }
+
+      const nextMeta: Partial<Record<SnapshotActionId, SnapshotProgressMeta>> = {};
+      const rawMeta =
+        parsed?.snapshotProgressMeta && typeof parsed.snapshotProgressMeta === "object"
+          ? parsed.snapshotProgressMeta
+          : {};
+      for (const [key, value] of Object.entries(rawMeta)) {
+        if (!isSnapshotActionId(key) || !value || typeof value !== "object") continue;
+        const phase = String((value as SnapshotProgressMeta).phase || "").trim().toLowerCase();
+        const status = String((value as SnapshotProgressMeta).status || "").trim().toLowerCase();
+        const hint = String((value as SnapshotProgressMeta).hint || "").trim();
+        nextMeta[key] = { phase, status, hint };
+      }
+      if (Object.keys(nextMeta).length > 0) {
+        setSnapshotProgressMeta(nextMeta);
+      }
+
+      if (typeof parsed?.snapshotExportInlineMessage === "string") {
+        setSnapshotExportInlineMessage(parsed.snapshotExportInlineMessage || null);
+      }
+      if (typeof parsed?.snapshotImportInlineMessage === "string") {
+        setSnapshotImportInlineMessage(parsed.snapshotImportInlineMessage || null);
+      }
+      if (typeof parsed?.snapshotWarningMessage === "string") {
+        setSnapshotWarningMessage(parsed.snapshotWarningMessage || null);
+      }
+    } catch {
+    }
+  }, []);
+
+  useEffect(() => {
+    const snapshotActionInProgress =
+      actionInProgress && isSnapshotActionId(actionInProgress) ? actionInProgress : null;
+    const hasSnapshotState =
+      Boolean(snapshotActionInProgress) ||
+      Object.keys(snapshotActionProgress).length > 0 ||
+      Object.keys(snapshotTransferSize).length > 0 ||
+      Object.keys(snapshotProgressMeta).length > 0 ||
+      Boolean(snapshotExportInlineMessage) ||
+      Boolean(snapshotImportInlineMessage) ||
+      Boolean(snapshotWarningMessage);
+    if (!hasSnapshotState) {
+      window.localStorage.removeItem(SNAPSHOT_UI_STATE_STORAGE_KEY);
+      return;
+    }
+    const payload: SnapshotUiStateStorage = {
+      actionInProgress: snapshotActionInProgress,
+      snapshotActionProgress,
+      snapshotTransferSize,
+      snapshotProgressMeta,
+      snapshotExportInlineMessage,
+      snapshotImportInlineMessage,
+      snapshotWarningMessage,
+    };
+    window.localStorage.setItem(SNAPSHOT_UI_STATE_STORAGE_KEY, JSON.stringify(payload));
+  }, [
+    actionInProgress,
+    snapshotActionProgress,
+    snapshotTransferSize,
+    snapshotProgressMeta,
+    snapshotExportInlineMessage,
+    snapshotImportInlineMessage,
+    snapshotWarningMessage,
+  ]);
 
   useEffect(() => {
     if (!confirmDialog && !previewObjectId) {
@@ -1033,11 +1272,63 @@ export default function StoragePanel({
   };
 
   const startSnapshotExportProgressPoll = (
-    exportId: string,
+    exportId: string | null | undefined,
     actionId: SnapshotActionId
   ) => {
     stopSnapshotExportProgressPoll();
     const token = snapshotExportPollTokenRef.current;
+    const normalizedExportId = String(exportId || "").trim();
+
+    const syncFromJobs = async (): Promise<boolean> => {
+      const jobsResponse = await axios.get("/api/jobs");
+      const jobs = Array.isArray(jobsResponse.data?.jobs)
+        ? (jobsResponse.data.jobs as Array<Record<string, unknown>>)
+        : [];
+      const targetJob = jobs
+        .filter((job) => resolveSnapshotActionIdFromJob(job) === actionId)
+        .sort((left, right) => Number(right?.created_at || 0) - Number(left?.created_at || 0))[0];
+
+      if (!targetJob) {
+        clearSnapshotProgress(actionId);
+        setActionInProgress((current) => (current === actionId ? null : current));
+        return true;
+      }
+
+      const status = String(targetJob.status || "").trim().toLowerCase();
+      const phase = String(targetJob.phase || "").trim().toLowerCase();
+      const progress = Math.max(0, Math.min(100, Number(targetJob.progress || 0)));
+      const totalSeen = Math.max(0, Number(targetJob.total_seen || 0));
+      const totalPlannedRaw = Number(targetJob.total_planned || targetJob.total_limit || 0);
+      const totalPlanned =
+        Number.isFinite(totalPlannedRaw) && totalPlannedRaw > 0 ? totalPlannedRaw : null;
+      updateSnapshotTransferSize(actionId, totalSeen, totalPlanned, { monotonic: false });
+      updateSnapshotProgress(actionId, progress, "set");
+      let hint = "";
+      if (phase === "preparing") {
+        hint = "Preparing snapshot...";
+      } else if (phase === "archiving") {
+        hint = "Archiving snapshot...";
+      } else if (phase === "streaming") {
+        hint = "Streaming snapshot...";
+      }
+      updateSnapshotProgressMeta(actionId, { phase, status, hint });
+
+      if (status === "error") {
+        setSnapshotExportInlineMessage("Ошибка при создании архива выгрузки.");
+        setActionInProgress((current) => (current === actionId ? null : current));
+        return true;
+      }
+      if (status === "cancelled") {
+        setSnapshotExportInlineMessage("Выгрузка и создание архива отменены.");
+        setActionInProgress((current) => (current === actionId ? null : current));
+        return true;
+      }
+      if (status === "success") {
+        setActionInProgress((current) => (current === actionId ? null : current));
+        return true;
+      }
+      return false;
+    };
 
     const scheduleNext = (delayMs: number) => {
       snapshotExportPollTimerRef.current = setTimeout(async () => {
@@ -1045,8 +1336,28 @@ export default function StoragePanel({
           return;
         }
         try {
+          if (!normalizedExportId) {
+            const done = await syncFromJobs();
+            if (done) {
+              return;
+            }
+            const nextDelay =
+              typeof document !== "undefined" && document.visibilityState !== "visible"
+                ? 1400
+                : 350;
+            scheduleNext(nextDelay);
+            return;
+          }
+
           const response = await axios.get("/api/storage/transfer/export-progress", {
-            params: { export_id: exportId },
+            params: {
+              export_id: normalizedExportId,
+              _ts: Date.now(),
+            },
+            headers: {
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+            },
           });
           const payload =
             response.data && typeof response.data === "object"
@@ -1109,7 +1420,20 @@ export default function StoragePanel({
             setActionInProgress((current) => (current === actionId ? null : current));
             return;
           }
+          if (phase === "unknown" || status === "unknown") {
+            const done = await syncFromJobs();
+            if (done) {
+              return;
+            }
+          }
         } catch {
+          try {
+            const done = await syncFromJobs();
+            if (done) {
+              return;
+            }
+          } catch {
+          }
         }
         if (token === snapshotExportPollTokenRef.current) {
           const nextDelay =
@@ -1220,12 +1544,9 @@ export default function StoragePanel({
         const jobs = Array.isArray(jobsResponse.data?.jobs)
           ? (jobsResponse.data.jobs as Array<Record<string, unknown>>)
           : [];
-        const targetType = snapshotActionIdToJobType(actionId);
-        const runningJob = jobs.find((job) => {
-          const type = String(job?.job_type || "").trim();
-          const status = String(job?.status || "").toLowerCase();
-          return type === targetType && status === "running";
-        });
+        const runningJob = jobs
+          .filter((job) => isRunningSnapshotActionJob(job, actionId))
+          .sort((left, right) => Number(right?.created_at || 0) - Number(left?.created_at || 0))[0];
         const jobID = String(runningJob?.job_id || "").trim();
         if (jobID) {
           await axios.post("/api/jobs/cancel", { job_id: jobID });
@@ -1344,6 +1665,7 @@ export default function StoragePanel({
             },
           });
           setStats(response.data);
+          setHasLoadedStats(true);
           setErrorMessage(null);
           return;
         } catch (error) {
@@ -1368,10 +1690,10 @@ export default function StoragePanel({
 
   useEffect(() => {
     let cancelled = false;
-    const boot = async () => {
-      await loadStats(true, false);
+    const boot = () => {
+      void loadStats(true, false);
       if (!cancelled) {
-        loadStats(false, true);
+        void loadStats(false, true);
       }
     };
     boot();
@@ -1382,36 +1704,58 @@ export default function StoragePanel({
   }, []);
 
   useEffect(() => {
-    if (!stats) return;
+    if (!hasLoadedStats) return;
     loadStats(false, true, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showVlmFieldBreakdown]);
 
   useEffect(() => {
     let cancelled = false;
+    const clearRestoredSnapshotStateIfNoLiveJob = () => {
+      setActionInProgress((current) =>
+        current && isSnapshotActionId(current) ? null : current
+      );
+      for (const snapshotActionId of SNAPSHOT_ACTION_IDS) {
+        clearSnapshotProgress(snapshotActionId);
+      }
+    };
+
     const restoreSnapshotAction = async () => {
       try {
         const response = await axios.get("/api/jobs");
         const jobs = Array.isArray(response.data?.jobs)
           ? (response.data.jobs as Array<Record<string, unknown>>)
           : [];
-        const runningSnapshotJob = jobs.find((job) => {
-          const status = String(job?.status || "").toLowerCase();
-          const actionId = jobTypeToSnapshotActionId(String(job?.job_type || ""));
-          return status === "running" && actionId !== null;
-        });
-        if (!runningSnapshotJob || cancelled) {
+        const runningSnapshotJobs = jobs
+          .filter((job) => String(job?.status || "").trim().toLowerCase() === "running")
+          .map((job) => ({
+            job,
+            actionId: resolveSnapshotActionIdFromJob(job),
+          }))
+          .filter(
+            (item): item is { job: Record<string, unknown>; actionId: SnapshotActionId } =>
+              item.actionId !== null
+          )
+          .sort(
+            (left, right) =>
+              Number(right.job?.created_at || 0) - Number(left.job?.created_at || 0)
+          );
+        const runningSnapshotJob = runningSnapshotJobs[0];
+
+        if (cancelled) {
+          return;
+        }
+        if (!runningSnapshotJob) {
+          clearRestoredSnapshotStateIfNoLiveJob();
           return;
         }
 
-        const actionId = jobTypeToSnapshotActionId(String(runningSnapshotJob.job_type || ""));
-        if (!actionId) {
-          return;
-        }
+        const actionId = runningSnapshotJob.actionId;
+        const runningJob = runningSnapshotJob.job;
 
-        const progress = Math.max(0, Math.min(100, Number(runningSnapshotJob.progress || 0)));
-        const totalSeen = Math.max(0, Number(runningSnapshotJob.total_seen || 0));
-        const totalPlannedRaw = Number(runningSnapshotJob.total_planned || runningSnapshotJob.total_limit || 0);
+        const progress = Math.max(0, Math.min(100, Number(runningJob.progress || 0)));
+        const totalSeen = Math.max(0, Number(runningJob.total_seen || 0));
+        const totalPlannedRaw = Number(runningJob.total_planned || runningJob.total_limit || 0);
         const totalPlanned =
           Number.isFinite(totalPlannedRaw) && totalPlannedRaw > 0 ? totalPlannedRaw : null;
 
@@ -1420,7 +1764,7 @@ export default function StoragePanel({
         updateSnapshotTransferSize(actionId, totalSeen, totalPlanned);
 
         if (actionId === "import-snapshot") {
-          const restoredPhase = String(runningSnapshotJob.phase || "")
+          const restoredPhase = String(runningJob.phase || "")
             .trim()
             .toLowerCase();
           setSnapshotImportInlineMessage(
@@ -1429,8 +1773,8 @@ export default function StoragePanel({
               : "Загрузка снапшота продолжается..."
           );
           const jobConfig =
-            runningSnapshotJob.job_config && typeof runningSnapshotJob.job_config === "object"
-              ? (runningSnapshotJob.job_config as Record<string, unknown>)
+            runningJob.job_config && typeof runningJob.job_config === "object"
+              ? (runningJob.job_config as Record<string, unknown>)
               : {};
           const importId = String(jobConfig.import_id || "").trim();
           updateSnapshotProgressMeta(actionId, {
@@ -1446,14 +1790,15 @@ export default function StoragePanel({
 
         setSnapshotExportInlineMessage("Выгрузка снапшота продолжается...");
         const jobConfig =
-          runningSnapshotJob.job_config && typeof runningSnapshotJob.job_config === "object"
-            ? (runningSnapshotJob.job_config as Record<string, unknown>)
+          runningJob.job_config && typeof runningJob.job_config === "object"
+            ? (runningJob.job_config as Record<string, unknown>)
             : {};
         const exportId = String(jobConfig.export_id || "").trim();
-        if (exportId) {
-          startSnapshotExportProgressPoll(exportId, actionId);
-        }
+        startSnapshotExportProgressPoll(exportId || null, actionId);
       } catch {
+        if (!cancelled) {
+          clearRestoredSnapshotStateIfNoLiveJob();
+        }
       }
     };
 
@@ -1551,13 +1896,13 @@ export default function StoragePanel({
   }, [normalizedObjectsQuery, objectsDatasetFilter, objectsPageSize, hasObjectsFilter]);
 
   useEffect(() => {
-    if (!stats) return;
+    if (!hasLoadedStats) return;
     if (cleanupDatasetFilter === "all") return;
     const isVisible = Boolean(stats.dataset_visibility?.[cleanupDatasetFilter] ?? true);
     if (!isVisible) {
       setCleanupDatasetFilter("all");
     }
-  }, [stats, cleanupDatasetFilter]);
+  }, [hasLoadedStats, stats, cleanupDatasetFilter]);
 
   const clearScopedMessages = (scope: ActionMessageScope) => {
     if (scope === "snapshot") {
@@ -2172,26 +2517,6 @@ export default function StoragePanel({
     }
   };
 
-  if (isLoading) {
-    return (
-      <section className="px-6 pt-10 pb-16">
-        <div className="mx-auto max-w-6xl rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
-          Загрузка статистики хранилища...
-        </div>
-      </section>
-    );
-  }
-
-  if (!stats) {
-    return (
-      <section className="px-6 pt-10 pb-16">
-        <div className="mx-auto max-w-6xl rounded-3xl border border-rose-200 bg-rose-50 p-6 text-sm font-semibold text-rose-700 shadow-sm">
-          {errorMessage ?? "Не удалось загрузить статистику хранилища."}
-        </div>
-      </section>
-    );
-  }
-
   const avgImageBytes =
     stats.source.distinct_storage_paths > 0
       ? stats.storage.total_bytes / stats.source.distinct_storage_paths
@@ -2580,6 +2905,11 @@ export default function StoragePanel({
               <p className="mt-1 text-xs text-slate-500">
                 Последнее обновление: {stats.timestamp}
               </p>
+              {isLoading && !hasLoadedStats && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Загружаем статистику... секции будут появляться по мере готовности.
+                </p>
+              )}
             </div>
             <button
               type="button"

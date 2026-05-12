@@ -732,13 +732,17 @@ export default async function handler(req, res) {
   const workDir = await createTempDir("avsp-transfer-import-");
   const { isAborted, reason: abortReason, assertNotAborted: assertClientNotAborted } =
     createAbortState(req, res);
+  let stopOnDisconnect = true;
   const assertNotAborted = () => {
-    assertClientNotAborted();
+    if (stopOnDisconnect) {
+      assertClientNotAborted();
+    }
     if (isSnapshotTransferJobCancelRequested(jobId)) {
       throw createTransferCancelledError("Transfer cancelled by user");
     }
   };
-  const isStopped = () => isAborted() || isSnapshotTransferJobCancelRequested(jobId);
+  const isStopped = () =>
+    (stopOnDisconnect && isAborted()) || isSnapshotTransferJobCancelRequested(jobId);
   const getCancelReason = () => {
     if (isSnapshotTransferJobCancelRequested(jobId)) {
       return "cancel_requested_by_user";
@@ -811,6 +815,10 @@ export default async function handler(req, res) {
       },
     });
     appendLog(`Archive uploaded (${uploadedBytes} bytes). Extracting...`);
+    stopOnDisconnect = false;
+    if (isAborted()) {
+      appendLog("Client connection closed after upload. Continuing snapshot import in background.");
+    }
 
     let archiveManifest = null;
     try {
@@ -965,6 +973,9 @@ export default async function handler(req, res) {
       extract_progress: 100,
     });
 
+    if (res.destroyed || res.writableEnded) {
+      return;
+    }
     return res.status(200).json({
       status: "ok",
       imported_at: new Date().toISOString(),
@@ -995,6 +1006,9 @@ export default async function handler(req, res) {
     updateJob({
       status: "error",
     });
+    if (res.destroyed || res.writableEnded) {
+      return;
+    }
     return res
       .status(error.status || 500)
       .json(error.payload || { error: error.message || "Failed to import snapshot" });

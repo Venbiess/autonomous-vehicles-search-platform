@@ -22,8 +22,8 @@ EMBEDDER_CONFIG = SimpleNamespace(
 VLM_CONFIG = SimpleNamespace(
     PORT=8001,
     DEVICE="CPU",           # CPU, CUDA, MPS
-    BACKEND="SMOLVLM",      # SMOLVLM, QWEN
+    BACKEND="SMOLVLM",      # SMOLVLM, QWEN, OPENAI
     MODEL_NAME=None,
-    TORCH_DTYPE=None,       # None => bf16 on CUDA, float32 otherwise
-    ATTN_IMPLEMENTATION=None,  # Optional: flash_attention_2, sdpa, eager
+    TORCH_DTYPE=None,       # None => bf16 on CUDA, float32 otherwise (ignored by OPENAI backend)
+    ATTN_IMPLEMENTATION=None,  # Optional: flash_attention_2, sdpa, eager (ignored by OPENAI backend)
 )

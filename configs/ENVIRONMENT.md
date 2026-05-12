@@ -30,6 +30,12 @@ This file is the single reference for runtime environment variables used by AVSP
 | `MODEL_BACKEND_READY_POLL_SEC` | `1` | Poll interval for model readiness checks. |
 | `VLM_RETRY_EMPTY_VALUES` | `1` | Retry once when VLM returns empty normalized value. |
 | `VLM_BACKFILL_FIELD_CHUNK_SIZE` | `0` | VLM per-scene field chunk size in batch mode. `0` means use backfill `batch_size`. |
+| `VLM_BACKEND` | from `configs.hw_settings` (`SMOLVLM`) | VLM backend hint for master runtime logic (`SMOLVLM`, `QWEN`, `OPENAI`). |
+| `VLM_MODEL_NAME` | backend default | Model override used in runtime cards and OpenAI batch job payloads. |
+| `VLM_OPENAI_BATCH_POLL_SEC` | `15` | Poll interval for OpenAI Batch API status checks in VLM backfill JSON mode. |
+| `VLM_OPENAI_BATCH_SCENE_CHUNK_SIZE` | `32` | Number of scenes per OpenAI batch input file chunk in VLM backfill JSON mode. |
+| `VLM_OPENAI_BATCH_MAX_INPUT_BYTES` | `190000000` | Soft upper bound for generated OpenAI batch input file size. |
+| `VLM_OPENAI_BATCH_COMPLETION_WINDOW` | `24h` | OpenAI batch completion window (`24h` currently supported). |
 
 ## VLM Worker (`backend.models.queue_worker --worker vlm`)
 
@@ -37,13 +43,24 @@ This file is the single reference for runtime environment variables used by AVSP
 |---|---:|---|
 | `VLM_PORT` | `8001` | Reserved VLM HTTP port. Current `vlm` worker runs queue-only and does not expose HTTP. |
 | `WORKER_METRICS_PORT` | `9109` | Prometheus metrics port for worker. |
-| `VLM_BACKEND` | from `configs.hw_settings` (`SMOLVLM`) | VLM backend selection (`SMOLVLM`, `QWEN`). |
-| `VLM_MODEL_NAME` | backend default | HF model id override. |
-| `VLM_TORCH_DTYPE` | backend/runtime default | Runtime dtype policy (`auto`, `fp16`, `bf16`, etc.). |
-| `VLM_ATTN_IMPLEMENTATION` | backend/runtime default | Attention implementation override. |
+| `VLM_BACKEND` | from `configs.hw_settings` (`SMOLVLM`) | VLM backend selection (`SMOLVLM`, `QWEN`, `OPENAI`). |
+| `VLM_MODEL_NAME` | backend default | Model id override (HF model for local backends, OpenAI model id for `OPENAI`). |
+| `VLM_TORCH_DTYPE` | backend/runtime default | Runtime dtype policy (`auto`, `fp16`, `bf16`, etc.), used by local HF backends. |
+| `VLM_ATTN_IMPLEMENTATION` | backend/runtime default | Attention implementation override, used by local HF backends. |
 | `VLM_DEBUG_EMPTY_OUTPUT` | `0` | Enable detailed empty-generation logs (`token ids`, decode with/without special tokens). |
 | `VLM_HF_DOWNLOAD_PROGRESS` / `HF_DOWNLOAD_PROGRESS` | `1` | HF download progress visibility. |
 | `HF_HOME` | `/app/.cache/huggingface` | HF cache directory. |
+| `VLM_OPENAI_API_KEY` / `OPENAI_API_KEY` | empty | API key for OpenAI VLM backend. |
+| `VLM_OPENAI_BASE_URL` / `OPENAI_BASE_URL` | empty | Optional custom OpenAI-compatible base URL. |
+| `VLM_OPENAI_ORG_ID` / `OPENAI_ORG_ID` | empty | Optional OpenAI organization id. |
+| `VLM_OPENAI_PROJECT_ID` / `OPENAI_PROJECT_ID` | empty | Optional OpenAI project id. |
+| `VLM_OPENAI_TIMEOUT_SEC` | `120` | HTTP timeout for OpenAI VLM requests. |
+| `VLM_OPENAI_MAX_RETRIES` | `2` | OpenAI client retry count. |
+| `VLM_OPENAI_IMAGE_DETAIL` | `low` | Vision detail level (`auto`, `low`, `high`). |
+| `VLM_OPENAI_IMAGE_FORMAT` | `jpeg` | In-memory image encoding sent to API (`jpeg`, `png`). |
+| `VLM_OPENAI_JPEG_QUALITY` | `95` | JPEG quality when `VLM_OPENAI_IMAGE_FORMAT=jpeg`. |
+| `VLM_OPENAI_TEMPERATURE` | empty | Optional temperature override for OpenAI chat completions. |
+| `VLM_OPENAI_SYSTEM_PROMPT` | empty | Optional system prompt prepended to each OpenAI VLM call. |
 
 ## Embedder Worker (`backend.models.queue_worker --worker embedder`)
 
@@ -96,4 +113,6 @@ This file is the single reference for runtime environment variables used by AVSP
 
 - `VLM_RETRY_EMPTY_VALUES`, `VLM_BACKFILL_FIELD_CHUNK_SIZE` are consumed by **master-server** only.
 - `VLM_DEBUG_EMPTY_OUTPUT` is consumed by **VLM model runtime** (worker and model-http profile).
+- `VLM_OPENAI_*` and `OPENAI_*` are consumed by **VLM model runtime** when `VLM_BACKEND=OPENAI`.
+- `combine_fields_into_json`, `use_openai_batch_api` are optional fields in `/vlm/backfill` request payload.
 - If you set variables in `docker/.env`, restart relevant containers after changes.

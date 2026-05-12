@@ -40,9 +40,8 @@ From repository root:
 docker compose -f docker/docker-compose.yml up --build
 ```
 
-Env file options when running from repository root:
-- Option A (no extra flags): create root `.env` (use [`.env.example`](../.env.example))
-- Option B: keep env in `docker/.env` and run with:
+Env file setup when running from repository root:
+- Keep env in `docker/.env` (template: [`.env.example`](.env.example)) and run with:
 
 ```bash
 docker compose --env-file docker/.env -f docker/docker-compose.yml up --build
@@ -138,8 +137,8 @@ AVSP_DEV_RELOAD=1
 ```
 
 If you run from repository root:
-- either put it in root `.env`
-- or pass `--env-file docker/.env`
+- set it in `docker/.env`
+- and run with `--env-file docker/.env`
 
 Then start as usual:
 
@@ -203,6 +202,47 @@ docker exec -it avsp-master-$USER python -m backend.processors.waymo_preprocesso
 docker exec -it avsp-master-$USER python -m backend.processors.nuimages_preprocessor
 docker exec -it avsp-master-$USER python -m backend.processors.once_preprocessor --extract --cameras FRONT --step-sec 1.0
 docker exec -it avsp-master-$USER python -m backend.processors.synthetic_preprocessor --num-images 32 --batch-size 8 --bucket synthetic --save-to-db
+```
+
+## Optional: OpenAI VLM backend
+
+To run VLM via OpenAI API instead of local HF models, set these variables in `docker/.env`:
+
+```bash
+VLM_BACKEND=OPENAI
+VLM_MODEL_NAME=gpt-5.4-mini
+OPENAI_API_KEY=your_api_key
+# Optional overrides:
+# VLM_OPENAI_IMAGE_DETAIL=low
+# VLM_OPENAI_TIMEOUT_SEC=120
+# VLM_OPENAI_BATCH_SCENE_CHUNK_SIZE=32
+```
+
+Then start as usual:
+
+```bash
+docker compose --env-file docker/.env -f docker/docker-compose.yml up --build
+```
+
+To run a VLM backfill in one JSON prompt per image and process requests via OpenAI Batch API:
+
+```bash
+curl -s http://localhost:9012/vlm/backfill \
+  -H "Content-Type: application/json" \
+  -d '{
+    "limit": 1000,
+    "batch_size": 16,
+    "combine_fields_into_json": true,
+    "use_openai_batch_api": true
+  }'
+```
+
+Check OpenAI batch status:
+
+```bash
+curl -s http://localhost:9012/vlm/openai/batch/status \
+  -H "Content-Type: application/json" \
+  -d '{"batch_id":"batch_..."}'
 ```
 
 ## Model image development workflow
