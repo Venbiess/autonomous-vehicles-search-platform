@@ -110,3 +110,33 @@ func TestQdrantExtractObjectIDPrefersPayload(t *testing.T) {
 		t.Fatalf("expected numeric id fallback, got %q", got)
 	}
 }
+
+func TestQdrantLookupPointsParsesArrayAndPointsObject(t *testing.T) {
+	t.Parallel()
+
+	arrayResult := []any{
+		map[string]any{
+			"id":      "obj-1",
+			"vector":  []any{1.0, 2.0},
+			"payload": map[string]any{"object_id": "obj-1"},
+		},
+	}
+	objectResult := map[string]any{
+		"points": []any{
+			map[string]any{
+				"id":      "obj-2",
+				"vector":  []any{3.0, 4.0},
+				"payload": map[string]any{"object_id": "obj-2"},
+			},
+		},
+	}
+
+	arrayPoints := qdrantLookupPoints(arrayResult)
+	if len(arrayPoints) != 1 || arrayPoints[0].ID != "obj-1" {
+		t.Fatalf("qdrantLookupPoints(array) = %#v", arrayPoints)
+	}
+	objectPoints := qdrantLookupPoints(objectResult)
+	if len(objectPoints) != 1 || objectPoints[0].ID != "obj-2" {
+		t.Fatalf("qdrantLookupPoints(object) = %#v", objectPoints)
+	}
+}

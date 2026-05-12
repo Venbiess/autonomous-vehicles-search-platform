@@ -184,13 +184,7 @@ func (q *QdrantAdapter) GetByObjectIDs(ctx context.Context, objectIDs []string) 
 		chunk := objectIDs[start:end]
 
 		var resp struct {
-			Result struct {
-				Points []struct {
-					ID      any            `json:"id"`
-					Vector  any            `json:"vector"`
-					Payload map[string]any `json:"payload"`
-				} `json:"points"`
-			} `json:"result"`
+			Result any `json:"result"`
 		}
 		reqBody := map[string]any{
 			"ids":          chunk,
@@ -212,7 +206,7 @@ func (q *QdrantAdapter) GetByObjectIDs(ctx context.Context, objectIDs []string) 
 			return nil, err
 		}
 
-		for _, point := range resp.Result.Points {
+		for _, point := range qdrantLookupPoints(resp.Result) {
 			objectID := q.extractObjectID(point.ID, point.Payload)
 			if objectID == "" {
 				continue
@@ -226,6 +220,42 @@ func (q *QdrantAdapter) GetByObjectIDs(ctx context.Context, objectIDs []string) 
 	}
 
 	return out, nil
+}
+
+type qdrantLookupPoint struct {
+	ID      any
+	Vector  any
+	Payload map[string]any
+}
+
+func qdrantLookupPoints(raw any) []qdrantLookupPoint {
+	rows, ok := raw.([]any)
+	if ok {
+		return parseQdrantLookupPointArray(rows)
+	}
+	if obj, ok := raw.(map[string]any); ok {
+		if rows, ok := obj["points"].([]any); ok {
+			return parseQdrantLookupPointArray(rows)
+		}
+	}
+	return nil
+}
+
+func parseQdrantLookupPointArray(rows []any) []qdrantLookupPoint {
+	out := make([]qdrantLookupPoint, 0, len(rows))
+	for _, raw := range rows {
+		row, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		payload, _ := row["payload"].(map[string]any)
+		out = append(out, qdrantLookupPoint{
+			ID:      row["id"],
+			Vector:  row["vector"],
+			Payload: payload,
+		})
+	}
+	return out
 }
 
 func (q *QdrantAdapter) Health(ctx context.Context) error {
