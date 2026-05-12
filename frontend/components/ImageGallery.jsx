@@ -7,6 +7,26 @@ const GALLERY_ROW_HEIGHT_PX = 304;
 const GALLERY_ROW_GAP_PX = 16;
 const GALLERY_OVERSCAN_ROWS = 2;
 
+function renderTitleLines(title, className = "") {
+  const lines = String(title || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+  return (
+    <div className={className}>
+      {lines.map((line, index) => (
+        <div
+          key={`${line}-${index}`}
+          className={`font-bold ${index % 2 === 0 ? "text-black" : "text-slate-600"}`}
+        >
+          {line}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ImageGallery({ images }) {
   const [selectedImage, setSelectedImage] = useState(null);
   const [viewportWidth, setViewportWidth] = useState(
@@ -102,9 +122,7 @@ export default function ImageGallery({ images }) {
               className="h-48 w-full object-cover"
             />
             <div className="p-2">
-              <div className="max-h-[64px] overflow-hidden text-xs whitespace-pre-line break-all">
-                {img.title}
-              </div>
+              {renderTitleLines(img.title, "max-h-[96px] overflow-hidden text-xs break-all")}
               {img.score !== null && img.score !== undefined && (
                 <div className="text-xs text-gray-500">
                   score: {Number(img.score).toFixed(4)}
@@ -151,9 +169,7 @@ export default function ImageGallery({ images }) {
                 className="max-h-[68vh] w-full rounded-2xl object-contain bg-slate-100"
               />
               <div className="px-2 pb-2 pt-4">
-                <div className="text-sm whitespace-pre-line break-all text-slate-800">
-                  {selectedImage.title}
-                </div>
+                {renderTitleLines(selectedImage.title, "text-sm break-all")}
                 {selectedImage.score !== null &&
                   selectedImage.score !== undefined && (
                     <div className="mt-2 text-sm text-slate-500">

@@ -7,6 +7,7 @@ interface AnnotationPanelProps {
   onOpenJobsMonitor: () => void;
   onOpenStorage: () => void;
   showSyntheticMethod?: boolean;
+  showOpenAIBatchBlock?: boolean;
 }
 
 type ResponseType = "short_text" | "text" | "yes_no" | "number" | "category";
@@ -156,6 +157,7 @@ export default function AnnotationPanel({
   onOpenJobsMonitor,
   onOpenStorage,
   showSyntheticMethod = true,
+  showOpenAIBatchBlock = false,
 }: AnnotationPanelProps) {
   const localUploadFileInputRef = useRef<HTMLInputElement | null>(null);
   const [limitInput, setLimitInput] = useState("1000");
@@ -177,6 +179,23 @@ export default function AnnotationPanel({
   const [vlmMaxNewTokensInput, setVlmMaxNewTokensInput] = useState("64");
   const [isSavingVlmSchema, setIsSavingVlmSchema] = useState(false);
   const [isStartingVlmJob, setIsStartingVlmJob] = useState(false);
+  const [openAiCombinedPromptInput, setOpenAiCombinedPromptInput] = useState("");
+  const [vlmApiProvider, setVlmApiProvider] = useState<"openai">("openai");
+  const [openAiUseJsonSchema, setOpenAiUseJsonSchema] = useState(false);
+  const [openAiJsonSchemaInput, setOpenAiJsonSchemaInput] = useState("");
+  const [openAiFieldNamesInput, setOpenAiFieldNamesInput] = useState("");
+  const [openAiUseAllSchemaFields, setOpenAiUseAllSchemaFields] = useState(true);
+  const [openAiBackfillLimitInput, setOpenAiBackfillLimitInput] = useState("200");
+  const [openAiBatchSizeInput, setOpenAiBatchSizeInput] = useState("32");
+  const [openAiMaxTokensInput, setOpenAiMaxTokensInput] = useState("256");
+  const [openAiDataset, setOpenAiDataset] = useState<string>("all");
+  const [openAiOverwriteExisting, setOpenAiOverwriteExisting] = useState(false);
+  const [openAiDryRun, setOpenAiDryRun] = useState(false);
+  const [isStartingOpenAiBatchJob, setIsStartingOpenAiBatchJob] = useState(false);
+  const [openAiBatchStatusMessage, setOpenAiBatchStatusMessage] = useState<string | null>(null);
+  const [openAiBatchWarningMessage, setOpenAiBatchWarningMessage] = useState<string | null>(null);
+  const [openAiBatchErrorMessage, setOpenAiBatchErrorMessage] = useState<string | null>(null);
+  const [showOpenAiBatchJobsLink, setShowOpenAiBatchJobsLink] = useState(false);
   const [schemaDeleteDialog, setSchemaDeleteDialog] = useState<{
     fields: Array<{ name: string; prompt: string; response_type: ResponseType }>;
     removedFieldNames: string[];
@@ -271,10 +290,16 @@ export default function AnnotationPanel({
   }, []);
 
   useEffect(() => {
+    if (!openAiFieldNamesInput.trim() && vlmSavedFields.length > 0) {
+      setOpenAiFieldNamesInput(vlmSavedFields.map((field) => field.field_name).join(", "));
+    }
+  }, [vlmSavedFields, openAiFieldNamesInput]);
+
+  useEffect(() => {
     const loadDatasets = async () => {
       try {
         const response = await axios.get("/api/storage/stats", {
-          params: { include_storage_details: 0 },
+          params: { include_storage_details: 1 },
         });
         const rows: DatasetRowDistribution[] = Array.isArray(
           response.data?.datasets?.rows_distribution
@@ -687,6 +712,197 @@ export default function AnnotationPanel({
       setVlmErrorMessage(message);
     } finally {
       setIsStartingVlmJob(false);
+    }
+  };
+
+  const parseOpenAiFieldNames = (): string[] => {
+    if (openAiUseAllSchemaFields) {
+      return vlmSavedFields.map((field) => field.field_name).filter(Boolean);
+    }
+    return Array.from(
+      new Set(
+        openAiFieldNamesInput
+          .split(/[\n,]+/)
+          .map((item) => normalizeFieldName(item))
+          .filter(Boolean)
+      )
+    );
+  };
+
+  const parseOpenAiJsonSchema = (): Record<string, unknown> | null => {
+    if (!openAiUseJsonSchema) {
+      return null;
+    }
+    const raw = openAiJsonSchemaInput.trim();
+    if (!raw) {
+      throw new Error("Custom JSON schema is enabled, but schema field is empty.");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error: unknown) {
+      // Accept Python-like literals when users paste examples from scripts/docs.
+      const normalizedRaw = raw
+        .replace(/\bTrue\b/g, "true")
+        .replace(/\bFalse\b/g, "false")
+        .replace(/\bNone\b/g, "null");
+      try {
+        parsed = JSON.parse(normalizedRaw);
+      } catch {
+        throw new Error(
+          `Custom JSON schema must be valid JSON: ${
+            error instanceof Error ? error.message : "parse error"
+          }`
+        );
+      }
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Custom JSON schema must be a JSON object.");
+    }
+
+    const inputObject = parsed as Record<string, unknown>;
+    let schema: Record<string, unknown> = inputObject;
+
+    // Support full response_format wrapper:
+    // { "type": "json_schema", "json_schema": { "name": "...", "strict": true, "schema": {...} } }
+    if (inputObject.type === "json_schema") {
+      const jsonSchemaWrapper = inputObject.json_schema;
+      if (
+        !jsonSchemaWrapper ||
+        typeof jsonSchemaWrapper !== "object" ||
+        Array.isArray(jsonSchemaWrapper)
+      ) {
+        throw new Error(
+          "When using \"type\": \"json_schema\", field \"json_schema\" must be an object."
+        );
+      }
+      const wrapped = jsonSchemaWrapper as Record<string, unknown>;
+      const wrappedSchema = wrapped.schema;
+      if (!wrappedSchema || typeof wrappedSchema !== "object" || Array.isArray(wrappedSchema)) {
+        throw new Error(
+          "When using json_schema wrapper, field \"json_schema.schema\" must be an object."
+        );
+      }
+      schema = wrappedSchema as Record<string, unknown>;
+    } else if (
+      inputObject.schema &&
+      typeof inputObject.schema === "object" &&
+      !Array.isArray(inputObject.schema)
+    ) {
+      // Also support direct json_schema object:
+      // { "name": "...", "strict": true, "schema": {...} }
+      const nestedSchema = inputObject.schema as Record<string, unknown>;
+      if (nestedSchema.type === "object") {
+        schema = nestedSchema;
+      }
+    }
+
+    if (schema.type !== "object") {
+      throw new Error("Custom JSON schema must contain \"type\": \"object\".");
+    }
+    const properties = schema.properties;
+    if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+      throw new Error("Custom JSON schema must contain an object \"properties\".");
+    }
+    if ("required" in schema) {
+      const required = schema.required;
+      if (
+        !Array.isArray(required) ||
+        required.some((item) => typeof item !== "string")
+      ) {
+        throw new Error(
+          "Custom JSON schema field \"required\" must be an array of strings."
+        );
+      }
+    }
+    return schema;
+  };
+
+  const startOpenAiBatchBackfill = async () => {
+    setIsStartingOpenAiBatchJob(true);
+    setOpenAiBatchStatusMessage(null);
+    setOpenAiBatchWarningMessage(null);
+    setOpenAiBatchErrorMessage(null);
+    setShowOpenAiBatchJobsLink(false);
+
+    try {
+      const fieldNames = parseOpenAiFieldNames();
+      if (fieldNames.length === 0) {
+        setOpenAiBatchErrorMessage(
+          "Select at least one VLM field (or enable 'Use all schema fields')."
+        );
+        return;
+      }
+
+      const combinedPrompt = openAiCombinedPromptInput.trim();
+      if (!combinedPrompt) {
+        setOpenAiBatchErrorMessage(
+          "Combined prompt is required. Describe the JSON format and field rules."
+        );
+        return;
+      }
+
+      const limit = parseIntegerInput(openAiBackfillLimitInput, "API batch limit", {
+        min: 1,
+      });
+      const batchSize = parseIntegerInput(openAiBatchSizeInput, "API scene chunk size", {
+        min: 1,
+      });
+      const maxTokens = parseIntegerInput(openAiMaxTokensInput, "API max tokens", {
+        min: 1,
+        max: 512,
+      });
+      const customJsonSchema = parseOpenAiJsonSchema();
+
+      if (vlmApiProvider !== "openai") {
+        setOpenAiBatchErrorMessage(`Unsupported API provider: ${vlmApiProvider}`);
+        return;
+      }
+
+      const statsResponse = await axios.get("/api/storage/stats", {
+        params: {
+          include_storage_details: 1,
+          force_refresh: 1,
+        },
+      });
+      const pendingRows = Number(statsResponse.data?.vlm?.pending_rows ?? 0);
+      if (pendingRows <= 0 && !openAiOverwriteExisting) {
+        setOpenAiBatchWarningMessage(
+          "All scenes already have VLM annotations. Enable overwrite or choose another dataset."
+        );
+        return;
+      }
+
+      const response = await axios.post("/api/vlm/backfill", {
+        field_names: fieldNames,
+        limit,
+        batch_size: batchSize,
+        stop_on_error: false,
+        dry_run: openAiDryRun,
+        overwrite_existing: openAiOverwriteExisting,
+        max_new_tokens: maxTokens,
+        dataset: openAiDataset === "all" ? null : openAiDataset,
+        combine_fields_into_json: true,
+        combined_prompt: combinedPrompt,
+        use_openai_batch_api: vlmApiProvider === "openai",
+        openai_use_json_schema: openAiUseJsonSchema,
+        openai_json_schema: customJsonSchema,
+      });
+      const dryRunSuffix = openAiDryRun ? " (dry-run, no write)" : "";
+      setOpenAiBatchStatusMessage(
+        `API Batch VLM backfill started${dryRunSuffix}. Job ID: ${response.data.job_id}.`
+      );
+      setShowOpenAiBatchJobsLink(true);
+    } catch (error: unknown) {
+      const message =
+        axios.isAxiosError(error) && error.response?.data?.detail
+          ? error.response.data.detail
+          : error instanceof Error
+            ? error.message
+            : "Failed to start API Batch VLM backfill";
+      setOpenAiBatchErrorMessage(message);
+    } finally {
+      setIsStartingOpenAiBatchJob(false);
     }
   };
 
@@ -1576,6 +1792,227 @@ export default function AnnotationPanel({
             </div>
           )}
         </div>
+
+        {showOpenAIBatchBlock && (
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="mb-5">
+              <h2 className="text-2xl font-semibold text-slate-900">
+                API VLM Annotation
+              </h2>
+              <p className="mt-2 text-sm text-slate-600">
+                Launch batched JSON labeling through VLM API. The model receives one combined
+                prompt and returns one JSON object per scene.
+              </p>
+            </div>
+
+            <div className="mb-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+              Make sure API-specific environment variables are configured and containers are restarted.
+              For OpenAI: <code>VLM_BACKEND=OPENAI</code> and <code>VLM_OPENAI_API_KEY</code> (or <code>OPENAI_API_KEY</code>).
+            </div>
+
+            <div className="mt-1 flex flex-wrap items-end gap-3">
+              <label className="flex flex-col gap-1 text-sm text-slate-600">
+                API provider
+                <select
+                  value={vlmApiProvider}
+                  onChange={(event) => setVlmApiProvider(event.target.value as "openai")}
+                  className="w-44 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
+                >
+                  <option value="openai">OpenAI</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="grid gap-3">
+              <label className="flex flex-col gap-1 text-sm text-slate-600">
+                Combined prompt (required)
+                <textarea
+                  value={openAiCombinedPromptInput}
+                  onChange={(event) => setOpenAiCombinedPromptInput(event.target.value)}
+                  rows={8}
+                  placeholder={`Return one compact JSON object with these keys only: car_count, has_crosswalk, scene_type.\ncar_count: integer only.\nhas_crosswalk: Yes or No.\nscene_type: one short category.\nNo markdown, no extra keys.`}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-sky-500"
+                />
+              </label>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={openAiUseJsonSchema}
+                  onChange={(event) => setOpenAiUseJsonSchema(event.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                />
+                Use custom JSON schema
+              </label>
+            </div>
+
+            {openAiUseJsonSchema && (
+              <div className="mt-3 grid gap-3">
+                <label className="flex flex-col gap-1 text-sm text-slate-600">
+                  Custom JSON schema
+                  <textarea
+                    value={openAiJsonSchemaInput}
+                    onChange={(event) => setOpenAiJsonSchemaInput(event.target.value)}
+                    rows={10}
+                    placeholder={`{\n  "type": "object",\n  "additionalProperties": false,\n  "required": ["car_count"],\n  "properties": {\n    "car_count": {"type": "integer", "minimum": 0}\n  }\n}`}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 outline-none focus:border-sky-500"
+                  />
+                </label>
+                <p className="text-xs text-slate-500">
+                  If enabled, schema JSON must be valid and contain <code>type: object</code> and{" "}
+                  <code>properties</code>. If disabled, default auto parsing is used.
+                </p>
+              </div>
+            )}
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={openAiUseAllSchemaFields}
+                  onChange={(event) => setOpenAiUseAllSchemaFields(event.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                />
+                Use all saved schema fields
+              </label>
+            </div>
+
+            {!openAiUseAllSchemaFields && (
+              <div className="mt-3 grid gap-3">
+                <label className="flex flex-col gap-1 text-sm text-slate-600">
+                  Field names (comma or newline separated)
+                  <textarea
+                    value={openAiFieldNamesInput}
+                    onChange={(event) => setOpenAiFieldNamesInput(event.target.value)}
+                    rows={3}
+                    placeholder="car_count, has_crosswalk, scene_type"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 outline-none focus:border-sky-500"
+                  />
+                </label>
+              </div>
+            )}
+
+            <div className="mt-4 flex flex-wrap items-end gap-3">
+              <label className="flex flex-col gap-1 text-sm text-slate-600">
+                Limit
+                <input
+                  type="number"
+                  min={1}
+                  value={openAiBackfillLimitInput}
+                  onChange={(event) => setOpenAiBackfillLimitInput(event.target.value)}
+                  className="w-28 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm text-slate-600">
+                Scene chunk size
+                <input
+                  type="number"
+                  min={1}
+                  value={openAiBatchSizeInput}
+                  onChange={(event) => setOpenAiBatchSizeInput(event.target.value)}
+                  className="w-36 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm text-slate-600">
+                Max tokens
+                <input
+                  type="number"
+                  min={1}
+                  max={512}
+                  value={openAiMaxTokensInput}
+                  onChange={(event) => setOpenAiMaxTokensInput(event.target.value)}
+                  className="w-32 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm text-slate-600">
+                Dataset
+                <select
+                  value={openAiDataset}
+                  onChange={(event) => setOpenAiDataset(event.target.value)}
+                  className="w-44 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
+                >
+                  <option value="all">All datasets</option>
+                  {availableDatasets.map((dataset) => (
+                    <option key={`openai-${dataset}`} value={dataset}>
+                      {dataset}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-4">
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={openAiOverwriteExisting}
+                  onChange={(event) => setOpenAiOverwriteExisting(event.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                />
+                Overwrite existing values
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={openAiDryRun}
+                  onChange={(event) => setOpenAiDryRun(event.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                />
+                Dry run (no annotation write)
+              </label>
+            </div>
+
+            <div className="mt-6 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={startOpenAiBatchBackfill}
+                disabled={isStartingOpenAiBatchJob}
+                className="rounded-full bg-indigo-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isStartingOpenAiBatchJob ? "Starting..." : "Start API Batch backfill"}
+              </button>
+              <button
+                type="button"
+                onClick={onOpenJobsMonitor}
+                className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+              >
+                Go to Job Monitor
+              </button>
+            </div>
+
+            {openAiBatchStatusMessage && (
+              <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+                <span>{openAiBatchStatusMessage}</span>
+                {showOpenAiBatchJobsLink && (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      onClick={onOpenJobsMonitor}
+                      className="font-bold text-teal-600 underline decoration-teal-500 underline-offset-2 transition hover:text-teal-700"
+                    >
+                      Go to Job Monitor
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+
+            {openAiBatchWarningMessage && (
+              <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+                {openAiBatchWarningMessage}
+              </div>
+            )}
+
+            {openAiBatchErrorMessage && (
+              <div className="mt-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">
+                {openAiBatchErrorMessage}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5 flex items-start justify-between gap-3">

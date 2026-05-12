@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import Request
+from fastapi import HTTPException
 from backend.processors.runner import run_preprocessor_method
 
 from backend.server.dataset_visibility import load_hidden_datasets
@@ -20,6 +21,7 @@ from configs.hw_settings import EMBEDDER_CONFIG, VLM_CONFIG
 from . import embedder as master_embedder
 from . import job_support as master_job_support
 from . import jobs as master_jobs
+from . import openai_api as master_openai_api
 from . import object_listing as master_object_listing
 from . import routes as master_routes
 from . import system as master_system
@@ -33,6 +35,7 @@ from .models import (
     DatasetInstallRequest,
     EmbedResult,
     JobStatus,
+    OpenAIBatchStatusRequest,
     ObjectIDsRequest,
     RetryJobRequest,
     TextSearchRequest,
@@ -71,6 +74,12 @@ _normalize_match_mode = master_vlm.normalize_match_mode
 _normalize_vlm_fields = master_vlm.normalize_vlm_fields
 _build_vlm_prompt = master_vlm.build_vlm_prompt
 _normalize_vlm_response = master_vlm.normalize_vlm_response
+_build_vlm_json_prompt = master_openai_api.build_vlm_json_prompt
+_extract_first_json_object = master_openai_api.extract_first_json_object
+_build_openai_response_format = master_openai_api.build_openai_response_format
+_run_openai_batch_for_json_annotations = master_openai_api.run_openai_batch_for_json_annotations
+_create_openai_client_for_vlm_batch = master_openai_api.create_openai_client_for_vlm_batch
+_serialize_openai_batch = master_openai_api.serialize_openai_batch
 
 _to_bool = master_job_support.to_bool
 _normalize_job_config = master_job_support.normalize_job_config
@@ -127,6 +136,17 @@ def _validate_existing_vlm_fields(field_names: List[str]) -> List[Dict[str, str]
 
 def _upsert_vlm_annotations(rows: List[Dict[str, Any]]) -> int:
     return master_vlm.upsert_vlm_annotations(rows, upsert_annotations=analytics_api.upsert_annotations)
+
+
+def _normalize_values_from_json_object(
+    json_object: Dict[str, Any],
+    fields: List[Dict[str, str]],
+):
+    return master_openai_api.normalize_values_from_json_object(
+        json_object,
+        fields,
+        normalize_vlm_response=_normalize_vlm_response,
+    )
 
 
 def _filter_pending_vlm_object_ids(
@@ -431,6 +451,16 @@ def upsert_vlm_fields(payload: VLMFieldsRequest):
 def backfill_vlm(payload: VLMBackfillRequest):
     job_id = _start_vlm_backfill_job(payload)
     return {"job_id": job_id, "status": "started"}
+
+
+@app.post("/vlm/openai/batch/status")
+def get_openai_batch_status(payload: OpenAIBatchStatusRequest):
+    try:
+        client = _create_openai_client_for_vlm_batch()
+        batch = client.batches.retrieve(payload.batch_id)
+        return _serialize_openai_batch(batch)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/vlm/annotations/clear")

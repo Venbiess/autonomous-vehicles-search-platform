@@ -27,6 +27,7 @@ interface UISettings {
   showSnapshotSection: boolean;
   showStorageVlmFieldAnalytics: boolean;
   showSyntheticInAnnotation: boolean;
+  showOpenAIBatchAnnotation: boolean;
   showSearchMeta: boolean;
   showJobMonitorModels: boolean;
   showJobMonitorGpu: boolean;
@@ -61,6 +62,7 @@ const DEFAULT_UI_SETTINGS: UISettings = {
   showSnapshotSection: true,
   showStorageVlmFieldAnalytics: false,
   showSyntheticInAnnotation: false,
+  showOpenAIBatchAnnotation: false,
   showSearchMeta: false,
   showJobMonitorModels: true,
   showJobMonitorGpu: false,
@@ -164,6 +166,7 @@ export default function HomePageClient({
   const [minScoreInput, setMinScoreInput] = useState("0.1");
   const [maxScoreInput, setMaxScoreInput] = useState("");
   const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS);
+  const [uiSettingsHydrated, setUiSettingsHydrated] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [embeddingMismatchDialog, setEmbeddingMismatchDialog] =
     useState<EmbeddingMismatchDialogState | null>(null);
@@ -271,6 +274,7 @@ export default function HomePageClient({
             ...DEFAULT_UI_SETTINGS,
             showJobMonitorGpu: gpuAvailableByDefault,
           });
+          setUiSettingsHydrated(true);
           return;
         }
         const parsed = JSON.parse(raw) as Partial<UISettings> & { showJobMonitorRuntime?: boolean };
@@ -292,6 +296,10 @@ export default function HomePageClient({
             typeof parsed?.showSyntheticInAnnotation === "boolean"
               ? parsed.showSyntheticInAnnotation
               : DEFAULT_UI_SETTINGS.showSyntheticInAnnotation,
+          showOpenAIBatchAnnotation:
+            typeof parsed?.showOpenAIBatchAnnotation === "boolean"
+              ? parsed.showOpenAIBatchAnnotation
+              : DEFAULT_UI_SETTINGS.showOpenAIBatchAnnotation,
           showSearchMeta:
             typeof parsed?.showSearchMeta === "boolean"
               ? parsed.showSearchMeta
@@ -305,19 +313,24 @@ export default function HomePageClient({
               ? parsed.showJobMonitorGpu
               : legacyRuntimeToggle ?? gpuAvailableByDefault,
         });
+        setUiSettingsHydrated(true);
       } catch {
         setUiSettings({
           ...DEFAULT_UI_SETTINGS,
           showJobMonitorGpu: gpuAvailableByDefault,
         });
+        setUiSettingsHydrated(true);
       }
     };
     loadSettings();
   }, []);
 
   useEffect(() => {
+    if (!uiSettingsHydrated) {
+      return;
+    }
     window.localStorage.setItem(UI_SETTINGS_STORAGE_KEY, JSON.stringify(uiSettings));
-  }, [uiSettings]);
+  }, [uiSettings, uiSettingsHydrated]);
 
   useEffect(() => {
     if (!settingsOpen) return;
@@ -607,6 +620,23 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
+                    <div className="text-sm font-medium text-slate-800">API VLM Annotation Block</div>
+                    <div className="text-xs text-slate-500">
+                      Annotation tab: API JSON batch backfill form
+                    </div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showOpenAIBatchAnnotation}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({
+                        ...prev,
+                        showOpenAIBatchAnnotation: next,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
                     <div className="text-sm font-medium text-slate-800">Show Search Metadata</div>
                     <div className="text-xs text-slate-500">Dataset and storage info in result titles</div>
                   </div>
@@ -673,6 +703,7 @@ export default function HomePageClient({
           onOpenJobsMonitor={() => setSearchMode("Job Monitor")}
           onOpenStorage={() => setSearchMode("STORAGE")}
           showSyntheticMethod={uiSettings.showSyntheticInAnnotation}
+          showOpenAIBatchBlock={uiSettings.showOpenAIBatchAnnotation}
         />
       ) : searchMode === "STORAGE" ? (
         <StoragePanel

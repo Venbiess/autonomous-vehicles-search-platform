@@ -1460,6 +1460,10 @@ export default function SystemMonitor({
                       : "Embedding: ожидание скачанных сцен";
                   const currentSceneTasksCompleted = job.current_scene_tasks_completed ?? 0;
                   const currentSceneTasksTotal = job.current_scene_tasks_total ?? 0;
+                  const isApiBatchVlmJob =
+                    job.job_type === "backfill_vlm" &&
+                    Boolean(job.job_config?.use_openai_batch_api) &&
+                    Boolean(job.job_config?.combine_fields_into_json);
                   const installPhase = String(job.install_phase ?? "").toLowerCase();
                   const currentSceneProgress =
                     currentSceneTasksTotal > 0
@@ -1470,7 +1474,9 @@ export default function SystemMonitor({
                       : 0;
                   const currentSceneLabel = isInstallJob
                     ? `Install: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`
-                    : `Schema fields: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
+                    : isApiBatchVlmJob
+                      ? `Batch items: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`
+                      : `Schema fields: ${currentSceneTasksCompleted} / ${currentSceneTasksTotal}`;
                   const currentSceneIndex = job.current_scene_index ?? 0;
                   const timing = getJobTiming(job);
                   const downloadLabelPrefix = String(job.download_label ?? "").trim() || "Download";

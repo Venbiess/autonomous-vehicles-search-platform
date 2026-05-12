@@ -163,11 +163,11 @@ function buildFilteredTitle(
   const attrs = attributes ?? {};
   const keys = preferredFields.filter((key) => Object.prototype.hasOwnProperty.call(attrs, key));
   if (keys.length > 0) {
-    return keys.map((key) => `${key}: ${String(attrs[key])}`).join(" | ");
+    return keys.map((key) => `${key}: ${String(attrs[key])}`).join("\n");
   }
   const allEntries = Object.entries(attrs);
   if (allEntries.length > 0) {
-    return allEntries.map(([key, value]) => `${key}: ${String(value)}`).join(" | ");
+    return allEntries.map(([key, value]) => `${key}: ${String(value)}`).join("\n");
   }
   return "";
 }
@@ -386,16 +386,24 @@ export default function VlmPanel() {
   };
 
   const runFilterSearch = async () => {
-    const displayFieldNames = savedFields
+    const displayFields = savedFields
       .map((field) => {
         const state = filters[field.field_name];
         const hasValue = (state?.value ?? "").trim().length > 0;
         if ((state?.isAny ?? false) || hasValue) {
-          return field.field_name;
+          return field;
         }
-        return "";
+        return null;
       })
-      .filter((name) => name.length > 0);
+      .filter((field): field is SavedField => field !== null);
+    const displayFieldNames = [
+      ...displayFields
+        .filter((field) => field.response_type !== "text")
+        .map((field) => field.field_name),
+      ...displayFields
+        .filter((field) => field.response_type === "text")
+        .map((field) => field.field_name),
+    ];
     const activeFilters = savedFields
       .map((field) => ({
         field_name: field.field_name,
@@ -416,6 +424,7 @@ export default function VlmPanel() {
     try {
       const response = await axios.post("/api/vlm/search", {
         filters: activeFilters,
+        field_names: displayFieldNames,
         limit: 100,
       });
       const normalizedResults: ImageResult[] = (response.data ?? []).map((item: ImageResult) => {

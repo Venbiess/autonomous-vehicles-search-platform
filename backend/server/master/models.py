@@ -69,6 +69,18 @@ class VLMBackfillRequest(BaseModel):
     overwrite_existing: bool = False
     max_new_tokens: int = Field(32, ge=1, le=512)
     dataset: Optional[str] = None
+    combine_fields_into_json: bool = False
+    combined_prompt: Optional[str] = None
+    use_openai_batch_api: bool = False
+    openai_use_json_schema: bool = False
+    openai_json_schema: Optional[Any] = None
+    openai_json_schema_name: str = Field("vlm_annotation", min_length=1, max_length=64)
+    openai_json_schema_strict: bool = True
+    openai_json_schema_description: Optional[str] = None
+
+
+class OpenAIBatchStatusRequest(BaseModel):
+    batch_id: str = Field(..., min_length=1)
 
 
 class VLMFilterDefinition(BaseModel):
@@ -79,6 +91,7 @@ class VLMFilterDefinition(BaseModel):
 
 class VLMSearchRequest(BaseModel):
     filters: List[VLMFilterDefinition] = Field(default_factory=list)
+    field_names: List[str] = Field(default_factory=list)
     limit: int = Field(100, ge=1, le=1000)
 
 
@@ -93,6 +106,7 @@ class RetryJobRequest(BaseModel):
 
 class ObjectIDsRequest(BaseModel):
     object_ids: List[str] = Field(default_factory=list)
+    field_names: List[str] = Field(default_factory=list)
 
 
 class AnnotationRowRequest(BaseModel):
@@ -119,4 +133,3 @@ class EmbedResult:
     object_id: str
     embedding: List[float]
     dim: int
-

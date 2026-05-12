@@ -15,5 +15,6 @@ httpx
 psutil
 gdown
 opencv-python-headless
+openai
 
 pika

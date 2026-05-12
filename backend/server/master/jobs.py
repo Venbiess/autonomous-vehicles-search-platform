@@ -3,7 +3,7 @@ import threading
 import time
 import traceback
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import httpx
 from fastapi import HTTPException
@@ -400,6 +400,11 @@ def run_vlm_backfill_job(job_id: str, payload: Any) -> None:
     _normalize_vlm_response = master._normalize_vlm_response
     _run_vlm = master._run_vlm
     _run_vlm_batch = master._run_vlm_batch
+    _build_vlm_json_prompt = master._build_vlm_json_prompt
+    _extract_first_json_object = master._extract_first_json_object
+    _normalize_values_from_json_object = master._normalize_values_from_json_object
+    _build_openai_response_format = master._build_openai_response_format
+    _run_openai_batch_for_json_annotations = master._run_openai_batch_for_json_annotations
     _job_cancel_requested = master._job_cancel_requested
     _upsert_vlm_annotations = master._upsert_vlm_annotations
     VLM_TIMEOUT_SEC = master.VLM_TIMEOUT_SEC
@@ -481,11 +486,41 @@ def run_vlm_backfill_job(job_id: str, payload: Any) -> None:
             {
                 "field_name": field["field_name"],
                 "response_type": field["response_type"],
-                "prompt": _build_vlm_prompt(field["prompt"], field["response_type"]),
+                "prompt": str(field["prompt"]).strip(),
+                "single_prompt": _build_vlm_prompt(field["prompt"], field["response_type"]),
             }
             for field in fields
         ]
         field_total = len(prepared_fields)
+        combine_fields_into_json = bool(getattr(payload, "combine_fields_into_json", False))
+        use_openai_batch_api = bool(getattr(payload, "use_openai_batch_api", False))
+        if use_openai_batch_api and not combine_fields_into_json:
+            raise ValueError(
+                "use_openai_batch_api=true requires combine_fields_into_json=true "
+                "because batch mode expects one JSON response per scene."
+            )
+        openai_response_format = _build_openai_response_format(
+            prepared_fields=prepared_fields,
+            payload=payload,
+        )
+        if openai_response_format and not use_openai_batch_api:
+            raise ValueError(
+                "openai_use_json_schema/openai_json_schema requires use_openai_batch_api=true."
+            )
+        if openai_response_format and not combine_fields_into_json:
+            raise ValueError(
+                "openai_use_json_schema/openai_json_schema requires combine_fields_into_json=true."
+            )
+        combined_prompt_text = _build_vlm_json_prompt(
+            prepared_fields,
+            combined_prompt=getattr(payload, "combined_prompt", None),
+        )
+        task_total_per_scene = 1 if combine_fields_into_json else field_total
+        expected_scene_tasks_completed = task_total_per_scene
+        combined_json_max_new_tokens = min(
+            512,
+            max(int(payload.max_new_tokens), 64, field_total * 16),
+        )
         object_ids = _list_pending_vlm_object_ids(
             payload.limit,
             field_names,
@@ -493,14 +528,21 @@ def run_vlm_backfill_job(job_id: str, payload: Any) -> None:
             dataset=payload.dataset,
         )
         planned_total = len(object_ids)
-        total_tasks_planned = len(object_ids) * len(field_names)
+        total_tasks_planned = len(object_ids) * task_total_per_scene
         completed_tasks = 0
         with jobs_lock:
             job = jobs_store.get(job_id)
             if job:
-                _append_job_log(job, f"VLM backfill started: limit={payload.limit}, fields={len(field_names)}, dataset={dataset_filter or 'all'}")
+                _append_job_log(job, f"VLM backfill started: limit={payload.limit}, fields={len(field_names)}, dataset={dataset_filter or 'all'}, combine_fields_into_json={combine_fields_into_json}")
                 _append_job_log(job, "Dataset visibility: " + (f"hidden={','.join(hidden_datasets)}" if hidden_datasets else "hidden=<none>"))
                 _append_job_log(job, f"Objects selected: {planned_total} (dataset={dataset_filter or 'all'})")
+                if openai_response_format:
+                    schema_name = str(openai_response_format.get("json_schema", {}).get("name", "")).strip()
+                    strict = bool(openai_response_format.get("json_schema", {}).get("strict", False))
+                    _append_job_log(
+                        job,
+                        f"OpenAI structured output schema enabled: name={schema_name or 'vlm_annotation'}, strict={strict}",
+                    )
 
         def _cancel_vlm_job() -> None:
             cleanup_mode = _job_install_cleanup_mode(job_id)
@@ -557,7 +599,7 @@ def run_vlm_backfill_job(job_id: str, payload: Any) -> None:
             if str(normalized_value).strip() or not retry_empty_values:
                 return normalized_value, parsed_ok, parse_note
 
-            retry_prompt = f"{field['prompt']}\n\nImportant: previous answer was empty. Return a non-empty answer now and strictly follow the format requirement."
+            retry_prompt = f"{field['single_prompt']}\n\nImportant: previous answer was empty. Return a non-empty answer now and strictly follow the format requirement."
             retry_text = _run_vlm(
                 client,
                 entry["image_bytes"],
@@ -583,8 +625,14 @@ def run_vlm_backfill_job(job_id: str, payload: Any) -> None:
                 )
                 _append_job_log(
                     jobs_store[job_id],
-                    f"Backfill VLM runtime options: retry_empty_values={retry_empty_values}, field_chunk_size={field_chunk_size_override}, base_max_new_tokens={payload.max_new_tokens}",
+                    f"Backfill VLM runtime options: retry_empty_values={retry_empty_values}, field_chunk_size={field_chunk_size_override}, base_max_new_tokens={payload.max_new_tokens}, use_openai_batch_api={bool(getattr(payload, 'use_openai_batch_api', False))}",
                 )
+                if combine_fields_into_json:
+                    custom_prompt_set = bool(str(getattr(payload, "combined_prompt", "") or "").strip())
+                    _append_job_log(
+                        jobs_store[job_id],
+                        f"Combined JSON mode enabled: custom_prompt={custom_prompt_set}, scene_tasks_total={task_total_per_scene}",
+                    )
                 _append_job_log(jobs_store[job_id], f"Pending scenes selected: {planned_total} (tasks_planned={total_tasks_planned})")
 
         with httpx.Client(timeout=timeout) as client:
@@ -619,11 +667,91 @@ def run_vlm_backfill_job(job_id: str, payload: Any) -> None:
                         progress = min(int((total_seen / max(len(object_ids), 1)) * 100), 100)
                         with jobs_lock:
                             if job_id in jobs_store:
-                                jobs_store[job_id].update({"progress": progress, "total_seen": total_seen, "total_inserted": total_inserted, "total_tasks_completed": completed_tasks, "total_tasks_planned": total_tasks_planned, "current_scene_index": scene_index, "current_scene_tasks_completed": 0, "current_scene_tasks_total": field_total, "errors": errors, "field_names": field_names, "updated_at": time.time()})
+                                jobs_store[job_id].update({"progress": progress, "total_seen": total_seen, "total_inserted": total_inserted, "total_tasks_completed": completed_tasks, "total_tasks_planned": total_tasks_planned, "current_scene_index": scene_index, "current_scene_tasks_completed": 0, "current_scene_tasks_total": task_total_per_scene, "errors": errors, "field_names": field_names, "updated_at": time.time()})
                         if payload.stop_on_error:
                             break
                 if payload.stop_on_error and errors:
                     break
+
+                batch_openai_outputs: Dict[str, str] = {}
+                batch_openai_errors: Dict[str, str] = {}
+                if combine_fields_into_json and use_openai_batch_api and batch_entries:
+                    last_batch_progress_update_at = 0.0
+
+                    def _on_openai_batch_progress(event: Dict[str, Any]) -> None:
+                        nonlocal last_batch_progress_update_at
+                        now_mono = time.monotonic()
+                        status_value = str(event.get("status", "")).strip().lower()
+                        is_final_status = status_value in {"completed", "failed", "expired", "cancelled"}
+                        if (now_mono - last_batch_progress_update_at) < 5.0 and not is_final_status:
+                            return
+                        batch_entries_total_local = max(
+                            1,
+                            int(event.get("batch_entries_total", len(batch_entries)) or len(batch_entries)),
+                        )
+                        batch_entries_done_estimate = max(
+                            0,
+                            min(
+                                int(event.get("batch_entries_completed_estimate", 0) or 0),
+                                batch_entries_total_local,
+                            ),
+                        )
+                        estimated_total_seen = min(planned_total, batch_base_seen + batch_entries_done_estimate)
+                        estimated_progress = min(int((estimated_total_seen / max(planned_total, 1)) * 100), 100)
+                        with jobs_lock:
+                            if job_id in jobs_store:
+                                current_progress = int(jobs_store[job_id].get("progress", 0) or 0)
+                                jobs_store[job_id].update(
+                                    {
+                                        "progress": max(current_progress, estimated_progress),
+                                        "current_scene_index": min(estimated_total_seen + 1, planned_total) if planned_total > 0 else 0,
+                                        "current_scene_tasks_completed": batch_entries_done_estimate,
+                                        "current_scene_tasks_total": batch_entries_total_local,
+                                        "updated_at": time.time(),
+                                    }
+                                )
+                        last_batch_progress_update_at = now_mono
+
+                    try:
+                        (
+                            batch_openai_outputs,
+                            batch_openai_errors,
+                            created_batch_ids,
+                        ) = _run_openai_batch_for_json_annotations(
+                            entries=batch_entries,
+                            combined_prompt_text=combined_prompt_text,
+                            max_new_tokens=combined_json_max_new_tokens,
+                            job_id=job_id,
+                            response_format=openai_response_format,
+                            progress_callback=_on_openai_batch_progress,
+                            logger=logger,
+                        )
+                        if created_batch_ids:
+                            with jobs_lock:
+                                job = jobs_store.get(job_id)
+                                if job:
+                                    _append_job_log(
+                                        job,
+                                        (
+                                            "OpenAI batch chunks completed: "
+                                            f"count={len(created_batch_ids)}, "
+                                            f"ids={','.join(created_batch_ids[:5])}"
+                                            + ("..." if len(created_batch_ids) > 5 else "")
+                                        ),
+                                    )
+                    except Exception as exc:
+                        logger.exception(
+                            "OpenAI batch JSON mode failed for job_id=%s batch_start=%s",
+                            job_id,
+                            i,
+                        )
+                        for entry in batch_entries:
+                            object_id = str(entry.get("object_id", "")).strip()
+                            if not object_id:
+                                continue
+                            batch_openai_errors[object_id] = f"OpenAI batch mode failed: {exc}"
+                        if payload.stop_on_error:
+                            break
 
                 for entry in batch_entries:
                     if _job_cancel_requested(job_id):
@@ -636,94 +764,171 @@ def run_vlm_backfill_job(job_id: str, payload: Any) -> None:
                     scene_index = int(entry["scene_index"])
                     with jobs_lock:
                         if job_id in jobs_store:
-                            jobs_store[job_id].update({"current_scene_index": scene_index, "current_scene_tasks_completed": int(entry["scene_tasks_completed"]), "current_scene_tasks_total": field_total, "updated_at": time.time()})
-                    remaining_fields = [field for field in prepared_fields if field["field_name"] not in entry["values"]]
-                    chunk_size = field_chunk_size_override
-
-                    for field_offset in range(0, len(remaining_fields), chunk_size):
-                        if _job_cancel_requested(job_id):
-                            _cancel_vlm_job()
-                            return
-                        if entry["failed"]:
-                            break
-                        if payload.stop_on_error and errors:
-                            break
-                        field_chunk = remaining_fields[field_offset : field_offset + chunk_size]
-                        chunk_max_new_tokens = max(_effective_max_new_tokens_for_response_type(field["response_type"]) for field in field_chunk)
-                        task_items = [
-                            {"image_bytes": entry["image_bytes"], "prompt": field["prompt"], "metadata": {"job_id": job_id, "task_index": completed_tasks + idx + 1, "task_total": total_tasks_planned if total_tasks_planned > 0 else None, "field_name": field["field_name"], "object_id": entry["object_id"]}}
-                            for idx, field in enumerate(field_chunk)
-                        ]
+                            jobs_store[job_id].update({"current_scene_index": scene_index, "current_scene_tasks_completed": int(entry["scene_tasks_completed"]), "current_scene_tasks_total": task_total_per_scene, "updated_at": time.time()})
+                    if combine_fields_into_json:
                         try:
-                            responses = _run_vlm_batch(client, task_items, chunk_max_new_tokens)
-                        except Exception as exc:
-                            logger.exception("VLM batch inference failed for object_id=%s fields=%s; falling back to per-item", entry["object_id"], len(field_chunk))
-                            with jobs_lock:
-                                job = jobs_store.get(job_id)
-                                if job:
-                                    _append_job_log(job, f"VLM batch inference failed; falling back to per-item: object_id={entry['object_id']}, fields={len(field_chunk)}, error={exc}")
-                            responses = None
+                            if use_openai_batch_api:
+                                object_id = str(entry["object_id"])
+                                if object_id in batch_openai_errors:
+                                    raise RuntimeError(batch_openai_errors[object_id])
+                                combined_response_text = str(batch_openai_outputs.get(object_id, "")).strip()
+                                if not combined_response_text:
+                                    raise RuntimeError("OpenAI batch response is missing for scene")
+                            else:
+                                combined_response_text = _run_vlm(
+                                    client,
+                                    entry["image_bytes"],
+                                    combined_prompt_text,
+                                    combined_json_max_new_tokens,
+                                    job_id=job_id,
+                                    task_index=completed_tasks + 1,
+                                    task_total=total_tasks_planned if total_tasks_planned > 0 else None,
+                                    field_name="__combined_json__",
+                                    object_id=entry["object_id"],
+                                )
 
-                        response_iter = zip(field_chunk, responses) if responses is not None else [(field, None) for field in field_chunk]
-                        for field, response_text in response_iter:
+                            json_object = _extract_first_json_object(combined_response_text)
+                            values, parse_failed_fields, warning_count = _normalize_values_from_json_object(
+                                json_object,
+                                prepared_fields,
+                            )
+                            entry["values"].update(values)
+                            parse_warnings_total += int(warning_count)
+                            if warning_count > 0 and isinstance(entry.get("parse_failed_fields"), list):
+                                entry["parse_failed_fields"].extend(parse_failed_fields[:])  # type: ignore[arg-type]
+                                for parse_item in parse_failed_fields:
+                                    field_name = str(parse_item.get("field_name") or "").strip() or "<unknown>"
+                                    response_type = str(parse_item.get("response_type") or "").strip() or "<unknown>"
+                                    note = str(parse_item.get("note") or "").strip() or "fallback"
+                                    warning_key = f"{field_name}[{response_type}]::{note}"
+                                    parse_warnings_by_field[warning_key] = int(parse_warnings_by_field.get(warning_key, 0)) + 1
+                                if len(parse_warnings_samples) < 30:
+                                    parse_warnings_samples.extend(
+                                        [
+                                            {
+                                                "object_id": str(entry["object_id"]),
+                                                "field_name": str(item.get("field_name") or ""),
+                                                "response_type": str(item.get("response_type") or ""),
+                                                "normalized_value": str(item.get("normalized_value") or "")[:200],
+                                                "raw_response": str(item.get("raw_response") or "")[:500],
+                                                "note": str(item.get("note") or "fallback"),
+                                            }
+                                            for item in parse_failed_fields[
+                                                : max(0, 30 - len(parse_warnings_samples))
+                                            ]
+                                        ]
+                                    )
+                            entry["scene_tasks_completed"] = expected_scene_tasks_completed
+                            completed_tasks += 1
+                            with jobs_lock:
+                                if job_id in jobs_store:
+                                    jobs_store[job_id].update(
+                                        {
+                                            "total_tasks_completed": completed_tasks,
+                                            "total_tasks_planned": total_tasks_planned,
+                                            "current_scene_index": entry["scene_index"],
+                                            "current_scene_tasks_completed": entry["scene_tasks_completed"],
+                                            "current_scene_tasks_total": task_total_per_scene,
+                                            "parse_warnings_total": int(parse_warnings_total),
+                                            "parse_warnings_by_field": dict(parse_warnings_by_field),
+                                            "parse_warnings_samples": list(parse_warnings_samples),
+                                            "updated_at": time.time(),
+                                        }
+                                    )
+                        except Exception as exc:
+                            logger.exception("VLM combined JSON failed for object_id=%s", entry["object_id"])
+                            entry["failed"] = True
+                            errors.append({"object_id": entry["object_id"], "error": str(exc)})
+                            if payload.stop_on_error:
+                                break
+                    else:
+                        remaining_fields = [field for field in prepared_fields if field["field_name"] not in entry["values"]]
+                        chunk_size = field_chunk_size_override
+
+                        for field_offset in range(0, len(remaining_fields), chunk_size):
                             if _job_cancel_requested(job_id):
                                 _cancel_vlm_job()
                                 return
                             if entry["failed"]:
                                 break
+                            if payload.stop_on_error and errors:
+                                break
+                            field_chunk = remaining_fields[field_offset : field_offset + chunk_size]
+                            chunk_max_new_tokens = max(_effective_max_new_tokens_for_response_type(field["response_type"]) for field in field_chunk)
+                            task_items = [
+                                {"image_bytes": entry["image_bytes"], "prompt": field["single_prompt"], "metadata": {"job_id": job_id, "task_index": completed_tasks + idx + 1, "task_total": total_tasks_planned if total_tasks_planned > 0 else None, "field_name": field["field_name"], "object_id": entry["object_id"]}}
+                                for idx, field in enumerate(field_chunk)
+                            ]
                             try:
-                                if responses is None:
-                                    response_text = _run_vlm(
-                                        client,
-                                        entry["image_bytes"],
-                                        field["prompt"],
-                                        _effective_max_new_tokens_for_response_type(field["response_type"]),
-                                        job_id=job_id,
-                                        task_index=completed_tasks + 1,
-                                        task_total=total_tasks_planned if total_tasks_planned > 0 else None,
-                                        field_name=field["field_name"],
-                                        object_id=entry["object_id"],
-                                    )
-                                normalized_value, parsed_ok, parse_note = _normalize_with_retry_if_empty(
-                                    client=client,
-                                    entry=entry,
-                                    field=field,
-                                    response_text=str(response_text or ""),
-                                    task_index=completed_tasks + 1,
-                                    max_new_tokens=_effective_max_new_tokens_for_response_type(field["response_type"]),
-                                )
-                                entry["values"][field["field_name"]] = normalized_value
-                                if not parsed_ok:
-                                    parse_warnings_total += 1
-                                    parse_failed_fields = entry.get("parse_failed_fields")
-                                    if isinstance(parse_failed_fields, list):
-                                        parse_failed_fields.append({"field_name": str(field["field_name"]), "response_type": str(field["response_type"]), "note": parse_note or "fallback", "raw_response": str(response_text)[:500], "normalized_value": normalized_value[:200]})
-                                    warning_key = f"{field['field_name']}[{field['response_type']}]::{parse_note or 'fallback'}"
-                                    parse_warnings_by_field[warning_key] = int(parse_warnings_by_field.get(warning_key, 0)) + 1
-                                    if len(parse_warnings_samples) < 30:
-                                        parse_warnings_samples.append({"object_id": str(entry["object_id"]), "field_name": str(field["field_name"]), "response_type": str(field["response_type"]), "normalized_value": normalized_value[:200], "raw_response": str(response_text)[:500], "note": parse_note or "fallback"})
-                                entry["scene_tasks_completed"] += 1
-                                completed_tasks += 1
+                                responses = _run_vlm_batch(client, task_items, chunk_max_new_tokens)
+                            except Exception as exc:
+                                logger.exception("VLM batch inference failed for object_id=%s fields=%s; falling back to per-item", entry["object_id"], len(field_chunk))
                                 with jobs_lock:
-                                    if job_id in jobs_store:
-                                        jobs_store[job_id].update({"total_tasks_completed": completed_tasks, "total_tasks_planned": total_tasks_planned, "current_scene_index": entry["scene_index"], "current_scene_tasks_completed": entry["scene_tasks_completed"], "current_scene_tasks_total": field_total, "parse_warnings_total": int(parse_warnings_total), "parse_warnings_by_field": dict(parse_warnings_by_field), "parse_warnings_samples": list(parse_warnings_samples), "updated_at": time.time()})
-                                if parse_warnings_total > 0 and parse_warnings_total % parse_warning_log_step == 0:
+                                    job = jobs_store.get(job_id)
+                                    if job:
+                                        _append_job_log(job, f"VLM batch inference failed; falling back to per-item: object_id={entry['object_id']}, fields={len(field_chunk)}, error={exc}")
+                                responses = None
+
+                            response_iter = zip(field_chunk, responses) if responses is not None else [(field, None) for field in field_chunk]
+                            for field, response_text in response_iter:
+                                if _job_cancel_requested(job_id):
+                                    _cancel_vlm_job()
+                                    return
+                                if entry["failed"]:
+                                    break
+                                try:
+                                    if responses is None:
+                                        response_text = _run_vlm(
+                                            client,
+                                            entry["image_bytes"],
+                                            field["single_prompt"],
+                                            _effective_max_new_tokens_for_response_type(field["response_type"]),
+                                            job_id=job_id,
+                                            task_index=completed_tasks + 1,
+                                            task_total=total_tasks_planned if total_tasks_planned > 0 else None,
+                                            field_name=field["field_name"],
+                                            object_id=entry["object_id"],
+                                        )
+                                    normalized_value, parsed_ok, parse_note = _normalize_with_retry_if_empty(
+                                        client=client,
+                                        entry=entry,
+                                        field=field,
+                                        response_text=str(response_text or ""),
+                                        task_index=completed_tasks + 1,
+                                        max_new_tokens=_effective_max_new_tokens_for_response_type(field["response_type"]),
+                                    )
+                                    entry["values"][field["field_name"]] = normalized_value
+                                    if not parsed_ok:
+                                        parse_warnings_total += 1
+                                        parse_failed_fields = entry.get("parse_failed_fields")
+                                        if isinstance(parse_failed_fields, list):
+                                            parse_failed_fields.append({"field_name": str(field["field_name"]), "response_type": str(field["response_type"]), "note": parse_note or "fallback", "raw_response": str(response_text)[:500], "normalized_value": normalized_value[:200]})
+                                        warning_key = f"{field['field_name']}[{field['response_type']}]::{parse_note or 'fallback'}"
+                                        parse_warnings_by_field[warning_key] = int(parse_warnings_by_field.get(warning_key, 0)) + 1
+                                        if len(parse_warnings_samples) < 30:
+                                            parse_warnings_samples.append({"object_id": str(entry["object_id"]), "field_name": str(field["field_name"]), "response_type": str(field["response_type"]), "normalized_value": normalized_value[:200], "raw_response": str(response_text)[:500], "note": parse_note or "fallback"})
+                                    entry["scene_tasks_completed"] += 1
+                                    completed_tasks += 1
                                     with jobs_lock:
                                         if job_id in jobs_store:
-                                            _append_job_log(jobs_store[job_id], f"VLM parse fallback used {parse_warnings_total} times (latest: object_id={entry['object_id']}, field={field['field_name']}, note={parse_note})")
-                            except Exception as exc:
-                                logger.exception("VLM failed for object_id=%s field=%s", entry["object_id"], field["field_name"])
-                                entry["failed"] = True
-                                errors.append({"object_id": entry["object_id"], "error": str(exc)})
-                                if payload.stop_on_error:
-                                    break
+                                            jobs_store[job_id].update({"total_tasks_completed": completed_tasks, "total_tasks_planned": total_tasks_planned, "current_scene_index": entry["scene_index"], "current_scene_tasks_completed": entry["scene_tasks_completed"], "current_scene_tasks_total": task_total_per_scene, "parse_warnings_total": int(parse_warnings_total), "parse_warnings_by_field": dict(parse_warnings_by_field), "parse_warnings_samples": list(parse_warnings_samples), "updated_at": time.time()})
+                                    if parse_warnings_total > 0 and parse_warnings_total % parse_warning_log_step == 0:
+                                        with jobs_lock:
+                                            if job_id in jobs_store:
+                                                _append_job_log(jobs_store[job_id], f"VLM parse fallback used {parse_warnings_total} times (latest: object_id={entry['object_id']}, field={field['field_name']}, note={parse_note})")
+                                except Exception as exc:
+                                    logger.exception("VLM failed for object_id=%s field=%s", entry["object_id"], field["field_name"])
+                                    entry["failed"] = True
+                                    errors.append({"object_id": entry["object_id"], "error": str(exc)})
+                                    if payload.stop_on_error:
+                                        break
 
-                        if payload.stop_on_error and errors:
-                            break
+                            if payload.stop_on_error and errors:
+                                break
 
                     object_id = str(entry["object_id"])
                     scene_tasks_completed = int(entry["scene_tasks_completed"])
-                    if not entry["failed"] and scene_tasks_completed == field_total:
+                    if not entry["failed"] and scene_tasks_completed == expected_scene_tasks_completed:
                         filtered_values = {field_name: str(entry["values"].get(field_name, "")).strip() for field_name in field_names if str(entry["values"].get(field_name, "")).strip()}
                         if not payload.dry_run:
                             upserted = _upsert_vlm_annotations([{"object_id": object_id, "values": filtered_values}])
@@ -733,16 +938,16 @@ def run_vlm_backfill_job(job_id: str, payload: Any) -> None:
                                 annotated_object_ids.append(object_id)
                             if upserted > 0:
                                 saved_non_empty_fields = len(filtered_values)
-                                if saved_non_empty_fields >= field_total:
+                                if saved_non_empty_fields >= len(field_names):
                                     saved_full_annotations += 1
                                 else:
                                     saved_partial_annotations += 1
                                     missing_fields = [field_name for field_name in field_names if not str(entry["values"].get(field_name, "")).strip()]
-                                    _log_partial_scene_parse_details(entry, f"saved_partial_after_upsert ({saved_non_empty_fields}/{field_total}), missing={','.join(missing_fields[:20])}")
+                                    _log_partial_scene_parse_details(entry, f"saved_partial_after_upsert ({saved_non_empty_fields}/{len(field_names)}), missing={','.join(missing_fields[:20])}")
                     elif not entry["failed"]:
                         entry["failed"] = True
-                        errors.append({"object_id": object_id, "error": f"incomplete annotation values generated ({scene_tasks_completed}/{field_total})"})
-                        _log_partial_scene_parse_details(entry, f"incomplete_values_{scene_tasks_completed}_of_{field_total}")
+                        errors.append({"object_id": object_id, "error": f"incomplete annotation values generated ({scene_tasks_completed}/{expected_scene_tasks_completed})"})
+                        _log_partial_scene_parse_details(entry, f"incomplete_values_{scene_tasks_completed}_of_{expected_scene_tasks_completed}")
                     elif entry["failed"]:
                         _log_partial_scene_parse_details(entry, "scene_failed")
                     total_seen += 1
@@ -753,7 +958,7 @@ def run_vlm_backfill_job(job_id: str, payload: Any) -> None:
                     display_scene_tasks_completed = 0 if reset_scene_tasks else scene_tasks_completed
                     with jobs_lock:
                         if job_id in jobs_store:
-                            jobs_store[job_id].update({"progress": progress, "total_seen": total_seen, "total_inserted": total_inserted, "total_tasks_completed": completed_tasks, "total_tasks_planned": total_tasks_planned, "current_scene_index": display_scene_index, "current_scene_tasks_completed": display_scene_tasks_completed, "current_scene_tasks_total": field_total, "parse_warnings_total": int(parse_warnings_total), "parse_warnings_by_field": dict(parse_warnings_by_field), "parse_warnings_samples": list(parse_warnings_samples), "saved_full_annotations": int(saved_full_annotations), "saved_partial_annotations": int(saved_partial_annotations), "errors": errors, "field_names": field_names, "updated_at": time.time()})
+                            jobs_store[job_id].update({"progress": progress, "total_seen": total_seen, "total_inserted": total_inserted, "total_tasks_completed": completed_tasks, "total_tasks_planned": total_tasks_planned, "current_scene_index": display_scene_index, "current_scene_tasks_completed": display_scene_tasks_completed, "current_scene_tasks_total": task_total_per_scene, "parse_warnings_total": int(parse_warnings_total), "parse_warnings_by_field": dict(parse_warnings_by_field), "parse_warnings_samples": list(parse_warnings_samples), "saved_full_annotations": int(saved_full_annotations), "saved_partial_annotations": int(saved_partial_annotations), "errors": errors, "field_names": field_names, "updated_at": time.time()})
                     current_bucket = progress // 10
                     now_mono = time.monotonic()
                     should_log_progress = False

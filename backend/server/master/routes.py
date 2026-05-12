@@ -468,13 +468,46 @@ def search_vlm(
             for item in payload.filters
             if item.value.strip()
         ]
+        normalized_display_field_names = [
+            normalize_field_name(name)
+            for name in getattr(payload, "field_names", [])
+            if str(name).strip()
+        ]
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if not normalized_filters:
         return {"results": list_recent_vlm_annotations(payload.limit)}
     validate_existing_vlm_fields([item["field_name"] for item in normalized_filters])
-    return {"results": analytics_api.search(normalized_filters, payload.limit)}
+    if normalized_display_field_names:
+        validate_existing_vlm_fields(normalized_display_field_names)
+
+    results = analytics_api.search(normalized_filters, payload.limit)
+    if not normalized_display_field_names or not results:
+        return {"results": results}
+
+    object_ids = [str(item.get("object_id", "")).strip() for item in results if str(item.get("object_id", "")).strip()]
+    if not object_ids:
+        return {"results": results}
+
+    rows = analytics_api.get_annotations(object_ids)
+    values_by_object_id: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        object_id = str(row.get("object_id", "")).strip()
+        values = row.get("values", {})
+        if not object_id or not isinstance(values, dict):
+            continue
+        values_by_object_id[object_id] = values
+
+    for item in results:
+        object_id = str(item.get("object_id", "")).strip()
+        row_values = values_by_object_id.get(object_id, {})
+        merged_attrs: Dict[str, Any] = {}
+        for field_name in normalized_display_field_names:
+            merged_attrs[field_name] = str(row_values.get(field_name, ""))
+        item["attributes"] = merged_attrs
+
+    return {"results": results}
 
 
 def delete_object(object_id: str, *, storage_api: Any, analytics_api: Any) -> Dict[str, Any]:
