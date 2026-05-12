@@ -452,7 +452,11 @@ services:
       fi;
       if [ "${AVSP_DEV_RELOAD:-0}" = "1" ]; then
         echo "frontend: DEV reload mode enabled";
-        exec npm run dev -- --hostname 0.0.0.0 --port 3000;
+        export CHOKIDAR_USEPOLLING=1;
+        export CHOKIDAR_INTERVAL=1000;
+        export WATCHPACK_POLLING=1;
+        export WATCHPACK_POLLING_INTERVAL=1000;
+        exec npm run dev -- --webpack --hostname 0.0.0.0 --port 3000;
       fi;
       rm -rf .next;
       npm run build;

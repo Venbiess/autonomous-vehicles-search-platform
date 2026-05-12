@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 interface SearchBarProps {
   onSearch: (payload: { query: string; imageFile: File | null }) => void;
@@ -22,7 +22,6 @@ export default function SearchBar({
   const [imageFile, setImageFile] = useState<File | null>(initialImageFile);
   const [isImageLoading, setIsImageLoading] = useState(Boolean(initialImageFile));
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
-  const inputId = useId();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const previewUrl = useMemo(
     () => (imageFile ? URL.createObjectURL(imageFile) : null),
@@ -175,15 +174,15 @@ export default function SearchBar({
             }`}
           />
           <input
-            id={inputId}
             ref={fileInputRef}
             type="file"
             accept="image/*"
             onChange={handleImageChange}
             className="hidden"
           />
-          <label
-            htmlFor={inputId}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
             className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-gray-500 transition hover:bg-gray-200 hover:text-gray-800"
             aria-label="Прикрепить изображение"
             title="Прикрепить изображение"
@@ -195,7 +194,7 @@ export default function SearchBar({
                 d="M21.44 11.05 12.25 20.24a6 6 0 1 1-8.49-8.48l9.2-9.2a4 4 0 1 1 5.65 5.66l-9.2 9.19a2 2 0 1 1-2.82-2.83l8.48-8.48"
               />
             </svg>
-          </label>
+          </button>
         </div>
       </div>
 

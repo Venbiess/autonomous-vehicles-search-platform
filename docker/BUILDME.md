@@ -108,8 +108,8 @@ docker compose -f docker/docker-compose.yml up --build
 
 ## Frontend fixes without image rebuild
 
-Frontend service in `docker/docker-compose.yml` is bind-mounted and starts in production mode.
-To apply frontend code fixes, image rebuild is not required.
+Frontend service in `docker/docker-compose.yml` is bind-mounted.
+Image rebuild is not required for frontend code changes.
 
 Use:
 
@@ -118,8 +118,7 @@ docker compose -f docker/docker-compose.yml restart frontend
 ```
 
 What restart does for frontend:
-- re-runs `npm run build`
-- re-runs `npm run start`
+- re-runs startup command (`npm run dev` if `AVSP_DEV_RELOAD=1`, otherwise `npm run build` + `npm run start`)
 - reuses `node_modules` volume unless `package-lock.json` changed
 
 ## Dev reload mode (master + analytics routes + frontend)
@@ -144,6 +143,12 @@ Then start as usual:
 
 ```bash
 docker compose -f docker/docker-compose.yml up --build
+```
+
+If you changed `.env` values and need containers to pick new env (without rebuild):
+
+```bash
+docker compose --env-file docker/.env -f docker/docker-compose.yml up -d --force-recreate master-server frontend
 ```
 
 Default is off:
