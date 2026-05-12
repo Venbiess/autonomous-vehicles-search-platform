@@ -1,3 +1,4 @@
+import os
 import queue
 import threading
 import time
@@ -7,6 +8,11 @@ from typing import Any, Dict, List
 
 import httpx
 from fastapi import HTTPException
+from configs.common import (
+    VLM_BACKFILL_FIELD_CHUNK_SIZE as DEFAULT_VLM_BACKFILL_FIELD_CHUNK_SIZE,
+    VLM_RETRY_EMPTY_VALUES as DEFAULT_VLM_RETRY_EMPTY_VALUES,
+    VLM_TIMEOUT_SEC as DEFAULT_VLM_TIMEOUT_SEC,
+)
 
 
 def _master():
@@ -48,7 +54,7 @@ def run_backfill_job(job_id: str, payload: Any) -> None:
     upsert_flush_size = max(
         1,
         int(
-            master.os.getenv(
+            os.getenv(
                 "EMBEDDINGS_BACKFILL_UPSERT_FLUSH_SIZE",
                 str(min(max(payload.batch_size, 1), 4)),
             )
@@ -407,9 +413,13 @@ def run_vlm_backfill_job(job_id: str, payload: Any) -> None:
     _run_openai_batch_for_json_annotations = master._run_openai_batch_for_json_annotations
     _job_cancel_requested = master._job_cancel_requested
     _upsert_vlm_annotations = master._upsert_vlm_annotations
-    VLM_TIMEOUT_SEC = master.VLM_TIMEOUT_SEC
-    VLM_RETRY_EMPTY_VALUES = master.VLM_RETRY_EMPTY_VALUES
-    VLM_BACKFILL_FIELD_CHUNK_SIZE = master.VLM_BACKFILL_FIELD_CHUNK_SIZE
+    vlm_timeout_raw = str(os.getenv("VLM_TIMEOUT_SEC", str(DEFAULT_VLM_TIMEOUT_SEC))).strip()
+    try:
+        vlm_timeout_sec = max(1.0, float(vlm_timeout_raw))
+    except ValueError:
+        vlm_timeout_sec = float(DEFAULT_VLM_TIMEOUT_SEC)
+    retry_empty_values_default = bool(DEFAULT_VLM_RETRY_EMPTY_VALUES)
+    field_chunk_size_default = int(DEFAULT_VLM_BACKFILL_FIELD_CHUNK_SIZE)
 
     job_config = _normalize_job_config(payload)
     with jobs_lock:
@@ -457,20 +467,20 @@ def run_vlm_backfill_job(job_id: str, payload: Any) -> None:
     last_progress_log_at = time.monotonic()
     partial_scene_parse_log_limit = 30
     retry_empty_values_raw = str(
-        master.os.getenv("VLM_RETRY_EMPTY_VALUES", "1" if bool(VLM_RETRY_EMPTY_VALUES) else "0")
+        os.getenv("VLM_RETRY_EMPTY_VALUES", "1" if retry_empty_values_default else "0")
     ).strip().lower()
     retry_empty_values = retry_empty_values_raw not in {"0", "false", "no", "off"}
     field_chunk_size_raw = str(
-        master.os.getenv("VLM_BACKFILL_FIELD_CHUNK_SIZE", str(VLM_BACKFILL_FIELD_CHUNK_SIZE))
+        os.getenv("VLM_BACKFILL_FIELD_CHUNK_SIZE", str(field_chunk_size_default))
     ).strip()
     try:
         field_chunk_size_env = int(field_chunk_size_raw)
     except ValueError:
-        field_chunk_size_env = int(VLM_BACKFILL_FIELD_CHUNK_SIZE)
+        field_chunk_size_env = int(field_chunk_size_default)
     field_chunk_size_override = max(1, field_chunk_size_env if field_chunk_size_env > 0 else int(payload.batch_size))
 
     try:
-        timeout = httpx.Timeout(VLM_TIMEOUT_SEC)
+        timeout = httpx.Timeout(vlm_timeout_sec)
         dataset_filter = str(payload.dataset or "").strip()
         hidden_datasets = sorted({name for name in load_hidden_datasets() if str(name).strip()})
 
