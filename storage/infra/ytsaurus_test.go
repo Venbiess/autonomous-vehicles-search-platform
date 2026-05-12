@@ -44,10 +44,10 @@ func TestYTsaurusAdapterHelpers(t *testing.T) {
 	if got := adapter.CanonicalPath("bucket", "nested/file.jpg"); got != "yt://bucket/nested/file.jpg" {
 		t.Fatalf("unexpected canonical path: %q", got)
 	}
-	if got := adapter.objectPath("bucket", "nested/file.jpg"); got != "/data/avsp/bucket/nested/file.jpg" {
+	if got := adapter.objectPath("bucket", "nested/file.jpg"); got != "//data/avsp/bucket/nested/file.jpg" {
 		t.Fatalf("unexpected object path: %q", got)
 	}
-	if got := adapter.objectPath("bucket", ""); got != "/data/avsp/bucket" {
+	if got := adapter.objectPath("bucket", ""); got != "//data/avsp/bucket" {
 		t.Fatalf("unexpected bucket path: %q", got)
 	}
 

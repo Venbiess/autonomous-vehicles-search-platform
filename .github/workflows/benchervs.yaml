@@ -1,0 +1,87 @@
+name: BencherVS
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: "Backend to benchmark"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - pgvector
+          - qdrant
+          - ydb
+      seed_count:
+        description: "How many vectors to insert before query phase"
+        required: true
+        default: "4000"
+      query_count:
+        description: "How many query ops to run"
+        required: true
+        default: "1200"
+      vector_size:
+        description: "Vector dimensions"
+        required: true
+        default: "640"
+      topk:
+        description: "TopK per query"
+        required: true
+        default: "10"
+      concurrency:
+        description: "Concurrency"
+        required: true
+        default: "8"
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: pgvector
+          - backend: qdrant
+          - backend: ydb
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Run benchervs (${{ matrix.backend }})
+        if: ${{ inputs.backend == 'all' || inputs.backend == matrix.backend }}
+        env:
+          BACKEND: ${{ matrix.backend }}
+          SEED_COUNT: ${{ inputs.seed_count }}
+          QUERY_COUNT: ${{ inputs.query_count }}
+          VECTOR_SIZE: ${{ inputs.vector_size }}
+          TOPK: ${{ inputs.topk }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+          REPORT_DIR: ${{ github.workspace }}/artifacts/benchervs
+        run: |
+          chmod +x storage/tests/run_benchervs_backend.sh
+          storage/tests/run_benchervs_backend.sh
+
+      - name: Publish benchervs artifacts (${{ matrix.backend }})
+        if: ${{ inputs.backend == 'all' || inputs.backend == matrix.backend }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchervs-${{ matrix.backend }}
+          path: artifacts/benchervs/
+
+      - name: Bench summary (${{ matrix.backend }})
+        if: ${{ inputs.backend == 'all' || inputs.backend == matrix.backend }}
+        run: |
+          txt="artifacts/benchervs/${{ matrix.backend }}-benchervs.txt"
+          if [ -f "$txt" ]; then
+            echo "### benchervs ${{ matrix.backend }}" >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            cat "$txt" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi

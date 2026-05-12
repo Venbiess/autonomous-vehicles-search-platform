@@ -141,6 +141,9 @@ jobs:
           - name: ytsaurus
             compose_file: docker/storage/docker-compose.ytsaurus.yml
             ready_retries: 180
+          - name: seaweedfs
+            compose_file: docker/storage/docker-compose.seaweedfs.yml
+            ready_retries: 60
 
     steps:
       - name: Checkout repository

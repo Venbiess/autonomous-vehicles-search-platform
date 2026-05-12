@@ -114,6 +114,49 @@ go run ./storage/cmd/benchervs \
 
 You can still use `-config ./storage/config/<file>.yaml` if you want to reuse project configs.
 
+### One-Click Benchmarks in GitHub Actions
+
+There is a manual workflow button now:
+
+- **Actions** → **BencherVS** → **Run workflow**
+
+It runs `benchervs` for:
+
+- `pgvector`
+- `qdrant`
+- `ydb`
+
+You can run one backend or `all`, tune `seed_count/query_count/vector_size/topk/concurrency`, and get:
+
+- clear text summary in workflow step summary
+- JSON/text artifacts per backend
+
+### Local Bench Script (single backend)
+
+```bash
+BACKEND=pgvector storage/tests/run_benchervs_backend.sh
+# or BACKEND=qdrant / BACKEND=ydb
+```
+
+Outputs are saved in:
+
+- `storage/tests/.benchervs/<backend>-benchervs.json`
+- `storage/tests/.benchervs/<backend>-benchervs.txt`
+
+### Run Integration Tests Across All Storage Variants
+
+```bash
+storage/tests/run_all_backends.sh
+```
+
+This runs `storage/tests/tests.sh` sequentially for:
+
+- `pgvector`
+- `qdrant`
+- `ydb`
+- `ytsaurus`
+- `seaweedfs`
+
 ## External YTsaurus as Object Store
 
 `storage-server` now supports `provider: ytsaurus` for object blobs through the YTsaurus HTTP proxy and Cypress file nodes.
