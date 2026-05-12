@@ -169,7 +169,6 @@ class QwenVLMBackend(BaseVLM):
             ]
             for image, prompt_text in zip(images, prompt_texts)
         ]
-        # Qwen3-VL docs recommend left padding for batched generation.
         self.processor.tokenizer.padding_side = "left"
         inputs = self.processor.apply_chat_template(
             messages,

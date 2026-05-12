@@ -107,9 +107,6 @@ class StorageAPI:
         return results
 
     def _post_get_batch(self, chunk: List[str]) -> httpx.Response:
-        # Support both storage-server API variants:
-        # - newer: accepts include_content
-        # - older/alternate: rejects unknown field include_content
         endpoint = f"{self.endpoint}/objects/get-batch"
         if self._supports_include_content is not False:
             response = self._client.post(

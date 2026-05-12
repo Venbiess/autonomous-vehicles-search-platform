@@ -27,7 +27,6 @@ def resolve_device(configured_device: str) -> str:
 
 
 def process_rss_mb() -> float:
-    # Linux containers expose resident pages in /proc/self/statm.
     try:
         with open("/proc/self/statm", "r", encoding="utf-8") as fp:
             parts = fp.read().strip().split()
@@ -41,7 +40,6 @@ def process_rss_mb() -> float:
     try:
         usage = resource.getrusage(resource.RUSAGE_SELF)
         rss = float(usage.ru_maxrss)
-        # Linux reports KiB, macOS reports bytes.
         if rss > 10**8:
             return round(rss / (1024**2), 2)
         return round(rss / 1024.0, 2)

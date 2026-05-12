@@ -30,7 +30,6 @@ def test_list_pending_vlm_object_ids_fills_limit_after_filtering(monkeypatch) ->
 
     def _completed_object_ids(object_ids: list[str], field_names: list[str]) -> list[str]:
         assert field_names == ["scene_type"]
-        # First page has 4 completed objects, second page has none.
         return [obj for obj in object_ids if obj in {"obj-0", "obj-1", "obj-2", "obj-3"}]
 
     monkeypatch.setattr(master.storage_api, "list_objects", _list_objects)
