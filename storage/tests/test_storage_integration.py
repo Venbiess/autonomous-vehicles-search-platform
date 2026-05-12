@@ -94,6 +94,35 @@ def test_upload_get_meta_get_content_and_delete(settings, http_session):
     assert missing.status_code == 404
 
 
+def test_delete_object_is_idempotent(settings, http_session):
+    headers = _write_headers(settings)
+    uploaded = _upload_object(
+        settings,
+        http_session,
+        headers,
+        _fake_jpeg(),
+        filename="delete-idempotent.jpg",
+        key=f"integration/{uuid.uuid4().hex}-delete-idempotent.jpg",
+    )
+    object_id = uploaded["object_id"]
+
+    first_delete = http_session.delete(
+        f"{settings.storage_base_url}/objects/{object_id}",
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert first_delete.status_code == 200, first_delete.text
+    assert first_delete.json()["deleted"] is True
+
+    second_delete = http_session.delete(
+        f"{settings.storage_base_url}/objects/{object_id}",
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert second_delete.status_code == 200, second_delete.text
+    assert second_delete.json()["deleted"] is False
+
+
 def test_user_flow_list_pagination_and_batch(settings, http_session):
     headers = _write_headers(settings)
     payload1 = _fake_jpeg()
@@ -480,6 +509,71 @@ def test_replace_missing_fields_purges_deleted_annotation_values(settings, http_
     )
     assert dropped_search.status_code == 200, dropped_search.text
     assert dropped_search.json()["results"] == []
+
+
+def test_annotations_clear_resets_completed_and_search(settings, http_session):
+    headers = _write_headers(settings)
+    object_id = _upload_object(
+        settings,
+        http_session,
+        headers,
+        _fake_jpeg(),
+        filename="clear-annotations.jpg",
+        key=f"integration/{uuid.uuid4().hex}-clear-annotations.jpg",
+    )["object_id"]
+    field_name = f"clear_{uuid.uuid4().hex[:8]}"
+
+    fields = http_session.post(
+        f"{settings.storage_base_url}/fields",
+        json={"fields": [{"field_name": field_name, "prompt": "Clear me", "response_type": "text"}]},
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert fields.status_code == 200, fields.text
+
+    upsert = http_session.post(
+        f"{settings.storage_base_url}/annotations/upsert",
+        json={"rows": [{"object_id": object_id, "values": {field_name: "to be cleared"}}]},
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert upsert.status_code == 200, upsert.text
+    assert upsert.json()["upserted"] == 1
+
+    completed_before = http_session.post(
+        f"{settings.storage_base_url}/annotations/completed-object-ids",
+        json={"object_ids": [object_id], "field_names": [field_name]},
+        timeout=settings.request_timeout_sec,
+    )
+    assert completed_before.status_code == 200, completed_before.text
+    assert object_id in completed_before.json()["object_ids"]
+
+    cleared = http_session.post(
+        f"{settings.storage_base_url}/annotations/clear",
+        headers=headers,
+        timeout=settings.request_timeout_sec,
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json().get("status") == "cleared"
+
+    completed_after = http_session.post(
+        f"{settings.storage_base_url}/annotations/completed-object-ids",
+        json={"object_ids": [object_id], "field_names": [field_name]},
+        timeout=settings.request_timeout_sec,
+    )
+    assert completed_after.status_code == 200, completed_after.text
+    assert completed_after.json()["object_ids"] == []
+
+    search = http_session.post(
+        f"{settings.storage_base_url}/search",
+        json={
+            "filters": [{"field_name": field_name, "value": "cleared", "match_mode": "contains"}],
+            "limit": 10,
+        },
+        timeout=settings.request_timeout_sec,
+    )
+    assert search.status_code == 200, search.text
+    assert search.json()["results"] == []
 
 
 def test_write_endpoints_require_token(settings, http_session):

@@ -152,8 +152,12 @@ compose up -d --build \
   master-server
 
 wait_http_ok "storage-server" "http://localhost:9013/health" "$SMOKE_TIMEOUT_SEC"
+wait_http_ok "storage-ready" "http://localhost:9013/ready" "$SMOKE_TIMEOUT_SEC"
 wait_http_ok "master-jobs" "http://localhost:9002/jobs" "$SMOKE_TIMEOUT_SEC"
 wait_http_ok "master-health" "http://localhost:9002/health" "$SMOKE_TIMEOUT_SEC"
+
+curl -fsS --max-time 20 "http://localhost:9002/health" >/tmp/master-health.json
+assert_json /tmp/master-health.json
 
 curl -fsS --max-time 20 "http://localhost:9002/system-info" >/tmp/system-info.json
 assert_json /tmp/system-info.json
@@ -166,6 +170,9 @@ curl -fsS --max-time 30 \
   -d '{"query":"road","top_k":3,"max_rows":100}' \
   "http://localhost:9002/search/text" >/tmp/search-text.json
 assert_json /tmp/search-text.json
+
+curl -fsS --max-time 30 "http://localhost:9002/embeddings/dimensions" >/tmp/embeddings-dimensions.json
+assert_json /tmp/embeddings-dimensions.json
 
 echo "Generating synthetic dataset..."
 compose exec -T master-server \
@@ -274,8 +281,10 @@ import json
 from pathlib import Path
 
 system_info = json.loads(Path("/tmp/system-info.json").read_text(encoding="utf-8"))
+master_health = json.loads(Path("/tmp/master-health.json").read_text(encoding="utf-8"))
 jobs = json.loads(Path("/tmp/jobs.json").read_text(encoding="utf-8"))
 search_before = json.loads(Path("/tmp/search-text.json").read_text(encoding="utf-8"))
+embedding_dimensions = json.loads(Path("/tmp/embeddings-dimensions.json").read_text(encoding="utf-8"))
 search_after = json.loads(Path("/tmp/search-text-after.json").read_text(encoding="utf-8"))
 search_image = json.loads(Path("/tmp/search-image.json").read_text(encoding="utf-8"))
 objects = json.loads(Path("/tmp/objects.json").read_text(encoding="utf-8"))
@@ -285,9 +294,19 @@ vlm_fields = json.loads(Path("/tmp/vlm-fields.json").read_text(encoding="utf-8")
 vlm_annotations = json.loads(Path("/tmp/vlm-annotations.json").read_text(encoding="utf-8"))
 
 assert "services" in system_info, system_info
+assert master_health.get("status") == "ok", master_health
+models = master_health.get("models", {})
+assert models.get("mode") == "rabbitmq", models
+rabbit = models.get("rabbitmq", {})
+queues = rabbit.get("queues", {}) if isinstance(rabbit, dict) else {}
+for queue_name in ("avsp.embedder.tasks", "avsp.vlm.tasks"):
+    queue_info = queues.get(queue_name, {}) if isinstance(queues, dict) else {}
+    assert int(queue_info.get("consumers", 0)) >= 1, {"queue": queue_name, "info": queue_info, "models": models}
 assert "jobs" in jobs and isinstance(jobs["jobs"], list), jobs
 assert search_before.get("mode") == "vector_server", search_before
 assert isinstance(search_before.get("results"), list), search_before
+assert embedding_dimensions.get("status") == "ok", embedding_dimensions
+assert int(embedding_dimensions.get("query_dim") or 0) > 0, embedding_dimensions
 assert isinstance(objects.get("items"), list) and len(objects["items"]) >= 1, objects
 assert int(vectors_before.get("count", 0)) >= 0, vectors_before
 assert int(vectors_after.get("count", 0)) >= int(vectors_before.get("count", 0)) + 1, (vectors_before, vectors_after)
