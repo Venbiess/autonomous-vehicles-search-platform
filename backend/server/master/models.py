@@ -91,6 +91,7 @@ class VLMFilterDefinition(BaseModel):
 
 class VLMSearchRequest(BaseModel):
     filters: List[VLMFilterDefinition] = Field(default_factory=list)
+    field_names: List[str] = Field(default_factory=list)
     limit: int = Field(100, ge=1, le=1000)
 
 
