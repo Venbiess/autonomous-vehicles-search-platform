@@ -33,7 +33,7 @@ storage_server:
     conn_str: grpc://ydb:2136/local
     schema: avsp
     table: image_embeddings
-    index_name: ""
+    index_name: image_embeddings_idx
     endpoint_url: ""
     api_key: ""
     collection: ""

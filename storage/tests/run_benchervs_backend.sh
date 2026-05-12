@@ -35,6 +35,19 @@ run_benchervs() {
     sh -lc 'export PATH="/usr/local/go/bin:$PATH"; go run ./cmd/benchervs "$@"' sh "${docker_args[@]}"
 }
 
+run_benchervs_in_network() {
+  local network="$1"
+  shift
+  local -a args=("$@")
+
+  docker run --rm \
+    --network "$network" \
+    -v "$ROOT_DIR:/app" \
+    -w /app/storage \
+    golang:1.25 \
+    sh -lc 'export PATH="/usr/local/go/bin:$PATH"; go run ./cmd/benchervs "$@"' sh "${args[@]}"
+}
+
 run_single_backend() {
   local backend="$1"
   local compose_file
@@ -85,17 +98,32 @@ run_single_backend() {
 
   echo "Running benchervs for backend=$backend..."
   set -o pipefail
-  run_benchervs \
-    "${bench_args[@]}" \
-    -mode run \
-    -seed-count "$SEED_COUNT" \
-    -query-count "$QUERY_COUNT" \
-    -vector-size "$VECTOR_SIZE" \
-    -topk "$TOPK" \
-    -concurrency "$CONCURRENCY" \
-    -timeout-sec "$TIMEOUT_SEC" \
-    -json \
-    >"$json_report"
+  if [[ "$backend" == "ydb" ]]; then
+    run_benchervs_in_network \
+      "storage_storage-net" \
+      "${bench_args[@]/localhost/ydb}" \
+      -mode run \
+      -seed-count "$SEED_COUNT" \
+      -query-count "$QUERY_COUNT" \
+      -vector-size "$VECTOR_SIZE" \
+      -topk "$TOPK" \
+      -concurrency "$CONCURRENCY" \
+      -timeout-sec "$TIMEOUT_SEC" \
+      -json \
+      >"$json_report"
+  else
+    run_benchervs \
+      "${bench_args[@]}" \
+      -mode run \
+      -seed-count "$SEED_COUNT" \
+      -query-count "$QUERY_COUNT" \
+      -vector-size "$VECTOR_SIZE" \
+      -topk "$TOPK" \
+      -concurrency "$CONCURRENCY" \
+      -timeout-sec "$TIMEOUT_SEC" \
+      -json \
+      >"$json_report"
+  fi
   set +o pipefail
 
   {

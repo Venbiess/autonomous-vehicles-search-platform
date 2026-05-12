@@ -56,6 +56,10 @@ func NewYDBAdapter(cfg VectorIndexConfig) (*YDBAdapter, error) {
 		_ = driver.Close(ctx)
 		return nil, err
 	}
+	if err := adapter.ensureVectorIndex(ctx); err != nil {
+		_ = driver.Close(ctx)
+		return nil, err
+	}
 	return adapter, nil
 }
 
@@ -90,6 +94,59 @@ VALUES (
 		table.ValueParam("$embedding_raw", ydbtypes.UTF8Value(y.embeddingRawValue(embedding))),
 		table.ValueParam("$embedding_dim", ydbtypes.Int32Value(int32(len(embedding)))),
 	)
+	return err
+}
+
+func (y *YDBAdapter) UpsertBatch(ctx context.Context, objectIDs []string, embeddings [][]float64) error {
+	if len(objectIDs) == 0 {
+		return nil
+	}
+	if len(objectIDs) != len(embeddings) {
+		return errors.New("object_ids and embeddings length mismatch")
+	}
+
+	rows := make([]ydbtypes.Value, 0, len(objectIDs))
+	for i := range objectIDs {
+		objectID := strings.TrimSpace(objectIDs[i])
+		embedding := embeddings[i]
+		if objectID == "" {
+			continue
+		}
+		if len(embedding) == 0 {
+			return errors.New("embedding is required")
+		}
+		if y.vectorSize > 0 && len(embedding) != y.vectorSize {
+			return fmt.Errorf("expected %d dimensions, got %d", y.vectorSize, len(embedding))
+		}
+		rows = append(rows, ydbtypes.StructValue(
+			ydbtypes.StructFieldValue("object_id", ydbtypes.UTF8Value(objectID)),
+			ydbtypes.StructFieldValue("embedding", y.floatListValue(embedding)),
+			ydbtypes.StructFieldValue("embedding_raw", ydbtypes.UTF8Value(y.embeddingRawValue(embedding))),
+			ydbtypes.StructFieldValue("embedding_dim", ydbtypes.Int32Value(int32(len(embedding)))),
+		))
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	query := fmt.Sprintf(`
+DECLARE $rows AS List<Struct<
+	object_id: Utf8,
+	embedding: List<Float>,
+	embedding_raw: Utf8,
+	embedding_dim: Int32
+>>;
+
+UPSERT INTO %s (object_id, embedding, embedding_raw, embedding_dim, updated_at)
+SELECT
+	row.object_id AS object_id,
+	Untag(Knn::ToBinaryStringFloat(row.embedding), "FloatVector") AS embedding,
+	row.embedding_raw AS embedding_raw,
+	row.embedding_dim AS embedding_dim,
+	CurrentUtcTimestamp() AS updated_at
+FROM AS_TABLE($rows) AS row;`, y.quotedTable())
+
+	_, err := y.execute(ctx, query, table.ValueParam("$rows", ydbtypes.ListValue(rows...)))
 	return err
 }
 
@@ -295,6 +352,44 @@ CREATE TABLE IF NOT EXISTS %s (
 		return s.ExecuteSchemeQuery(ctx, query)
 	}, table.WithIdempotent())
 	return err
+}
+
+func (y *YDBAdapter) ensureVectorIndex(ctx context.Context) error {
+	indexName := strings.TrimSpace(y.indexName)
+	if indexName == "" {
+		return nil
+	}
+	if y.vectorSize <= 0 {
+		return errors.New("ydb vector_size must be > 0 when index_name is configured")
+	}
+
+	quotedIndex := "`" + strings.ReplaceAll(indexName, "`", "``") + "`"
+	query := fmt.Sprintf(`
+ALTER TABLE %s
+ADD VECTOR INDEX %s
+GLOBAL SYNC ON (embedding)
+WITH (
+	distance="%s",
+	vector_type="float",
+	vector_dimension=%d
+);`,
+		y.quotedTable(),
+		quotedIndex,
+		y.distance,
+		y.vectorSize,
+	)
+	err := y.driver.Table().Do(ctx, func(ctx context.Context, s table.Session) error {
+		return s.ExecuteSchemeQuery(ctx, query)
+	}, table.WithIdempotent())
+	if err != nil {
+		// If index already exists, keep using it without failing startup.
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "already exists") || strings.Contains(msg, "exists") {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (y *YDBAdapter) execute(ctx context.Context, query string, params ...table.ParameterOption) (result.Result, error) {

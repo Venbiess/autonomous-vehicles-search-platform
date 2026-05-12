@@ -378,6 +378,14 @@ func (q *QdrantAdapter) ensureCollection(ctx context.Context, vectorSize int) er
 			"size":     q.vectorSize,
 			"distance": q.distance,
 		},
+		"hnsw_config": map[string]any{
+			"m":              16,
+			"ef_construct":   128,
+			"full_scan_threshold": 10000,
+		},
+		"optimizers_config": map[string]any{
+			"default_segment_number": 2,
+		},
 	}
 	if err := q.doJSONExpectOK(ctx, http.MethodPut, fmt.Sprintf("/collections/%s", q.collection), reqBody, nil, false); err != nil {
 		return err
