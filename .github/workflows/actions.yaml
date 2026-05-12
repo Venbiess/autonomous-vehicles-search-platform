@@ -131,8 +131,16 @@ jobs:
         include:
           - name: pgvector
             compose_file: docker/storage/docker-compose.pgvector.yml
+            ready_retries: 60
           - name: qdrant
             compose_file: docker/storage/docker-compose.qdrant.yml
+            ready_retries: 60
+          - name: ydb
+            compose_file: docker/storage/docker-compose.ydb.yml
+            ready_retries: 120
+          - name: ytsaurus
+            compose_file: docker/storage/docker-compose.ytsaurus.yml
+            ready_retries: 180
 
     steps:
       - name: Checkout repository
@@ -141,6 +149,7 @@ jobs:
       - name: Run storage integration tests (${{ matrix.name }})
         env:
           STORAGE_TEST_COMPOSE_FILE: ${{ github.workspace }}/${{ matrix.compose_file }}
+          STORAGE_READY_RETRIES: ${{ matrix.ready_retries }}
         run: bash storage/tests/tests.sh --down
 
   full-stack-smoke:

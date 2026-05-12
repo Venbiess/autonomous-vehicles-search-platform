@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: "avsp-storage-postgres-${USER}"
+    environment:
+      POSTGRES_DB: avsp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - storage-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d avsp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - storage-net
+
+  ytsaurus:
+    image: ghcr.io/ytsaurus/local:stable
+    container_name: "avsp-storage-ytsaurus-${USER}"
+    ports:
+      - "8000:80"
+      - "8002:8002"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              with urllib.request.urlopen("http://127.0.0.1/api/v3/get?path=//sys/%40", timeout=5) as resp:
+                  sys.exit(0 if 200 <= resp.status < 300 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+    networks:
+      - storage-net
+
+  storage-server:
+    build:
+      context: ../..
+      dockerfile: docker/storage/storage-server.Dockerfile
+    container_name: "avsp-storage-storage-server-${USER}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ytsaurus:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    restart: on-failure
+    environment:
+      STORAGE_CONFIG_PATH: /app/storage/config/storage.integration.ytsaurus.yaml
+    volumes:
+      - ../../storage/config:/app/storage/config:ro
+    ports:
+      - "9012:9012"
+    networks:
+      - storage-net
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: "avsp-storage-clickhouse-${USER}"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - storage-clickhouse-data:/var/lib/clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "default", "--password", "clickhouse", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    networks:
+      - storage-net
+
+volumes:
+  storage-postgres-data:
+  storage-clickhouse-data:
+
+networks:
+  storage-net:
+    driver: bridge
