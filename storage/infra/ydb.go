@@ -2,6 +2,7 @@ package infra
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -71,12 +72,14 @@ func (y *YDBAdapter) Upsert(ctx context.Context, objectID string, embedding []fl
 	query := fmt.Sprintf(`
 DECLARE $object_id AS Utf8;
 DECLARE $embedding AS List<Float>;
+DECLARE $embedding_raw AS Utf8;
 DECLARE $embedding_dim AS Int32;
 
-UPSERT INTO %s (object_id, embedding, embedding_dim, updated_at)
+UPSERT INTO %s (object_id, embedding, embedding_raw, embedding_dim, updated_at)
 VALUES (
   $object_id,
   Untag(Knn::ToBinaryStringFloat($embedding), "FloatVector"),
+  $embedding_raw,
   $embedding_dim,
   CurrentUtcTimestamp()
 );`, y.quotedTable())
@@ -84,6 +87,7 @@ VALUES (
 	_, err := y.execute(ctx, query,
 		table.ValueParam("$object_id", ydbtypes.UTF8Value(objectID)),
 		table.ValueParam("$embedding", y.floatListValue(embedding)),
+		table.ValueParam("$embedding_raw", ydbtypes.UTF8Value(y.embeddingRawValue(embedding))),
 		table.ValueParam("$embedding_dim", ydbtypes.Int32Value(int32(len(embedding)))),
 	)
 	return err
@@ -199,11 +203,90 @@ func (y *YDBAdapter) Health(ctx context.Context) error {
 	return res.Err()
 }
 
+func (y *YDBAdapter) ExistingObjectIDs(ctx context.Context, objectIDs []string) ([]string, error) {
+	normalized := ydbDedupeNonEmpty(objectIDs)
+	if len(normalized) == 0 {
+		return []string{}, nil
+	}
+	query := fmt.Sprintf(`
+DECLARE $object_ids AS List<Utf8>;
+
+SELECT object_id
+FROM %s
+WHERE object_id IN $object_ids;`, y.quotedTable())
+	res, err := y.execute(ctx, query, table.ValueParam("$object_ids", y.utf8ListValue(normalized)))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = res.Close() }()
+	if !res.NextResultSet(ctx) {
+		return []string{}, res.Err()
+	}
+	out := make([]string, 0, len(normalized))
+	for res.NextRow() {
+		var objectID string
+		if err := res.ScanNamed(named.OptionalWithDefault("object_id", &objectID)); err != nil {
+			return nil, err
+		}
+		if objectID != "" {
+			out = append(out, objectID)
+		}
+	}
+	return out, res.Err()
+}
+
+func (y *YDBAdapter) GetByObjectIDs(ctx context.Context, objectIDs []string) (map[string][]float64, error) {
+	normalized := ydbDedupeNonEmpty(objectIDs)
+	out := make(map[string][]float64, len(normalized))
+	if len(normalized) == 0 {
+		return out, nil
+	}
+	query := fmt.Sprintf(`
+DECLARE $object_ids AS List<Utf8>;
+
+SELECT object_id, embedding_raw
+FROM %s
+WHERE object_id IN $object_ids;`, y.quotedTable())
+	res, err := y.execute(ctx, query, table.ValueParam("$object_ids", y.utf8ListValue(normalized)))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = res.Close() }()
+	if !res.NextResultSet(ctx) {
+		return out, res.Err()
+	}
+	for res.NextRow() {
+		var (
+			objectID     string
+			embeddingRaw string
+		)
+		if err := res.ScanNamed(
+			named.OptionalWithDefault("object_id", &objectID),
+			named.OptionalWithDefault("embedding_raw", &embeddingRaw),
+		); err != nil {
+			return nil, err
+		}
+		if objectID == "" {
+			continue
+		}
+		embedding, err := parseYDBEmbeddingRaw(embeddingRaw)
+		if err != nil {
+			return nil, err
+		}
+		if len(embedding) == 0 {
+			continue
+		}
+		out[objectID] = embedding
+	}
+	return out, res.Err()
+}
+
 func (y *YDBAdapter) ensureTable(ctx context.Context) error {
 	query := fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s (
 	object_id Utf8,
 	embedding String,
+	embedding_raw Utf8,
 	embedding_dim Int32,
 	updated_at Timestamp,
 	PRIMARY KEY (object_id)
@@ -239,6 +322,26 @@ func (y *YDBAdapter) floatListValue(embedding []float64) ydbtypes.Value {
 		items = append(items, ydbtypes.FloatValue(float32(v)))
 	}
 	return ydbtypes.ListValue(items...)
+}
+
+func (y *YDBAdapter) utf8ListValue(items []string) ydbtypes.Value {
+	values := make([]ydbtypes.Value, 0, len(items))
+	for _, item := range items {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		values = append(values, ydbtypes.UTF8Value(trimmed))
+	}
+	return ydbtypes.ListValue(values...)
+}
+
+func (y *YDBAdapter) embeddingRawValue(embedding []float64) string {
+	raw, err := json.Marshal(embedding)
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
 }
 
 func (y *YDBAdapter) distanceFunction() string {
@@ -282,4 +385,36 @@ func (y *YDBAdapter) viewClause() string {
 		return ""
 	}
 	return " VIEW `" + strings.ReplaceAll(strings.TrimSpace(y.indexName), "`", "``") + "`"
+}
+
+func ydbDedupeNonEmpty(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func parseYDBEmbeddingRaw(raw string) ([]float64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []float64{}, nil
+	}
+	var embedding []float64
+	if err := json.Unmarshal([]byte(raw), &embedding); err != nil {
+		return nil, fmt.Errorf("invalid ydb embedding_raw: %w", err)
+	}
+	return embedding, nil
 }

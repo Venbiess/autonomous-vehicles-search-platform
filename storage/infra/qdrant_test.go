@@ -1,7 +1,10 @@
 package infra
 
 import (
+	"context"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -149,5 +152,43 @@ func TestParseQdrantPayloadEmbedding(t *testing.T) {
 	})
 	if len(got) != 2 || got[0] != 0.11 || got[1] != 0.22 {
 		t.Fatalf("parseQdrantPayloadEmbedding() = %v", got)
+	}
+}
+
+func TestQdrantExistingObjectIDs(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/collections/test/points" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"status":"ok",
+			"result":[
+				{"id":"obj-2","payload":{"object_id":"obj-2"}},
+				{"id":"obj-1","payload":{"object_id":"obj-1"}},
+				{"id":"obj-2","payload":{"object_id":"obj-2"}}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	adapter, err := NewQdrantAdapter(VectorIndexConfig{
+		EndpointURL: server.URL,
+		Collection:  "test",
+		Distance:    "cosine",
+		TimeoutSec:  5,
+	})
+	if err != nil {
+		t.Fatalf("NewQdrantAdapter error: %v", err)
+	}
+
+	ids, err := adapter.ExistingObjectIDs(context.Background(), []string{"obj-2", "missing", "obj-1", "obj-2"})
+	if err != nil {
+		t.Fatalf("ExistingObjectIDs error: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "obj-2" || ids[1] != "obj-1" {
+		t.Fatalf("ExistingObjectIDs() = %#v", ids)
 	}
 }

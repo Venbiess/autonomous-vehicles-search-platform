@@ -170,6 +170,58 @@ func (q *QdrantAdapter) Count(ctx context.Context) (int64, error) {
 	return resp.Result.Count, nil
 }
 
+func (q *QdrantAdapter) ExistingObjectIDs(ctx context.Context, objectIDs []string) ([]string, error) {
+	if len(objectIDs) == 0 {
+		return []string{}, nil
+	}
+
+	seen := make(map[string]struct{}, len(objectIDs))
+	out := make([]string, 0, len(objectIDs))
+	for start := 0; start < len(objectIDs); start += qdrantLookupChunkSize {
+		end := start + qdrantLookupChunkSize
+		if end > len(objectIDs) {
+			end = len(objectIDs)
+		}
+		chunk := objectIDs[start:end]
+
+		var resp struct {
+			Result any `json:"result"`
+		}
+		reqBody := map[string]any{
+			"ids":          chunk,
+			"with_payload": true,
+			"with_vector":  false,
+		}
+		err := q.doJSONExpectOK(
+			ctx,
+			http.MethodPost,
+			fmt.Sprintf("/collections/%s/points", q.collection),
+			reqBody,
+			&resp,
+			true,
+		)
+		if isNotFoundErr(err) {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		for _, point := range qdrantLookupPoints(resp.Result) {
+			objectID := q.extractObjectID(point.ID, point.Payload)
+			if objectID == "" {
+				continue
+			}
+			if _, exists := seen[objectID]; exists {
+				continue
+			}
+			seen[objectID] = struct{}{}
+			out = append(out, objectID)
+		}
+	}
+	return out, nil
+}
+
 func (q *QdrantAdapter) GetByObjectIDs(ctx context.Context, objectIDs []string) (map[string][]float64, error) {
 	out := make(map[string][]float64)
 	if len(objectIDs) == 0 {
