@@ -140,3 +140,14 @@ func TestQdrantLookupPointsParsesArrayAndPointsObject(t *testing.T) {
 		t.Fatalf("qdrantLookupPoints(object) = %#v", objectPoints)
 	}
 }
+
+func TestParseQdrantPayloadEmbedding(t *testing.T) {
+	t.Parallel()
+
+	got := parseQdrantPayloadEmbedding(map[string]any{
+		"embedding": []any{0.11, 0.22},
+	})
+	if len(got) != 2 || got[0] != 0.11 || got[1] != 0.22 {
+		t.Fatalf("parseQdrantPayloadEmbedding() = %v", got)
+	}
+}

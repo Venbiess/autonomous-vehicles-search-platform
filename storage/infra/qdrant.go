@@ -78,7 +78,7 @@ func (q *QdrantAdapter) Upsert(ctx context.Context, objectID string, embedding [
 			{
 				"id":      objectID,
 				"vector":  embedding,
-				"payload": map[string]any{"object_id": objectID},
+				"payload": map[string]any{"object_id": objectID, "embedding": embedding},
 			},
 		},
 	}
@@ -211,7 +211,10 @@ func (q *QdrantAdapter) GetByObjectIDs(ctx context.Context, objectIDs []string) 
 			if objectID == "" {
 				continue
 			}
-			vector := parseQdrantVector(point.Vector)
+			vector := parseQdrantPayloadEmbedding(point.Payload)
+			if len(vector) == 0 {
+				vector = parseQdrantVector(point.Vector)
+			}
 			if len(vector) == 0 {
 				continue
 			}
@@ -256,6 +259,13 @@ func parseQdrantLookupPointArray(rows []any) []qdrantLookupPoint {
 		})
 	}
 	return out
+}
+
+func parseQdrantPayloadEmbedding(payload map[string]any) []float64 {
+	if len(payload) == 0 {
+		return nil
+	}
+	return parseQdrantVector(payload["embedding"])
 }
 
 func (q *QdrantAdapter) Health(ctx context.Context) error {

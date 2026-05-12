@@ -33,7 +33,17 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           python -m py_compile \
-            backend/server/master.py \
+            backend/server/master/__init__.py \
+            backend/server/master/embedder.py \
+            backend/server/master/job_support.py \
+            backend/server/master/jobs.py \
+            backend/server/master/models.py \
+            backend/server/master/object_listing.py \
+            backend/server/master/routes.py \
+            backend/server/master/state.py \
+            backend/server/master/system.py \
+            backend/server/master/vlm.py \
+            backend/server/master/waymo_auth.py \
             backend/server/model_bus.py \
             backend/server/storage_api.py \
             backend/server/analytics_api.py \
