@@ -18,12 +18,6 @@ function ResilientImage({ src, alt, className }) {
   const [retryCount, setRetryCount] = useState(0);
   const [failed, setFailed] = useState(false);
 
-  useEffect(() => {
-    setResolvedSrc(src);
-    setRetryCount(0);
-    setFailed(false);
-  }, [src]);
-
   if (failed) {
     return (
       <div
@@ -164,6 +158,7 @@ export default function ImageGallery({ images }) {
             className="h-[300px] overflow-hidden rounded border bg-white text-left transition hover:-translate-y-0.5 hover:shadow-lg"
           >
             <ResilientImage
+              key={img.url}
               src={img.url}
               alt={img.title}
               className="h-48 w-full object-cover"
@@ -211,6 +206,7 @@ export default function ImageGallery({ images }) {
             </button>
             <div className="overflow-auto pt-8">
               <ResilientImage
+                key={selectedImage.url}
                 src={selectedImage.url}
                 alt={selectedImage.title}
                 className="max-h-[68vh] w-full rounded-2xl object-contain bg-slate-100"
