@@ -9,7 +9,7 @@ It ingests scene data, generates embeddings and vision-language metadata, and pr
 - `storage-server` (Go): object metadata, vector search integration, and analytics endpoints
 - Model workers (Python): embedding and VLM task processing over RabbitMQ
 - Frontend (Next.js): operator UI for search, VLM fields, transfer, and dataset tools
-- Data services: PostgreSQL/pgvector (or Qdrant profile), MinIO, ClickHouse, RabbitMQ
+- Data services: PostgreSQL/pgvector, Qdrant, Milvus, MinIO, ClickHouse, RabbitMQ
 - Observability: Prometheus, Grafana, cAdvisor
 
 ## Repository Guide

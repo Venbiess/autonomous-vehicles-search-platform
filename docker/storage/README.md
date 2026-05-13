@@ -8,7 +8,8 @@ Use these profiles when you need only the storage/data plane without the full AV
 - `postgres`: metadata database
 - `minio` + `minio-init`: object storage and bucket bootstrap
 - `clickhouse`: analytics/annotation storage
-- Optional `qdrant`: vector index provider in Qdrant profile
+- Optional vector stores by profile: `qdrant`, `milvus`
+- Optional object stores by profile: `seaweedfs`, `ytsaurus`, `pics`
 
 ## Profile Selection Logic
 
@@ -16,6 +17,8 @@ Use these profiles when you need only the storage/data plane without the full AV
   - Vector provider: `pgvector` (inside PostgreSQL)
 - `docker-compose.qdrant.yml` uses `storage/config/storage.qdrant.yaml`
   - Vector provider: `qdrant` (external vector service) while metadata remains in PostgreSQL
+- `docker-compose.milvus.yml` uses `storage/config/storage.integration.milvus.yaml`
+  - Vector provider: `milvus` (external vector service) while metadata remains in PostgreSQL
 
 In all profiles, `storage-server` receives config through:
 - `STORAGE_CONFIG_PATH=/app/storage/config/<profile>.yaml`
@@ -47,14 +50,26 @@ docker compose -f docker/storage/docker-compose.pics.yml up -d --build
 docker compose -f docker/storage/docker-compose.qdrant.yml up --build
 ```
 
-## Benchmark Vector Search with `benchervs`
+## Start (Milvus)
 
-`benchervs` is a CLI runner for practical vector-search checks. You can run it directly against a backend with `--type`, without storage config files. The default mode is `run`: first it inserts `N` vectors, then it executes `M` search queries and prints timing plus latency percentiles.
+```bash
+docker compose -f docker/storage/docker-compose.milvus.yml up --build
+```
+
+## Start (YTsaurus object storage)
+
+```bash
+docker compose -f docker/storage/docker-compose.ytsaurus.yml up --build
+```
+
+## Benchmark Vector Search with `bencher vector`
+
+`bencher vector` is a CLI runner for practical vector-search checks. You can run it directly against a backend with `--type`, without storage config files. The default mode is `run`: first it inserts `N` vectors, then it executes `M` search queries and prints timing plus latency percentiles.
 
 Run a complete insert + search pass against PGVector:
 
 ```bash
-go run ./storage/cmd/benchervs \
+go run ./storage/tools/bencher vector \
   -type pgvector \
   -dsn 'host=localhost port=5432 dbname=avsp user=postgres password=postgres sslmode=disable' \
   -seed-count 20000 \
@@ -63,13 +78,13 @@ go run ./storage/cmd/benchervs \
   -concurrency 16 \
   -topk 20 \
   -query-pattern self \
-  -manifest /tmp/benchervs-pg.json
+  -manifest /tmp/bencher-vector-pg.json
 ```
 
 Run the same benchmark against Qdrant:
 
 ```bash
-go run ./storage/cmd/benchervs \
+go run ./storage/tools/bencher vector \
   -type qdrant \
   -endpoint http://localhost:6333 \
   -mode query \
@@ -77,13 +92,13 @@ go run ./storage/cmd/benchervs \
   -concurrency 16 \
   -topk 20 \
   -query-pattern hot \
-  -manifest /tmp/benchervs-pg.json
+  -manifest /tmp/bencher-vector-pg.json
 ```
 
 Only measure insert speed:
 
 ```bash
-go run ./storage/cmd/benchervs \
+go run ./storage/tools/bencher vector \
   -type pgvector \
   -dsn 'host=localhost port=5432 dbname=avsp user=postgres password=postgres sslmode=disable' \
   -mode insert \
@@ -94,7 +109,7 @@ go run ./storage/cmd/benchervs \
 Only measure search speed against an already inserted dataset:
 
 ```bash
-go run ./storage/cmd/benchervs \
+go run ./storage/tools/bencher vector \
   -type pgvector \
   -dsn 'host=localhost port=5432 dbname=avsp user=postgres password=postgres sslmode=disable' \
   -mode query \
@@ -102,13 +117,13 @@ go run ./storage/cmd/benchervs \
   -concurrency 32 \
   -topk 20 \
   -query-pattern hot \
-  -manifest /tmp/benchervs-pg.json
+  -manifest /tmp/bencher-vector-pg.json
 ```
 
 Mixed read/write pressure:
 
 ```bash
-go run ./storage/cmd/benchervs \
+go run ./storage/tools/bencher vector \
   -type pgvector \
   -dsn 'host=localhost port=5432 dbname=avsp user=postgres password=postgres sslmode=disable' \
   -mode mixed \
@@ -126,7 +141,7 @@ There is a manual workflow button now:
 
 - **Actions** → **BencherVS** → **Run workflow**
 
-It runs `benchervs` for:
+It runs vector bencher for:
 
 - `pgvector`
 - `qdrant`
@@ -164,7 +179,7 @@ TARGET=minio OBJECT_SIZE=1MB OPS=1000 CONCURRENCY=8 storage/tests/run_bencheros_
 TARGET=pics  OBJECT_SIZE=512KB OPS=500  CONCURRENCY=6 storage/tests/run_bencheros_backend.sh
 ```
 
-### Local Bench Script (single backend)
+### Local Vector Bench Script
 
 ```bash
 storage/tests/run_benchervs_backend.sh
@@ -260,6 +275,10 @@ Current behavior:
 docker compose -f docker/storage/docker-compose.pgvector.yml down
 # or
 docker compose -f docker/storage/docker-compose.qdrant.yml down
+# or
+docker compose -f docker/storage/docker-compose.milvus.yml down
+# or
+docker compose -f docker/storage/docker-compose.ytsaurus.yml down
 # or
 docker compose -f docker/storage/docker-compose.seaweedfs.yml down
 # or

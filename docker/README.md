@@ -6,7 +6,7 @@ This directory contains all Docker-related build and runtime documentation for A
 
 - Full stack build and run: [BUILDME.md](BUILDME.md)
 - Dev reload flag (`AVSP_DEV_RELOAD`) for master + frontend/API routes: [BUILDME.md#dev-reload-mode-master--analytics-routes--frontend](BUILDME.md#dev-reload-mode-master--analytics-routes--frontend)
-- Storage-only profiles (pgvector / qdrant): [storage/README.md](storage/README.md)
+- Storage-only profiles (pgvector / qdrant / milvus + object store variants): [storage/README.md](storage/README.md)
 - Frontend Docker packaging notes: [frontend/README.md](frontend/README.md)
 
 ## Important Files
