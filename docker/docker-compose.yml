@@ -174,6 +174,8 @@ services:
       - ../:/app
     environment:
       HF_HOME: /app/.cache/huggingface
+      EMBEDDER_BACKEND: ${EMBEDDER_BACKEND:-ALIGN}
+      EMBEDDER_MODEL_NAME: ${EMBEDDER_MODEL_NAME:-}
     ports:
       - "8000:8000"
     networks:
@@ -244,6 +246,8 @@ services:
       - "9108"
     environment:
       EMBEDDER_PORT: 8000
+      EMBEDDER_BACKEND: ${EMBEDDER_BACKEND:-ALIGN}
+      EMBEDDER_MODEL_NAME: ${EMBEDDER_MODEL_NAME:-}
       WORKER_METRICS_PORT: 9108
       LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/site-packages/nvidia/nccl/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvjitlink/lib
       HF_HOME: /app/.cache/huggingface
