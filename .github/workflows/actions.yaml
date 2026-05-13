@@ -152,6 +152,10 @@ jobs:
             compose_file: docker/storage/docker-compose.seaweedfs.yml
             ready_retries: 60
             request_timeout_sec: 20
+          - name: pics
+            compose_file: docker/storage/docker-compose.pics.yml
+            ready_retries: 90
+            request_timeout_sec: 30
 
     steps:
       - name: Checkout repository
@@ -162,22 +166,6 @@ jobs:
           STORAGE_TEST_COMPOSE_FILE: ${{ github.workspace }}/${{ matrix.compose_file }}
           STORAGE_READY_RETRIES: ${{ matrix.ready_retries }}
           STORAGE_TEST_TIMEOUT_SEC: ${{ matrix.request_timeout_sec }}
-        run: bash storage/tests/tests.sh --down
-
-  storage-integration-pics:
-    runs-on: ubuntu-latest
-    needs:
-      - storage-go-tests
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Run storage integration tests (pics object storage)
-        env:
-          STORAGE_TEST_COMPOSE_FILE: ${{ github.workspace }}/docker/storage/docker-compose.pics.yml
-          STORAGE_READY_RETRIES: 90
-          STORAGE_TEST_TIMEOUT_SEC: 30
         run: bash storage/tests/tests.sh --down
 
   full-stack-smoke:

@@ -1,0 +1,14 @@
+/target/
+.cargo-target/
+.tmp/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.idea/
+.vscode/
+**/data/
+*.log
+bencher
