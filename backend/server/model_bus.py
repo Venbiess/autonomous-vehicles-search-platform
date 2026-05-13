@@ -223,7 +223,7 @@ class ModelGateway:
                 os.getenv("RABBITMQ_EMBEDDER_QUEUE", "avsp.embedder.tasks"),
             )
             missing_consumers = []
-            for queue_name, stats in queues.items():
+            for queue_name, _stats in queues.items():
                 if (
                     queue_name == embedder_queue_name
                     and len(self._embedder_endpoints) > 0
