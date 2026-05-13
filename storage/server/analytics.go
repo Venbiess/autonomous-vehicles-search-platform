@@ -783,21 +783,23 @@ func (s *clickHouseAnalyticsShard) search(ctx context.Context, filters []SearchF
 		}
 		extract := fmt.Sprintf("ifNull(JSONExtractString(values_json, %s), '')", chQuote(fieldName))
 		mode := strings.ToLower(strings.TrimSpace(filter.MatchMode))
-		if mode == "contains" {
+		switch mode {
+		case "contains":
 			clauses = append(clauses, fmt.Sprintf("positionCaseInsensitiveUTF8(%s, %s) > 0", extract, chQuote(filter.Value)))
-		} else if mode == "exact" || mode == "equal" {
+		case "exact", "equal":
 			clauses = append(clauses, fmt.Sprintf("lowerUTF8(%s) = lowerUTF8(%s)", extract, chQuote(filter.Value)))
-		} else if mode == "not_equal" {
+		case "not_equal":
 			clauses = append(clauses, fmt.Sprintf("lowerUTF8(%s) != lowerUTF8(%s)", extract, chQuote(filter.Value)))
-		} else if mode == "greater" || mode == "greater_or_equal" || mode == "less" || mode == "less_or_equal" {
+		case "greater", "greater_or_equal", "less", "less_or_equal":
 			leftNum := fmt.Sprintf("toFloat64OrNull(%s)", extract)
 			rightNum := fmt.Sprintf("toFloat64OrNull(%s)", chQuote(filter.Value))
 			op := ">"
-			if mode == "greater_or_equal" {
+			switch mode {
+			case "greater_or_equal":
 				op = ">="
-			} else if mode == "less" {
+			case "less":
 				op = "<"
-			} else if mode == "less_or_equal" {
+			case "less_or_equal":
 				op = "<="
 			}
 			clauses = append(clauses, fmt.Sprintf(
@@ -808,7 +810,7 @@ func (s *clickHouseAnalyticsShard) search(ctx context.Context, filters []SearchF
 				op,
 				rightNum,
 			))
-		} else {
+		default:
 			clauses = append(clauses, fmt.Sprintf("lowerUTF8(%s) = lowerUTF8(%s)", extract, chQuote(filter.Value)))
 		}
 	}
@@ -918,7 +920,7 @@ func (s *clickHouseAnalyticsShard) do(ctx context.Context, query string, consume
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode >= 300 {
 		body, readErr := io.ReadAll(io.LimitReader(res.Body, 4096))
 		if readErr != nil {

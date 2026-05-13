@@ -6,8 +6,56 @@ on:
   pull_request:
 
 jobs:
+  go-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Run golangci-lint (storage)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+          working-directory: storage
+          args: --timeout=10m ./...
+
+      - name: Run golangci-lint (pics module)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+          working-directory: storage/modules/pics
+          args: --timeout=10m ./...
+
+  python-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Run ruff check
+        run: ruff check backend
+
   backend-tests:
     runs-on: ubuntu-latest
+    needs:
+      - python-lint
 
     steps:
       - name: Checkout repository
@@ -51,6 +99,8 @@ jobs:
 
   storage-go-tests:
     runs-on: ubuntu-latest
+    needs:
+      - go-lint
 
     steps:
       - name: Checkout repository

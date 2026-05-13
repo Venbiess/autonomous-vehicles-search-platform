@@ -150,7 +150,7 @@ func (c *Client) GetObject(ctx context.Context, bucket, key string) (*http.Respo
 	}
 	if resp.StatusCode >= 300 {
 		err = readResponseError(resp)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, err
 	}
 	return resp, nil
@@ -167,7 +167,7 @@ func (c *Client) HeadObject(ctx context.Context, bucket, key string) (*http.Resp
 	}
 	if resp.StatusCode >= 300 {
 		err = readResponseError(resp)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, err
 	}
 	return resp, nil
@@ -232,7 +232,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, in any, out an
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return readResponseError(resp)
 	}
@@ -243,7 +243,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, in any, out an
 }
 
 func checkResponse(resp *http.Response) error {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 300 {
 		return nil
 	}
@@ -251,7 +251,7 @@ func checkResponse(resp *http.Response) error {
 }
 
 func decodeJSONResponse(resp *http.Response, out any) error {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return readResponseError(resp)
 	}

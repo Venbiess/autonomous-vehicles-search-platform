@@ -7,8 +7,6 @@ from typing import Literal
 import torch
 from PIL import Image
 
-from backend.models.common.runtime import resolve_device
-from backend.models.common.runtime import runtime_payload
 from backend.models.common.runtime import TorchDTypeLike
 
 EmbeddingInputType = Literal["text", "image"]

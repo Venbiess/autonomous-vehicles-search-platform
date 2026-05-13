@@ -81,7 +81,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to open metadata postgres: %v", err)
 	}
-	defer metaDB.Close()
+	defer func() { _ = metaDB.Close() }()
 
 	svc, err := core.NewStorageServer(objectAdapter, vectorAdapter, metaDB, core.StorageConfig{
 		DefaultBucket:  cfg.DefaultBucket,

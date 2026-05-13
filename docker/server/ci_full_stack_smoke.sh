@@ -153,6 +153,44 @@ PY
   done
 }
 
+wait_model_consumers() {
+  local expected_embedder="$1"
+  local expected_vlm="$2"
+  local timeout_sec="${3:-180}"
+  local started
+  started="$(date +%s)"
+
+  while true; do
+    if curl -fsS --max-time 20 "http://localhost:9002/health" >/tmp/master-health-consumers.json; then
+      if EXPECT_EMBEDDER_CONSUMERS="$expected_embedder" EXPECT_VLM_CONSUMERS="$expected_vlm" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+payload = json.loads(Path("/tmp/master-health-consumers.json").read_text(encoding="utf-8"))
+models = payload.get("models", {})
+queues = (models.get("rabbitmq") or {}).get("queues", {})
+embedder = int((queues.get("avsp.embedder.tasks") or {}).get("consumers") or 0)
+vlm = int((queues.get("avsp.vlm.tasks") or {}).get("consumers") or 0)
+exp_embedder = int(os.environ.get("EXPECT_EMBEDDER_CONSUMERS", "1"))
+exp_vlm = int(os.environ.get("EXPECT_VLM_CONSUMERS", "1"))
+raise SystemExit(0 if embedder >= exp_embedder and vlm >= exp_vlm else 1)
+PY
+      then
+        return 0
+      fi
+    fi
+    local now
+    now="$(date +%s)"
+    if (( now - started > timeout_sec )); then
+      echo "Workers did not register enough RabbitMQ consumers in ${timeout_sec}s" >&2
+      cat /tmp/master-health-consumers.json >&2 || true
+      return 1
+    fi
+    sleep 2
+  done
+}
+
 echo "Starting AVSP smoke stack..."
 base_services=(
   rabbitmq
@@ -179,6 +217,7 @@ wait_http_ok "storage-server" "http://localhost:9013/health" "$SMOKE_TIMEOUT_SEC
 wait_http_ok "storage-ready" "http://localhost:9013/ready" "$SMOKE_TIMEOUT_SEC"
 wait_http_ok "master-jobs" "http://localhost:9002/jobs" "$SMOKE_TIMEOUT_SEC"
 wait_http_ok "master-health" "http://localhost:9002/health" "$SMOKE_TIMEOUT_SEC"
+wait_model_consumers "$EXPECT_EMBEDDER_CONSUMERS" "$EXPECT_VLM_CONSUMERS" "$SMOKE_TIMEOUT_SEC"
 
 curl -fsS --max-time 20 "http://localhost:9002/health" >/tmp/master-health.json
 assert_json /tmp/master-health.json

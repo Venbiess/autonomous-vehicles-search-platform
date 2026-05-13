@@ -446,7 +446,7 @@ func postJSON(client *http.Client, ctx context.Context, url string, payload any,
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("unexpected status %s", resp.Status)
 	}

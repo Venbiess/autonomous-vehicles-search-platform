@@ -158,7 +158,7 @@ func (s *StorageServer) ListObjects(ctx context.Context, limit int, cursor strin
 	if err != nil {
 		return nil, "", err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]ObjectMetadata, 0, limit+1)
 	for rows.Next() {

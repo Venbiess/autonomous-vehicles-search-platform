@@ -1,12 +1,8 @@
-import os
-import subprocess
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-import httpx
 from fastapi import Request
 from fastapi import HTTPException
-from backend.processors.runner import run_preprocessor_method
 
 from backend.server.dataset_visibility import load_hidden_datasets
 from configs.common import (
@@ -28,7 +24,6 @@ from . import system as master_system
 from . import vlm as master_vlm
 from . import waymo_auth as master_waymo_auth
 from .models import (
-    AnnotationRowRequest,
     AnnotationRowsRequest,
     BackfillRequest,
     CancelJobRequest,
@@ -40,15 +35,12 @@ from .models import (
     RetryJobRequest,
     TextSearchRequest,
     VLMBackfillRequest,
-    VLMFieldDefinition,
     VLMFieldsRequest,
-    VLMFilterDefinition,
     VLMSearchRequest,
     WaymoAuthCompleteRequest,
 )
 from .state import (
     JOBS_JOB_LOG_TAIL_LINES,
-    JOB_LOG_DIR,
     analytics_api,
     app,
     jobs_lock,
@@ -105,29 +97,58 @@ _to_float = master_system.to_float
 _to_int = master_system.to_int
 _collect_nvidia_info = master_system.collect_nvidia_info
 
-_embed_image = lambda client, image_bytes: model_gateway.embed_image(client, EMBEDDER_ENDPOINT, image_bytes)
-_embed_text = lambda client, text: model_gateway.embed_text(client, EMBEDDER_ENDPOINT, text)
-_embed_images = lambda client, images_bytes: model_gateway.embed_images(client, EMBEDDER_ENDPOINT, images_bytes)
-_embed_image_direct = lambda client, image_bytes: model_gateway.embed_image_http(client, EMBEDDER_ENDPOINT, image_bytes)
-_embed_text_direct = lambda client, text: model_gateway.embed_text_http(client, EMBEDDER_ENDPOINT, text)
-_run_vlm = lambda client, image_bytes, prompt, max_new_tokens, job_id=None, task_index=None, task_total=None, field_name=None, object_id=None: model_gateway.run_vlm(
-    client,
-    image_bytes=image_bytes,
-    prompt=prompt,
-    max_new_tokens=max_new_tokens,
-    metadata={
-        "job_id": job_id,
-        "task_index": task_index,
-        "task_total": task_total,
-        "field_name": field_name,
-        "object_id": object_id,
-    },
-)
-_run_vlm_batch = lambda client, items, max_new_tokens: model_gateway.run_vlm_batch(
-    client,
-    items=items,
-    max_new_tokens=max_new_tokens,
-)
+def _embed_image(client: Any, image_bytes: bytes) -> List[float]:
+    return model_gateway.embed_image(client, EMBEDDER_ENDPOINT, image_bytes)
+
+
+def _embed_text(client: Any, text: str) -> List[float]:
+    return model_gateway.embed_text(client, EMBEDDER_ENDPOINT, text)
+
+
+def _embed_images(client: Any, images_bytes: List[bytes]) -> List[List[float]]:
+    return model_gateway.embed_images(client, EMBEDDER_ENDPOINT, images_bytes)
+
+
+def _embed_image_direct(client: Any, image_bytes: bytes) -> List[float]:
+    return model_gateway.embed_image_http(client, EMBEDDER_ENDPOINT, image_bytes)
+
+
+def _embed_text_direct(client: Any, text: str) -> List[float]:
+    return model_gateway.embed_text_http(client, EMBEDDER_ENDPOINT, text)
+
+
+def _run_vlm(
+    client: Any,
+    image_bytes: bytes,
+    prompt: str,
+    max_new_tokens: int,
+    job_id: Optional[str] = None,
+    task_index: Optional[int] = None,
+    task_total: Optional[int] = None,
+    field_name: Optional[str] = None,
+    object_id: Optional[str] = None,
+) -> str:
+    return model_gateway.run_vlm(
+        client,
+        image_bytes=image_bytes,
+        prompt=prompt,
+        max_new_tokens=max_new_tokens,
+        metadata={
+            "job_id": job_id,
+            "task_index": task_index,
+            "task_total": task_total,
+            "field_name": field_name,
+            "object_id": object_id,
+        },
+    )
+
+
+def _run_vlm_batch(client: Any, items: List[Dict[str, Any]], max_new_tokens: int) -> List[str]:
+    return model_gateway.run_vlm_batch(
+        client,
+        items=items,
+        max_new_tokens=max_new_tokens,
+    )
 
 
 def _validate_existing_vlm_fields(field_names: List[str]) -> List[Dict[str, str]]:

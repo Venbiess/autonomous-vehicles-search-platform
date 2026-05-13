@@ -20,8 +20,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -245,7 +243,7 @@ func (r *storageRunner) put(key string, payload []byte) result {
 	if err != nil {
 		return result{status: -1, latency: time.Since(started), err: err.Error()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return result{status: resp.StatusCode, latency: time.Since(started), err: string(body)}
@@ -265,7 +263,7 @@ func (r *storageRunner) get(key string) result {
 	if err != nil {
 		return result{status: -1, latency: time.Since(started), err: err.Error()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return result{status: resp.StatusCode, latency: time.Since(started), err: string(body)}
@@ -286,7 +284,7 @@ func (r *storageRunner) delete(key string) result {
 	if err != nil {
 		return result{status: -1, latency: time.Since(started), err: err.Error()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return result{status: resp.StatusCode, latency: time.Since(started), err: string(body)}
@@ -323,7 +321,7 @@ func (r *storageRunner) createUpload(ctx context.Context, key string, size int64
 	if err != nil {
 		return uploadCreateResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return uploadCreateResponse{}, fmt.Errorf("create upload failed: status=%d body=%s", resp.StatusCode, string(body))
@@ -402,7 +400,7 @@ func (r *minioRunner) doSignedRequest(method, path string, body []byte, extraHea
 	if err != nil {
 		return result{status: -1, latency: time.Since(started), err: err.Error()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	detail := ""
 	if resp.StatusCode >= 300 {
@@ -585,8 +583,8 @@ func probeDiskByBytes(totalBytes int64) (float64, float64, bool, error) {
 		return 0, 0, false, err
 	}
 	path := f.Name()
-	defer os.Remove(path)
-	defer f.Close()
+	defer func() { _ = os.Remove(path) }()
+	defer func() { _ = f.Close() }()
 
 	chunk := make([]byte, 4*1024*1024)
 	for i := range chunk {
@@ -612,7 +610,7 @@ func probeDiskByBytes(totalBytes int64) (float64, float64, bool, error) {
 	}
 	writeSeconds := time.Since(startWrite).Seconds()
 
-	uncachedRead := unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED) == nil
+	uncachedRead := false
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return 0, 0, uncachedRead, err
 	}

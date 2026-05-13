@@ -407,7 +407,7 @@ func (m *MilvusAdapter) doJSON(ctx context.Context, method, path string, reqBody
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
 		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("milvus request failed: method=%s path=%s status=%d body=%s", method, path, resp.StatusCode, strings.TrimSpace(string(payload)))

@@ -58,7 +58,7 @@ func (y *YTsaurusAdapter) GetBytes(ctx context.Context, bucket, key string) ([]b
 	if err != nil {
 		return nil, "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, "", fmt.Errorf("%w: object %s/%s", ErrNotFound, bucket, key)
 	}
@@ -97,7 +97,7 @@ func (y *YTsaurusAdapter) PutStream(ctx context.Context, bucket, key string, rea
 	if err != nil {
 		return PutResult{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return PutResult{}, y.decodeHTTPError(resp)
 	}
@@ -120,7 +120,7 @@ func (y *YTsaurusAdapter) Delete(ctx context.Context, bucket, key string) error 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
 		return nil
 	}
@@ -141,7 +141,7 @@ func (y *YTsaurusAdapter) Health(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return y.decodeHTTPError(resp)
 	}
@@ -162,7 +162,7 @@ func (y *YTsaurusAdapter) createNode(ctx context.Context, nodePath, nodeType str
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return y.decodeHTTPError(resp)
 	}

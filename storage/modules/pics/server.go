@@ -119,7 +119,7 @@ func NewVolumeHandler(store *Store, cfg VolumeConfig) http.Handler {
 				WriteError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			defer reader.Close()
+			defer func() { _ = reader.Close() }()
 			w.Header().Set("Content-Type", item.Metadata.ContentType)
 			w.Header().Set("ETag", `"`+item.Metadata.Checksum+`"`)
 			http.ServeContent(w, r, "", time.Unix(0, 0), reader)
@@ -155,7 +155,7 @@ func NewVolumeHandler(store *Store, cfg VolumeConfig) http.Handler {
 			WriteError(w, http.StatusForbidden, "upload token is not valid for this volume")
 			return
 		}
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 		var (
 			tmp     *os.File
 			tmpPath string
@@ -231,7 +231,7 @@ func NewVolumeHandler(store *Store, cfg VolumeConfig) http.Handler {
 			WriteError(w, http.StatusBadGateway, err.Error())
 			return
 		}
-		defer completeResp.Body.Close()
+		defer func() { _ = completeResp.Body.Close() }()
 		raw, _ := io.ReadAll(completeResp.Body)
 		if completeResp.StatusCode >= 300 {
 			WriteError(w, http.StatusBadGateway, strings.TrimSpace(string(raw)))
@@ -259,7 +259,7 @@ func handleBinaryWrite(w http.ResponseWriter, r *http.Request, fn func(req Entry
 		WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 	metaOut, err := fn(req, r.Body)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
@@ -285,7 +285,7 @@ func postBinary(client *http.Client, baseURL, path string, req EntryWriteRequest
 	if err != nil {
 		return ImageMetadata{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(resp.Body)
 		return ImageMetadata{}, fmt.Errorf("status %s: %s", resp.Status, strings.TrimSpace(string(raw)))

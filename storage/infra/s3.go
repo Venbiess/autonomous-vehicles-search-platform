@@ -84,7 +84,7 @@ func (m *S3Adapter) GetBytes(ctx context.Context, bucket, key string) ([]byte, s
 		}
 		return nil, "", err
 	}
-	defer obj.Close()
+	defer func() { _ = obj.Close() }()
 	body, err := io.ReadAll(obj)
 	if err != nil {
 		if isMinioNotFound(err) {

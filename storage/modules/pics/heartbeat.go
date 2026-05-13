@@ -42,7 +42,7 @@ func sendHeartbeat(store *Store, cfg VolumeConfig) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("coordinator heartbeat status %s", resp.Status)
 	}

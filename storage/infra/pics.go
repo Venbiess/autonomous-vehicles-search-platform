@@ -44,7 +44,7 @@ func (p *PicsAdapter) GetBytes(ctx context.Context, bucket, key string) ([]byte,
 	if err != nil {
 		return nil, "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, "", fmt.Errorf("%w: object %s/%s", ErrNotFound, bucket, key)
 	}
@@ -87,7 +87,7 @@ func (p *PicsAdapter) PutStream(ctx context.Context, bucket, key string, reader 
 	if err != nil {
 		return PutResult{}, err
 	}
-	defer createResp.Body.Close()
+	defer func() { _ = createResp.Body.Close() }()
 	if createResp.StatusCode >= 300 {
 		return PutResult{}, fmt.Errorf("pics create upload failed with status %d", createResp.StatusCode)
 	}
@@ -116,7 +116,7 @@ func (p *PicsAdapter) PutStream(ctx context.Context, bucket, key string, reader 
 	if err != nil {
 		return PutResult{}, err
 	}
-	defer putResp.Body.Close()
+	defer func() { _ = putResp.Body.Close() }()
 	if putResp.StatusCode >= 300 {
 		return PutResult{}, fmt.Errorf("pics upload failed with status %d", putResp.StatusCode)
 	}
@@ -145,7 +145,7 @@ func (p *PicsAdapter) Delete(ctx context.Context, bucket, key string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNoContent {
 		return nil
 	}
@@ -164,7 +164,7 @@ func (p *PicsAdapter) Health(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("pics health failed with status %d", resp.StatusCode)
 	}

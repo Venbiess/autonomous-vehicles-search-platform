@@ -248,7 +248,7 @@ func proxyBlobByID(registry *Registry, rawBlobID string, w http.ResponseWriter, 
 			continue
 		}
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode >= 500 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			continue
 		}
 
@@ -261,7 +261,7 @@ func proxyBlobByID(registry *Registry, rawBlobID string, w http.ResponseWriter, 
 		if r.Method != http.MethodHead {
 			_, _ = io.Copy(w, resp.Body)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil
 	}
 	return fmt.Errorf("object not found on replicas")

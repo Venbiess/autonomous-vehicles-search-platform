@@ -279,7 +279,7 @@ func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, to
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if _, err := conn.ExecContext(ctx, fmt.Sprintf("SET hnsw.ef_search = %d", efSearch)); err != nil {
 		log.Printf("pgvector: failed to set hnsw.ef_search=%d: %v", efSearch, err)
@@ -304,7 +304,7 @@ func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, to
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	results := make([]VectorQueryResult, 0, topK)
 	for rows.Next() {
@@ -406,16 +406,16 @@ func (p *PgVectorAdapter) ExistingObjectIDs(ctx context.Context, objectIDs []str
 		for rows.Next() {
 			var objectID string
 			if err := rows.Scan(&objectID); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			out = append(out, objectID)
 		}
 		if err := rows.Err(); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
-		rows.Close()
+		_ = rows.Close()
 	}
 	return out, nil
 }
@@ -451,16 +451,16 @@ func (p *PgVectorAdapter) GetByObjectIDs(ctx context.Context, objectIDs []string
 			var objectID string
 			var rawVector pq.Float64Array
 			if err := rows.Scan(&objectID, &rawVector); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return nil, err
 			}
 			out[objectID] = append([]float64(nil), rawVector...)
 		}
 		if err := rows.Err(); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, err
 		}
-		rows.Close()
+		_ = rows.Close()
 	}
 
 	return out, nil

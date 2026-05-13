@@ -31,3 +31,13 @@ frontend/core
 frontend/core.*
 storage/config/dataset_visibility.json
 .tar.gz
+
+# Bencher artifacts
+storage/tests/.bencheros/
+storage/tests/.benchervs/
+storage/tests/.benchmarks/
+
+# Local tool caches and temp artifacts
+storage/tests/.tmp/
+storage/tests/.cache/
+storage/.tmp/

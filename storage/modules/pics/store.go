@@ -712,7 +712,7 @@ func (p *packFile) compact(live map[uint64]uint32) error {
 	if err != nil {
 		return err
 	}
-	defer tmpFile.Close()
+	defer func() { _ = tmpFile.Close() }()
 
 	newIndex := make(map[uint64]entry)
 	var offset int64
@@ -734,7 +734,7 @@ func (p *packFile) compact(live map[uint64]uint32) error {
 	if err != nil {
 		return err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 	for _, entryID := range keys {
 		item := p.index[entryID]
 		recordStart := item.Offset - recordHeaderSz - int64(item.MetadataLen)
@@ -794,7 +794,7 @@ func (p *packFile) repairToReplicas(store *Store, replicas []Replica) error {
 	if err != nil {
 		return err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 	for _, item := range live {
 		body := make([]byte, item.Size)
 		if _, err := src.Seek(item.Offset, io.SeekStart); err != nil {

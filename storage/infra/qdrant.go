@@ -332,7 +332,7 @@ func (q *QdrantAdapter) Health(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 == 2 {
 		return nil
 	}
@@ -420,7 +420,7 @@ func (q *QdrantAdapter) doJSONExpectOK(ctx context.Context, method, path string,
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return errNotFound
