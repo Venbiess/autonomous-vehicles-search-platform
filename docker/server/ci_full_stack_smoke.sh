@@ -280,9 +280,8 @@ wait_job_status "$VLM_JOB_ID" "success" "$SMOKE_TIMEOUT_SEC"
 curl -fsS --max-time 20 "http://localhost:9002/vlm/fields" >/tmp/vlm-fields.json
 assert_json /tmp/vlm-fields.json
 
-EXPECT_EMBEDDER_CONSUMERS="$EXPECT_EMBEDDER_CONSUMERS" EXPECT_VLM_CONSUMERS="$EXPECT_VLM_CONSUMERS" python3 - <<'PY'
+python3 - <<'PY'
 import json
-import os
 from pathlib import Path
 import urllib.request
 
@@ -301,8 +300,9 @@ Path("/tmp/vlm-annotations.json").write_text(json.dumps(annotations), encoding="
 PY
 assert_json /tmp/vlm-annotations.json
 
-python3 - <<'PY'
+EXPECT_EMBEDDER_CONSUMERS="$EXPECT_EMBEDDER_CONSUMERS" EXPECT_VLM_CONSUMERS="$EXPECT_VLM_CONSUMERS" python3 - <<'PY'
 import json
+import os
 from pathlib import Path
 
 system_info = json.loads(Path("/tmp/system-info.json").read_text(encoding="utf-8"))
