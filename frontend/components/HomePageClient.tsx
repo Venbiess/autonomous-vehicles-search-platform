@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import axios from "axios";
-import { Cog6ToothIcon } from "@heroicons/react/24/outline";
+import { CheckIcon, ChevronUpDownIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
 import {
   SEARCH_MODE_STORAGE_KEY,
   type SearchMode,
@@ -20,6 +20,7 @@ import {
 import SearchBar from "../components/SearchBar";
 import ImageGallery from "../components/ImageGallery";
 import TransferToast from "../components/TransferToast";
+import LanguageFlagIcon from "../components/LanguageFlagIcon";
 
 interface ImageResult {
   id: string;
@@ -178,10 +179,12 @@ export default function HomePageClient({
   const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS);
   const [uiSettingsHydrated, setUiSettingsHydrated] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [embeddingMismatchDialog, setEmbeddingMismatchDialog] =
     useState<EmbeddingMismatchDialogState | null>(null);
   const [isRebuildingEmbeddings, setIsRebuildingEmbeddings] = useState(false);
   const settingsPopoverRef = useRef<HTMLDivElement | null>(null);
+  const languageMenuRef = useRef<HTMLDivElement | null>(null);
 
   const minScore = minScoreInput.trim() === "" ? null : Number(minScoreInput);
   const maxScore = maxScoreInput.trim() === "" ? null : Number(maxScoreInput);
@@ -189,6 +192,12 @@ export default function HomePageClient({
   const hasValidMaxScore = maxScore !== null && Number.isFinite(maxScore);
   const hasScoreFilter = hasValidMinScore || hasValidMaxScore;
   const copy = useMemo(() => getUiCopy(uiSettings.language), [uiSettings.language]);
+  const selectedLanguage = useMemo(
+    () =>
+      UI_LANGUAGE_OPTIONS.find((language) => language.code === uiSettings.language) ||
+      UI_LANGUAGE_OPTIONS[0],
+    [uiSettings.language]
+  );
   const searchModeTabLabels = useMemo(
     () => ({
       STORAGE: copy.tabs.storage,
@@ -361,13 +370,28 @@ export default function HomePageClient({
   }, [uiSettings.language]);
 
   useEffect(() => {
+    if (!settingsOpen) {
+      setLanguageMenuOpen(false);
+    }
+  }, [settingsOpen]);
+
+  useEffect(() => {
     if (!settingsOpen) return;
     const handlePointerDown = (event: MouseEvent | TouchEvent) => {
       const root = settingsPopoverRef.current;
+      const languageMenuRoot = languageMenuRef.current;
       const target = event.target as Node | null;
       if (!root || !target) return;
       if (!root.contains(target)) {
         setSettingsOpen(false);
+        return;
+      }
+      if (
+        languageMenuOpen &&
+        languageMenuRoot &&
+        !languageMenuRoot.contains(target)
+      ) {
+        setLanguageMenuOpen(false);
       }
     };
     document.addEventListener("mousedown", handlePointerDown);
@@ -376,7 +400,7 @@ export default function HomePageClient({
       document.removeEventListener("mousedown", handlePointerDown);
       document.removeEventListener("touchstart", handlePointerDown);
     };
-  }, [settingsOpen]);
+  }, [settingsOpen, languageMenuOpen]);
 
   const runSearch = async ({
     query,
@@ -591,29 +615,6 @@ export default function HomePageClient({
             <div className="absolute right-0 mt-3 w-[min(22rem,calc(100vw-1.5rem))] rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl">
               <div className="mb-3 text-sm font-semibold text-slate-900">{copy.settings.panelTitle}</div>
               <div className="space-y-3">
-                <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                  <div>
-                    <div className="text-sm font-medium text-slate-800">{copy.settings.languageLabel}</div>
-                    <div className="text-xs text-slate-500">{copy.settings.languageHint}</div>
-                  </div>
-                  <select
-                    value={uiSettings.language}
-                    onChange={(event) =>
-                      setUiSettings((prev) => ({
-                        ...prev,
-                        language: resolveUiLanguageCode(event.target.value),
-                      }))
-                    }
-                    className="w-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800"
-                    aria-label={copy.settings.languageLabel}
-                  >
-                    {UI_LANGUAGE_OPTIONS.map((language) => (
-                      <option key={language.code} value={language.code}>
-                        {`${language.flag} ${language.nativeLabel}`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-sm font-medium text-slate-800">
@@ -627,75 +628,6 @@ export default function HomePageClient({
                     checked={uiSettings.showSnapshotSection}
                     onChange={(next) =>
                       setUiSettings((prev) => ({ ...prev, showSnapshotSection: next }))
-                    }
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium text-slate-800">
-                      {copy.settings.toggles.showSyntheticInAnnotation.label}
-                    </div>
-                    <div className="text-xs text-slate-500">
-                      {copy.settings.toggles.showSyntheticInAnnotation.hint}
-                    </div>
-                  </div>
-                  <IOSSwitch
-                    checked={uiSettings.showSyntheticInAnnotation}
-                    onChange={(next) =>
-                      setUiSettings((prev) => ({
-                        ...prev,
-                        showSyntheticInAnnotation: next,
-                      }))
-                    }
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium text-slate-800">Detailed VLM Analytics</div>
-                    <div className="text-xs text-slate-500">
-                      Storage: per-field valid/fallback/missing breakdown
-                    </div>
-                  </div>
-                  <IOSSwitch
-                    checked={uiSettings.showStorageVlmFieldAnalytics}
-                    onChange={(next) =>
-                      setUiSettings((prev) => ({
-                        ...prev,
-                        showStorageVlmFieldAnalytics: next,
-                      }))
-                    }
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium text-slate-800">API VLM Annotation Block</div>
-                    <div className="text-xs text-slate-500">
-                      Annotation tab: API JSON batch backfill form
-                    </div>
-                  </div>
-                  <IOSSwitch
-                    checked={uiSettings.showOpenAIBatchAnnotation}
-                    onChange={(next) =>
-                      setUiSettings((prev) => ({
-                        ...prev,
-                        showOpenAIBatchAnnotation: next,
-                      }))
-                    }
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium text-slate-800">
-                      {copy.settings.toggles.showSearchMeta.label}
-                    </div>
-                    <div className="text-xs text-slate-500">
-                      {copy.settings.toggles.showSearchMeta.hint}
-                    </div>
-                  </div>
-                  <IOSSwitch
-                    checked={uiSettings.showSearchMeta}
-                    onChange={(next) =>
-                      setUiSettings((prev) => ({ ...prev, showSearchMeta: next }))
                     }
                   />
                 </div>
@@ -730,6 +662,133 @@ export default function HomePageClient({
                       setUiSettings((prev) => ({ ...prev, showJobMonitorGpu: next }))
                     }
                   />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">
+                      {copy.settings.toggles.showStorageVlmFieldAnalytics.label}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {copy.settings.toggles.showStorageVlmFieldAnalytics.hint}
+                    </div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showStorageVlmFieldAnalytics}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({
+                        ...prev,
+                        showStorageVlmFieldAnalytics: next,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">
+                      {copy.settings.toggles.showOpenAIBatchAnnotation.label}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {copy.settings.toggles.showOpenAIBatchAnnotation.hint}
+                    </div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showOpenAIBatchAnnotation}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({
+                        ...prev,
+                        showOpenAIBatchAnnotation: next,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">
+                      {copy.settings.toggles.showSearchMeta.label}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {copy.settings.toggles.showSearchMeta.hint}
+                    </div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showSearchMeta}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({ ...prev, showSearchMeta: next }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">
+                      {copy.settings.toggles.showSyntheticInAnnotation.label}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {copy.settings.toggles.showSyntheticInAnnotation.hint}
+                    </div>
+                  </div>
+                  <IOSSwitch
+                    checked={uiSettings.showSyntheticInAnnotation}
+                    onChange={(next) =>
+                      setUiSettings((prev) => ({
+                        ...prev,
+                        showSyntheticInAnnotation: next,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">{copy.settings.languageLabel}</div>
+                  </div>
+                  <div ref={languageMenuRef} className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setLanguageMenuOpen((value) => !value)}
+                      className="flex w-44 items-center justify-between gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 transition hover:bg-slate-50"
+                      aria-label={copy.settings.languageLabel}
+                      aria-haspopup="listbox"
+                      aria-expanded={languageMenuOpen}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <LanguageFlagIcon code={selectedLanguage.code} className="h-6 w-6" />
+                        <span className="truncate">{selectedLanguage.nativeLabel}</span>
+                      </span>
+                      <ChevronUpDownIcon className="h-4 w-4 shrink-0 text-slate-500" />
+                    </button>
+                    {languageMenuOpen && (
+                      <div className="absolute bottom-full right-0 z-10 mb-2 w-52 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                        <div role="listbox" aria-label={copy.settings.languageLabel}>
+                          {UI_LANGUAGE_OPTIONS.map((language) => {
+                            const active = uiSettings.language === language.code;
+                            return (
+                              <button
+                                key={language.code}
+                                type="button"
+                                onClick={() => {
+                                  setUiSettings((prev) => ({
+                                    ...prev,
+                                    language: resolveUiLanguageCode(language.code),
+                                  }));
+                                  setLanguageMenuOpen(false);
+                                }}
+                                className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm transition ${
+                                  active
+                                    ? "bg-blue-50 text-blue-700"
+                                    : "text-slate-700 hover:bg-slate-100"
+                                }`}
+                                role="option"
+                                aria-selected={active}
+                              >
+                                <LanguageFlagIcon code={language.code} className="h-6 w-6" />
+                                <span className="flex-1 truncate">{language.nativeLabel}</span>
+                                {active && <CheckIcon className="h-4 w-4" />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>

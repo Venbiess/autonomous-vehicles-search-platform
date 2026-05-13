@@ -750,9 +750,11 @@ function PieChart({
 function VlmFieldCoverageChart({
   rows,
   summary,
+  tr,
 }: {
   rows: VlmFieldCoverageRow[];
   summary?: VlmFieldCoverageSummary | null;
+  tr: (ru: string, en: string) => string;
 }) {
   const [showValid, setShowValid] = useState(true);
   const [showFallback, setShowFallback] = useState(true);
@@ -761,12 +763,20 @@ function VlmFieldCoverageChart({
   if (!rows.length) {
     return (
       <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h3 className="text-lg font-semibold text-slate-900">VLM Field Coverage</h3>
+        <h3 className="text-lg font-semibold text-slate-900">
+          {tr("Покрытие полей VLM", "VLM Field Coverage")}
+        </h3>
         <p className="mt-1 text-xs text-slate-500">
-          Разбивка по полям: где чаще всего остаются пропуски.
+          {tr(
+            "Разбивка по полям: где чаще всего остаются пропуски.",
+            "Per-field breakdown showing where missing values occur most often."
+          )}
         </p>
         <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-          Данные по полям пока недоступны (нет полей VLM или нет сцен в текущем scope).
+          {tr(
+            "Данные по полям пока недоступны (нет полей VLM или нет сцен в текущем scope).",
+            "Field-level data is not available yet (no VLM fields or no scenes in the current scope)."
+          )}
         </div>
       </div>
     );
@@ -780,9 +790,14 @@ function VlmFieldCoverageChart({
 
   return (
     <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-      <h3 className="text-lg font-semibold text-slate-900">VLM Field Coverage</h3>
+      <h3 className="text-lg font-semibold text-slate-900">
+        {tr("Покрытие полей VLM", "VLM Field Coverage")}
+      </h3>
       <p className="mt-1 text-xs text-slate-500">
-        По каждому полю: валидные значения, вероятные parse-fallback, пропуски.
+        {tr(
+          "По каждому полю: валидные значения, вероятные parse-fallback, пропуски.",
+          "Per field: valid values, probable parse-fallback values, and missing values."
+        )}
       </p>
       <div className="mt-3 flex flex-wrap gap-2 text-xs">
         <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-1 text-emerald-800">
@@ -792,7 +807,7 @@ function VlmFieldCoverageChart({
             onChange={(event) => setShowValid(event.target.checked)}
             className="h-3.5 w-3.5 accent-emerald-600"
           />
-          valid
+          {tr("валидные", "valid")}
         </label>
         <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-amber-800">
           <input
@@ -801,7 +816,7 @@ function VlmFieldCoverageChart({
             onChange={(event) => setShowFallback(event.target.checked)}
             className="h-3.5 w-3.5 accent-amber-600"
           />
-          fallback
+          {tr("fallback", "fallback")}
         </label>
         <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-slate-300 bg-slate-100 px-2.5 py-1 text-slate-700">
           <input
@@ -810,7 +825,7 @@ function VlmFieldCoverageChart({
             onChange={(event) => setShowMissing(event.target.checked)}
             className="h-3.5 w-3.5 accent-slate-600"
           />
-          missing
+          {tr("пропуски", "missing")}
         </label>
       </div>
       {summary ? (
@@ -818,7 +833,9 @@ function VlmFieldCoverageChart({
           <div
             className={`rounded-xl border p-3 ${showValid ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-slate-50 opacity-50"}`}
           >
-            <div className="text-[11px] uppercase tracking-wide text-emerald-700">Valid</div>
+            <div className="text-[11px] uppercase tracking-wide text-emerald-700">
+              {tr("Валидные", "Valid")}
+            </div>
             <div className="mt-1 text-lg font-semibold text-emerald-900">
               {formatNumber(summary.valid_cells)}
             </div>
@@ -828,7 +845,7 @@ function VlmFieldCoverageChart({
             className={`rounded-xl border p-3 ${showFallback ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50 opacity-50"}`}
           >
             <div className="text-[11px] uppercase tracking-wide text-amber-700">
-              Parse fallback (est.)
+              {tr("Parse fallback (оценка)", "Parse fallback (est.)")}
             </div>
             <div className="mt-1 text-lg font-semibold text-amber-900">
               {formatNumber(summary.invalid_cells)}
@@ -838,14 +855,18 @@ function VlmFieldCoverageChart({
           <div
             className={`rounded-xl border p-3 ${showMissing ? "border-slate-300 bg-slate-100" : "border-slate-200 bg-slate-50 opacity-50"}`}
           >
-            <div className="text-[11px] uppercase tracking-wide text-slate-600">Missing</div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-600">
+              {tr("Пропуски", "Missing")}
+            </div>
             <div className="mt-1 text-lg font-semibold text-slate-900">
               {formatNumber(summary.missing_cells)}
             </div>
             <div className="text-xs text-slate-600">{pct(summary.missing_percent)}</div>
           </div>
           <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3">
-            <div className="text-[11px] uppercase tracking-wide text-indigo-700">Filled</div>
+            <div className="text-[11px] uppercase tracking-wide text-indigo-700">
+              {tr("Заполнено", "Filled")}
+            </div>
             <div className="mt-1 text-lg font-semibold text-indigo-900">
               {formatNumber(summary.filled_cells)}
             </div>
@@ -883,7 +904,8 @@ function VlmFieldCoverageChart({
                   ) : null}
                 </div>
                 <div className="text-xs text-slate-600">
-                  valid {formatNumber(validRows)} • fallback {formatNumber(invalidRows)} • missing{" "}
+                  {tr("валидные", "valid")} {formatNumber(validRows)} • {tr("fallback", "fallback")}{" "}
+                  {formatNumber(invalidRows)} • {tr("пропуски", "missing")}{" "}
                   {formatNumber(missingRows)}
                 </div>
               </div>
@@ -910,9 +932,9 @@ function VlmFieldCoverageChart({
                 </div>
               </div>
               <div className="mt-1 flex flex-wrap justify-between gap-1 text-[11px] text-slate-500">
-                <span>valid: {pct(validPctOfAll)}</span>
-                <span>fallback: {pct(invalidPctOfAll)}</span>
-                <span>missing: {pct(missingPctOfAll)}</span>
+                <span>{tr("валидные", "valid")}: {pct(validPctOfAll)}</span>
+                <span>{tr("fallback", "fallback")}: {pct(invalidPctOfAll)}</span>
+                <span>{tr("пропуски", "missing")}: {pct(missingPctOfAll)}</span>
               </div>
               {Array.isArray(row.invalid_examples) && row.invalid_examples.length > 0 ? (
                 <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
@@ -2959,7 +2981,7 @@ export default function StoragePanel({
       className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
     >
       <h3 className="text-lg font-semibold text-slate-900">
-        {tr("Transfer Snapshot", "Transfer Snapshot")}
+        {tr("Выгрузка снапшота", "Transfer Snapshot")}
       </h3>
       <p className="mt-1 text-sm text-slate-600">
         {tr(
@@ -2985,8 +3007,8 @@ export default function StoragePanel({
           <div className="mt-3 flex flex-col items-start gap-2">
             {renderSnapshotProgressButton({
               actionId: "download-full",
-              idleLabel: tr("Скачать полный storage", "Download full storage"),
-              activeLabel: tr("Архивация полного snapshot...", "Archiving full snapshot..."),
+              idleLabel: tr("Выгрузить хранилище полностью", "Download full storage"),
+              activeLabel: tr("Архивация снапшота всего хранилища...", "Archiving full snapshot..."),
               onClick: () => downloadSnapshot("full"),
               disabled:
                 actionInProgress !== null && actionInProgress !== "download-full",
@@ -2996,7 +3018,7 @@ export default function StoragePanel({
             })}
             {renderSnapshotProgressButton({
               actionId: "download-embeddings",
-              idleLabel: tr("Скачать Embedder", "Download Embedder"),
+              idleLabel: tr("Скачать эмбеддинги", "Download Embeddings"),
               activeLabel: tr("Архивация embeddings...", "Archiving embeddings..."),
               onClick: () => downloadSnapshot("embeddings"),
               disabled:
@@ -3008,8 +3030,8 @@ export default function StoragePanel({
             })}
             {renderSnapshotProgressButton({
               actionId: "download-vlm",
-              idleLabel: tr("Скачать VLM", "Download VLM"),
-              activeLabel: tr("Архивация VLM...", "Archiving VLM..."),
+              idleLabel: tr("Скачать VLM разметку", "Download VLM Annotations"),
+              activeLabel: tr("Архивация VLM разметки...", "Archiving VLM Annotations..."),
               onClick: () => downloadSnapshot("vlm"),
               disabled:
                 actionInProgress !== null && actionInProgress !== "download-vlm",
@@ -3024,8 +3046,8 @@ export default function StoragePanel({
           <div className="text-sm font-medium text-slate-800">{tr("Загрузка файла", "File upload")}</div>
           <p className="mt-1 text-xs text-slate-500">
             {tr(
-              "Поддерживаются снапшоты: full storage, embeddings-only, VLM-only.",
-              "Supported snapshot types: full storage, embeddings-only, VLM-only."
+              "Поддерживаются снапшоты: полное хранилище; только эмбеддинги; только аннотации VLM.",
+              "Supported snapshot types: full storage; embeddings-only; VLM-only."
             )}
           </p>
           <div className="mt-3 flex flex-col items-start gap-2">
@@ -3397,7 +3419,7 @@ export default function StoragePanel({
 
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <h3 className="text-lg font-semibold text-slate-900">
-              {tr("VLM разметка", "VLM Annotation")}
+              {tr("VLM Разметка", "VLM Annotation")}
             </h3>
             <div className="mt-4 text-sm text-slate-700">
               <div className="mb-2 flex justify-between">
@@ -3435,6 +3457,7 @@ export default function StoragePanel({
           <VlmFieldCoverageChart
             rows={vlmFieldCoverageRows}
             summary={stats.vlm.field_coverage_summary || null}
+            tr={tr}
           />
         )}
 

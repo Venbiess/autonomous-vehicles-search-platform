@@ -547,7 +547,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
           <div className="mb-5 flex items-start justify-between gap-3">
             <div>
               <h2 className="text-2xl font-semibold text-slate-900">
-                {tr("VLM Schema", "VLM Schema")}
+                {tr("Схема полей VLM", "VLM Fields Schema")}
               </h2>
               <p className="mt-2 text-sm text-slate-600">
                 {tr(
@@ -637,7 +637,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                 >
                   {isSaving
                     ? tr("Сохраняем...", "Saving...")
-                    : tr("Сохранить schema", "Save schema")}
+                    : tr("Сохранить схему", "Save schema")}
                 </button>
               </div>
               {schemaStatusMessage && (
@@ -949,7 +949,10 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
             <div className="w-full max-w-xl rounded-xl bg-white shadow-2xl">
               <div className="border-b border-slate-200 px-5 py-4">
                 <div className="text-base font-semibold text-slate-900">
-                  {tr("Удалить поле из VLM Schema?", "Delete a field from VLM Schema?")}
+                  {tr(
+                    "Удалить поле из схемы полей VLM?",
+                    "Delete a field from VLM Fields Schema?"
+                  )}
                 </div>
               </div>
               <div className="px-5 py-4 text-sm text-slate-700">

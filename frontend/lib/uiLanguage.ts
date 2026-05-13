@@ -33,6 +33,8 @@ export interface UiCopy {
     languageHint: string;
     toggles: {
       showSnapshotSection: { label: string; hint: string };
+      showStorageVlmFieldAnalytics: { label: string; hint: string };
+      showOpenAIBatchAnnotation: { label: string; hint: string };
       showSyntheticInAnnotation: { label: string; hint: string };
       showSearchMeta: { label: string; hint: string };
       showJobMonitorModels: { label: string; hint: string };
@@ -96,7 +98,7 @@ export const UI_LANGUAGE_OPTIONS = [
 
 export type UiLanguageCode = (typeof UI_LANGUAGE_OPTIONS)[number]["code"];
 
-export const DEFAULT_UI_LANGUAGE: UiLanguageCode = "ru";
+export const DEFAULT_UI_LANGUAGE: UiLanguageCode = "en";
 export const IMAGE_SEARCH_QUERY_TOKEN = "__image_search__";
 
 const LANGUAGE_CODES = new Set<UiLanguageCode>(
@@ -150,6 +152,14 @@ export const UI_COPY: Record<UiLanguageCode, UiCopy> = {
         showSnapshotSection: {
           label: "Show Snapshot Section",
           hint: "Storage tab transfer block",
+        },
+        showStorageVlmFieldAnalytics: {
+          label: "Detailed VLM Analytics",
+          hint: "Storage: per-field valid/fallback/missing breakdown",
+        },
+        showOpenAIBatchAnnotation: {
+          label: "API VLM Annotation Block",
+          hint: "Annotation tab: API JSON batch backfill form",
         },
         showSyntheticInAnnotation: {
           label: "Show Synthetic Dataset",
@@ -226,8 +236,8 @@ export const UI_COPY: Record<UiLanguageCode, UiCopy> = {
       storage: "ХРАНИЛИЩЕ",
       vlm: "VLM",
       browser: "ПОИСК",
-      annotation: "АННОТАЦИЯ",
-      jobMonitor: "МОНИТОР",
+      annotation: "РАЗМЕТКА",
+      jobMonitor: "МОНИТОРИНГ",
     },
     settings: {
       openSettingsAriaLabel: "Открыть настройки",
@@ -236,12 +246,20 @@ export const UI_COPY: Record<UiLanguageCode, UiCopy> = {
       languageHint: "Подписи и сообщения в веб-интерфейсе",
       toggles: {
         showSnapshotSection: {
-          label: "Показывать Transfer Snapshot",
+          label: "Показывать выгрузку снапшота",
           hint: "Блок передачи во вкладке Хранилище",
+        },
+        showStorageVlmFieldAnalytics: {
+          label: "Детальная VLM аналитика",
+          hint: "Хранилище: разбивка по полям valid/fallback/missing",
+        },
+        showOpenAIBatchAnnotation: {
+          label: "Блок API VLM разметки",
+          hint: "форма VLM разметки по API",
         },
         showSyntheticInAnnotation: {
           label: "Показывать Synthetic Dataset",
-          hint: "В списке preprocessors во вкладке Аннотация",
+          hint: "В списке препроцессоров данных",
         },
         showSearchMeta: {
           label: "Показывать метаданные поиска",

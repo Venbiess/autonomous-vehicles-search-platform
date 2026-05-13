@@ -31,11 +31,57 @@ interface PreprocessorMethod {
   key: string;
   label: string;
   description?: string;
+  description_i18n?: Record<string, string>;
   default_config?: Record<string, unknown>;
 }
 
 interface DatasetRowDistribution {
   dataset?: string;
+}
+
+const URL_PATTERN = /https?:\/\/[^\s]+/g;
+
+function normalizeI18nMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const [rawLang, rawText] of Object.entries(value as Record<string, unknown>)) {
+    const lang = String(rawLang || "").trim().toLowerCase();
+    const text = String(rawText || "").trim();
+    if (!lang || !text) continue;
+    out[lang] = text;
+  }
+  return out;
+}
+
+function resolveMethodDescription(method: PreprocessorMethod, language: UiLanguageCode): string {
+  const localized = normalizeI18nMap(method.description_i18n);
+  const exact = localized[String(language).toLowerCase()];
+  if (exact) return exact;
+  const base = String(language).toLowerCase().split("-")[0];
+  if (base && localized[base]) return localized[base];
+  return String(method.description || "").trim();
+}
+
+function splitDescriptionWithUrls(text: string): Array<{ text?: string; url?: string }> {
+  const normalized = String(text || "").trim();
+  if (!normalized) return [];
+  const chunks: Array<{ text?: string; url?: string }> = [];
+  let lastIndex = 0;
+  for (const match of normalized.matchAll(URL_PATTERN)) {
+    const url = String(match[0] || "");
+    const idx = match.index ?? 0;
+    if (idx > lastIndex) {
+      chunks.push({ text: normalized.slice(lastIndex, idx) });
+    }
+    chunks.push({ url: url.replace(/[),.;]+$/, "") });
+    lastIndex = idx + url.length;
+  }
+  if (lastIndex < normalized.length) {
+    chunks.push({ text: normalized.slice(lastIndex) });
+  }
+  return chunks;
 }
 
 function isSyntheticMethod(method: Pick<PreprocessorMethod, "key" | "label">): boolean {
@@ -153,6 +199,20 @@ export default function AnnotationPanel({
 }: AnnotationPanelProps) {
   const tr = (ru: string, en: string) =>
     getLocalizedText(language, { ru, en }, en);
+  const getDatasetLinkLabel = (url: string, index: number, total: number): string => {
+    const value = String(url || "").toLowerCase();
+    if (value.includes("huggingface.co")) {
+      return tr("Ссылка Hugging Face", "Hugging Face Link");
+    }
+    if (value.includes("kaggle.com")) {
+      return tr("Ссылка Kaggle", "Kaggle Link");
+    }
+    if (value.includes("once-for-auto-driving.github.io")) {
+      return tr("Ссылка ONCE", "ONCE Link");
+    }
+    const base = tr("Ссылка на датасет", "Dataset Link");
+    return total > 1 ? `${base} ${index + 1}` : base;
+  };
   const responseTypeOptions = useMemo(
     () => [
       { value: "yes_no" as ResponseType, label: tr("Да / Нет", "Yes / No") },
@@ -347,6 +407,7 @@ export default function AnnotationPanel({
                   typeof item.description === "string"
                     ? item.description.trim()
                     : undefined,
+                description_i18n: normalizeI18nMap(item.description_i18n),
                 default_config: {
                   embed_on_install: false,
                   ...(item.default_config &&
@@ -841,11 +902,21 @@ export default function AnnotationPanel({
     }
 
     if (schema.type !== "object") {
-      throw new Error("Custom JSON schema must contain \"type\": \"object\".");
+      throw new Error(
+        tr(
+          "Custom JSON schema должен содержать \"type\": \"object\".",
+          "Custom JSON schema must contain \"type\": \"object\"."
+        )
+      );
     }
     const properties = schema.properties;
     if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
-      throw new Error("Custom JSON schema must contain an object \"properties\".");
+      throw new Error(
+        tr(
+          "Custom JSON schema должен содержать объект \"properties\".",
+          "Custom JSON schema must contain an object \"properties\"."
+        )
+      );
     }
     if ("required" in schema) {
       const required = schema.required;
@@ -854,7 +925,10 @@ export default function AnnotationPanel({
         required.some((item) => typeof item !== "string")
       ) {
         throw new Error(
-          "Custom JSON schema field \"required\" must be an array of strings."
+          tr(
+            "Поле \"required\" в Custom JSON schema должно быть массивом строк.",
+            "Custom JSON schema field \"required\" must be an array of strings."
+          )
         );
       }
     }
@@ -872,7 +946,10 @@ export default function AnnotationPanel({
       const fieldNames = parseOpenAiFieldNames();
       if (fieldNames.length === 0) {
         setOpenAiBatchErrorMessage(
-          "Select at least one VLM field (or enable 'Use all schema fields')."
+          tr(
+            "Выберите хотя бы одно поле VLM (или включите \"Использовать все сохраненные поля схемы\").",
+            "Select at least one VLM field (or enable 'Use all schema fields')."
+          )
         );
         return;
       }
@@ -880,25 +957,34 @@ export default function AnnotationPanel({
       const combinedPrompt = openAiCombinedPromptInput.trim();
       if (!combinedPrompt) {
         setOpenAiBatchErrorMessage(
-          "Combined prompt is required. Describe the JSON format and field rules."
+          tr(
+            "Combined prompt обязателен. Опишите формат JSON и правила полей.",
+            "Combined prompt is required. Describe the JSON format and field rules."
+          )
         );
         return;
       }
 
-      const limit = parseIntegerInput(openAiBackfillLimitInput, "API batch limit", {
+      const limit = parseIntegerInput(openAiBackfillLimitInput, tr("Лимит API batch", "API batch limit"), {
         min: 1,
       });
-      const batchSize = parseIntegerInput(openAiBatchSizeInput, "API scene chunk size", {
+      const batchSize = parseIntegerInput(
+        openAiBatchSizeInput,
+        tr("Размер чанка сцен API", "API scene chunk size"),
+        {
         min: 1,
-      });
-      const maxTokens = parseIntegerInput(openAiMaxTokensInput, "API max tokens", {
+        }
+      );
+      const maxTokens = parseIntegerInput(openAiMaxTokensInput, tr("Макс. токенов API", "API max tokens"), {
         min: 1,
         max: 512,
       });
       const customJsonSchema = parseOpenAiJsonSchema();
 
       if (vlmApiProvider !== "openai") {
-        setOpenAiBatchErrorMessage(`Unsupported API provider: ${vlmApiProvider}`);
+        setOpenAiBatchErrorMessage(
+          tr("Неподдерживаемый API provider", "Unsupported API provider") + `: ${vlmApiProvider}`
+        );
         return;
       }
 
@@ -911,7 +997,10 @@ export default function AnnotationPanel({
       const pendingRows = Number(statsResponse.data?.vlm?.pending_rows ?? 0);
       if (pendingRows <= 0 && !openAiOverwriteExisting) {
         setOpenAiBatchWarningMessage(
-          "All scenes already have VLM annotations. Enable overwrite or choose another dataset."
+          tr(
+            "Все сцены уже имеют VLM разметку. Включите перезапись или выберите другой датасет.",
+            "All scenes already have VLM annotations. Enable overwrite or choose another dataset."
+          )
         );
         return;
       }
@@ -931,9 +1020,12 @@ export default function AnnotationPanel({
         openai_use_json_schema: openAiUseJsonSchema,
         openai_json_schema: customJsonSchema,
       });
-      const dryRunSuffix = openAiDryRun ? " (dry-run, no write)" : "";
+      const dryRunSuffix = openAiDryRun
+        ? tr(" (dry-run, без записи)", " (dry-run, no write)")
+        : "";
       setOpenAiBatchStatusMessage(
-        `API Batch VLM backfill started${dryRunSuffix}. Job ID: ${response.data.job_id}.`
+        tr("API Batch VLM backfill запущен", "API Batch VLM backfill started") +
+          `${dryRunSuffix}. Job ID: ${response.data.job_id}.`
       );
       setShowOpenAiBatchJobsLink(true);
     } catch (error: unknown) {
@@ -942,7 +1034,10 @@ export default function AnnotationPanel({
           ? error.response.data.detail
           : error instanceof Error
             ? error.message
-            : "Failed to start API Batch VLM backfill";
+            : tr(
+                "Не удалось запустить API Batch VLM backfill",
+                "Failed to start API Batch VLM backfill"
+              );
       setOpenAiBatchErrorMessage(message);
     } finally {
       setIsStartingOpenAiBatchJob(false);
@@ -1336,9 +1431,41 @@ export default function AnnotationPanel({
                 <div className="mb-2 text-sm font-semibold text-slate-800">
                   {tr("Config (JSON)", "Config (JSON)")}
                 </div>
-                {option.description && (
-                  <div className="mb-2 text-xs text-slate-500">{option.description}</div>
-                )}
+                {(() => {
+                  const description = resolveMethodDescription(option, language);
+                  if (!description) return null;
+                  const chunks = splitDescriptionWithUrls(description);
+                  const urlChunks = chunks.filter((chunk) => chunk.url);
+                  let linkIndex = 0;
+                  return (
+                    <div className="mb-2 text-xs leading-relaxed text-slate-500 [overflow-wrap:anywhere] break-words">
+                      {chunks.map((chunk, idx) => {
+                        if (chunk.url) {
+                          const label = getDatasetLinkLabel(
+                            chunk.url,
+                            linkIndex,
+                            urlChunks.length
+                          );
+                          linkIndex += 1;
+                          return (
+                            <a
+                              key={`link-${option.key}-${idx}`}
+                              href={chunk.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-medium text-blue-600 underline underline-offset-2 hover:text-blue-700"
+                            >
+                              {label}
+                            </a>
+                          );
+                        }
+                        return (
+                          <span key={`text-${option.key}-${idx}`}>{chunk.text}</span>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
                 <textarea
                   value={datasetConfigText[option.key] ?? "{}"}
                   onChange={(event) => {
@@ -1416,7 +1543,7 @@ export default function AnnotationPanel({
                     onClick={onOpenJobsMonitor}
                     className="font-bold text-teal-600 underline decoration-teal-500 underline-offset-2 transition hover:text-teal-700"
                   >
-                    Go to Job Monitor
+                    {tr("Перейти в Job Monitor", "Go to Job Monitor")}
                   </button>
                 </>
               )}
@@ -1665,11 +1792,11 @@ export default function AnnotationPanel({
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5">
             <h2 className="text-2xl font-semibold text-slate-900">
-              {tr("Embedding Annotation", "Embedding Annotation")}
+              {tr("Разметка эмбеддингов", "Embedding Annotation")}
             </h2>
             <p className="mt-2 text-sm text-slate-600">
               {tr(
-                "Запустите фоновую джобу, которая вычисляет и сохраняет image embeddings для сцен в annotation storage.",
+                "Запустите фоновую джобу, которая вычисляет и сохраняет эмбеддинги изображений для сцен в хранилище",
                 "Start a background job that computes and saves image embeddings for scenes into the annotation storage."
               )}
             </p>
@@ -1776,7 +1903,7 @@ export default function AnnotationPanel({
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5">
             <h2 className="text-2xl font-semibold text-slate-900">
-              {tr("VLM Annotation", "VLM Annotation")}
+              {tr("VLM Разметка", "VLM Annotation")}
             </h2>
             <p className="mt-2 text-sm text-slate-600">
               {tr(
@@ -1895,22 +2022,28 @@ export default function AnnotationPanel({
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="mb-5">
               <h2 className="text-2xl font-semibold text-slate-900">
-                API VLM Annotation
+                {tr("API VLM Разметка", "API VLM Annotation")}
               </h2>
               <p className="mt-2 text-sm text-slate-600">
-                Launch batched JSON labeling through VLM API. The model receives one combined
-                prompt and returns one JSON object per scene.
+                {tr(
+                  "Запуск пакетной JSON-разметки через VLM API. Модель получает один общий prompt и возвращает один JSON-объект на сцену.",
+                  "Launch batched JSON labeling through VLM API. The model receives one combined prompt and returns one JSON object per scene."
+                )}
               </p>
             </div>
 
             <div className="mb-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
-              Make sure API-specific environment variables are configured and containers are restarted.
-              For OpenAI: <code>VLM_BACKEND=OPENAI</code> and <code>VLM_OPENAI_API_KEY</code> (or <code>OPENAI_API_KEY</code>).
+              {tr(
+                "Убедитесь, что переменные окружения для API настроены, а контейнеры перезапущены.",
+                "Make sure API-specific environment variables are configured and containers are restarted."
+              )}{" "}
+              {tr("Для OpenAI", "For OpenAI")}: <code>VLM_BACKEND=OPENAI</code> and{" "}
+              <code>VLM_OPENAI_API_KEY</code> (or <code>OPENAI_API_KEY</code>).
             </div>
 
             <div className="mt-1 flex flex-wrap items-end gap-3">
               <label className="flex flex-col gap-1 text-sm text-slate-600">
-                API provider
+                {tr("API провайдер", "API provider")}
                 <select
                   value={vlmApiProvider}
                   onChange={(event) => setVlmApiProvider(event.target.value as "openai")}
@@ -1923,12 +2056,14 @@ export default function AnnotationPanel({
 
             <div className="grid gap-3">
               <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Combined prompt (required)
+                {tr("Combined prompt (обязательно)", "Combined prompt (required)")}
                 <textarea
                   value={openAiCombinedPromptInput}
                   onChange={(event) => setOpenAiCombinedPromptInput(event.target.value)}
                   rows={8}
-                  placeholder={`Return one compact JSON object with these keys only: car_count, has_crosswalk, scene_type.\ncar_count: integer only.\nhas_crosswalk: Yes or No.\nscene_type: one short category.\nNo markdown, no extra keys.`}
+                  placeholder={
+                    "Return one compact JSON object with these keys only: car_count, has_crosswalk, scene_type.\ncar_count: integer only.\nhas_crosswalk: Yes or No.\nscene_type: one short category.\nNo markdown, no extra keys."
+                  }
                   className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-sky-500"
                 />
               </label>
@@ -1942,14 +2077,14 @@ export default function AnnotationPanel({
                   onChange={(event) => setOpenAiUseJsonSchema(event.target.checked)}
                   className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
                 />
-                Use custom JSON schema
+                {tr("Использовать custom JSON schema", "Use custom JSON schema")}
               </label>
             </div>
 
             {openAiUseJsonSchema && (
               <div className="mt-3 grid gap-3">
                 <label className="flex flex-col gap-1 text-sm text-slate-600">
-                  Custom JSON schema
+                  {tr("Custom JSON schema", "Custom JSON schema")}
                   <textarea
                     value={openAiJsonSchemaInput}
                     onChange={(event) => setOpenAiJsonSchemaInput(event.target.value)}
@@ -1959,8 +2094,15 @@ export default function AnnotationPanel({
                   />
                 </label>
                 <p className="text-xs text-slate-500">
-                  If enabled, schema JSON must be valid and contain <code>type: object</code> and{" "}
-                  <code>properties</code>. If disabled, default auto parsing is used.
+                  {tr(
+                    "Если включено, schema JSON должен быть валидным и содержать",
+                    "If enabled, schema JSON must be valid and contain"
+                  )}{" "}
+                  <code>type: object</code> {tr("и", "and")} <code>properties</code>.{" "}
+                  {tr(
+                    "Если выключено, используется авто-парсинг по умолчанию.",
+                    "If disabled, default auto parsing is used."
+                  )}
                 </p>
               </div>
             )}
@@ -1973,14 +2115,17 @@ export default function AnnotationPanel({
                   onChange={(event) => setOpenAiUseAllSchemaFields(event.target.checked)}
                   className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
                 />
-                Use all saved schema fields
+                {tr("Использовать все сохраненные поля схемы", "Use all saved schema fields")}
               </label>
             </div>
 
             {!openAiUseAllSchemaFields && (
               <div className="mt-3 grid gap-3">
                 <label className="flex flex-col gap-1 text-sm text-slate-600">
-                  Field names (comma or newline separated)
+                  {tr(
+                    "Имена полей (через запятую или с новой строки)",
+                    "Field names (comma or newline separated)"
+                  )}
                   <textarea
                     value={openAiFieldNamesInput}
                     onChange={(event) => setOpenAiFieldNamesInput(event.target.value)}
@@ -1994,7 +2139,7 @@ export default function AnnotationPanel({
 
             <div className="mt-4 flex flex-wrap items-end gap-3">
               <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Limit
+                {tr("Лимит", "Limit")}
                 <input
                   type="number"
                   min={1}
@@ -2004,7 +2149,7 @@ export default function AnnotationPanel({
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Scene chunk size
+                {tr("Размер чанка сцен", "Scene chunk size")}
                 <input
                   type="number"
                   min={1}
@@ -2014,7 +2159,7 @@ export default function AnnotationPanel({
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Max tokens
+                {tr("Макс. токенов", "Max tokens")}
                 <input
                   type="number"
                   min={1}
@@ -2025,13 +2170,13 @@ export default function AnnotationPanel({
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Dataset
+                {tr("Датасет", "Dataset")}
                 <select
                   value={openAiDataset}
                   onChange={(event) => setOpenAiDataset(event.target.value)}
                   className="w-44 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
                 >
-                  <option value="all">All datasets</option>
+                  <option value="all">{tr("Все датасеты", "All datasets")}</option>
                   {availableDatasets.map((dataset) => (
                     <option key={`openai-${dataset}`} value={dataset}>
                       {dataset}
@@ -2049,7 +2194,7 @@ export default function AnnotationPanel({
                   onChange={(event) => setOpenAiOverwriteExisting(event.target.checked)}
                   className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
                 />
-                Overwrite existing values
+                {tr("Перезаписывать существующие значения", "Overwrite existing values")}
               </label>
               <label className="flex items-center gap-2 text-sm text-slate-700">
                 <input
@@ -2058,7 +2203,7 @@ export default function AnnotationPanel({
                   onChange={(event) => setOpenAiDryRun(event.target.checked)}
                   className="h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
                 />
-                Dry run (no annotation write)
+                {tr("Dry run (без записи разметки)", "Dry run (no annotation write)")}
               </label>
             </div>
 
@@ -2069,14 +2214,16 @@ export default function AnnotationPanel({
                 disabled={isStartingOpenAiBatchJob}
                 className="rounded-full bg-indigo-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isStartingOpenAiBatchJob ? "Starting..." : "Start API Batch backfill"}
+                {isStartingOpenAiBatchJob
+                  ? tr("Запуск...", "Starting...")
+                  : tr("Запустить API Batch backfill", "Start API Batch backfill")}
               </button>
               <button
                 type="button"
                 onClick={onOpenJobsMonitor}
                 className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
               >
-                Go to Job Monitor
+                {tr("Перейти в Job Monitor", "Go to Job Monitor")}
               </button>
             </div>
 
@@ -2091,7 +2238,7 @@ export default function AnnotationPanel({
                       onClick={onOpenJobsMonitor}
                       className="font-bold text-teal-600 underline decoration-teal-500 underline-offset-2 transition hover:text-teal-700"
                     >
-                      Go to Job Monitor
+                      {tr("Перейти в Job Monitor", "Go to Job Monitor")}
                     </button>
                   </>
                 )}
@@ -2116,7 +2263,7 @@ export default function AnnotationPanel({
           <div className="mb-5 flex items-start justify-between gap-3">
             <div>
               <h2 className="text-2xl font-semibold text-slate-900">
-                {tr("VLM Schema", "VLM Schema")}
+                {tr("Схема полей VLM", "VLM Fields Schema")}
               </h2>
               <p className="mt-2 text-sm text-slate-600">
                 {tr(
@@ -2206,7 +2353,7 @@ export default function AnnotationPanel({
                 >
                   {isSavingVlmSchema
                     ? tr("Сохраняем...", "Saving...")
-                    : tr("Сохранить schema", "Save schema")}
+                    : tr("Сохранить схему", "Save schema")}
                 </button>
               </div>
               {vlmSchemaStatusMessage && (
@@ -2329,7 +2476,10 @@ export default function AnnotationPanel({
             <div className="w-full max-w-xl rounded-xl bg-white shadow-2xl">
               <div className="border-b border-slate-200 px-5 py-4">
                 <div className="text-base font-semibold text-slate-900">
-                  {tr("Удалить поле из VLM Schema?", "Delete a field from VLM Schema?")}
+                  {tr(
+                    "Удалить поле из схемы полей VLM?",
+                    "Delete a field from VLM Fields Schema?"
+                  )}
                 </div>
               </div>
               <div className="px-5 py-4 text-sm text-slate-700">

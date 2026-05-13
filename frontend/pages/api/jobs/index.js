@@ -18,7 +18,7 @@ async function readPayloadSafe(response) {
   }
   try {
     return JSON.parse(text);
-  } catch (_error) {
+  } catch {
     return { error: text };
   }
 }
@@ -44,21 +44,30 @@ export default async function handler(req, res) {
         typeof payload?.error === "string" && payload.error.trim()
           ? payload.error
           : `Master service responded with status=${response.status}`;
-      return res.status(response.status).json({
+      return res.status(200).json({
         ...payload,
+        ok: false,
+        upstream_status: response.status,
         error: upstreamError,
         jobs: merged,
       });
     }
-    return res.status(200).json({ ...payload, jobs: merged });
+    return res.status(200).json({ ...payload, ok: true, jobs: merged });
   } catch (error) {
     const localSnapshotJobs = listSnapshotTransferJobs();
     if (error?.name === "AbortError") {
-      return res.status(504).json({
+      return res.status(200).json({
+        ok: false,
+        upstream_status: 504,
         error: `Timed out waiting for master service (${masterTimeoutMs}ms)`,
         jobs: localSnapshotJobs,
       });
     }
-    return res.status(500).json({ error: error.message || "Unknown error", jobs: localSnapshotJobs });
+    return res.status(200).json({
+      ok: false,
+      upstream_status: 500,
+      error: error.message || "Unknown error",
+      jobs: localSnapshotJobs,
+    });
   }
 }

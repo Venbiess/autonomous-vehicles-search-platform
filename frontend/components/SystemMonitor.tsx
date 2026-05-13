@@ -230,10 +230,35 @@ export default function SystemMonitor({
 
   const fetchJobs = async () => {
     try {
-      const response = await axios.get("/api/jobs");
-      setJobs(response.data.jobs || []);
+      const response = await axios.get("/api/jobs", {
+        validateStatus: () => true,
+      });
+      const payload = response?.data;
+      setJobs((prev) => (Array.isArray(payload?.jobs) ? payload.jobs : prev));
+      if (response.status >= 400) {
+        const message =
+          typeof payload?.error === "string" && payload.error.trim()
+            ? payload.error
+            : `HTTP ${response.status}`;
+        console.warn("Jobs endpoint returned non-2xx status:", message);
+      }
+      if (typeof payload?.error === "string" && payload.error.trim()) {
+        console.warn("Jobs endpoint returned a degraded response:", payload.error);
+      }
     } catch (err) {
-      console.error("Failed to fetch jobs:", err);
+      if (axios.isAxiosError(err)) {
+        const fallbackJobs = err.response?.data?.jobs;
+        if (Array.isArray(fallbackJobs)) {
+          setJobs(fallbackJobs);
+        }
+        const message =
+          typeof err.response?.data?.error === "string"
+            ? err.response.data.error
+            : err.message;
+        if (message) {
+          console.warn("Jobs polling temporary failure:", message);
+        }
+      }
     }
   };
 
