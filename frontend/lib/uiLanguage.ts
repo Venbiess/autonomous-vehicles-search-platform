@@ -1,10 +1,9 @@
-export type UiLanguageCode = "en" | "ru";
-
 export interface UiLanguageOption {
-  code: UiLanguageCode;
+  code: string;
   flag: string;
   label: string;
   nativeLabel: string;
+  locale: string;
 }
 
 export interface SearchBarCopy {
@@ -34,6 +33,8 @@ export interface UiCopy {
     languageHint: string;
     toggles: {
       showSnapshotSection: { label: string; hint: string };
+      showStorageVlmFieldAnalytics: { label: string; hint: string };
+      showOpenAIBatchAnnotation: { label: string; hint: string };
       showSyntheticInAnnotation: { label: string; hint: string };
       showSearchMeta: { label: string; hint: string };
       showJobMonitorModels: { label: string; hint: string };
@@ -78,26 +79,33 @@ export interface UiCopy {
   searchBar: SearchBarCopy;
 }
 
-export const UI_LANGUAGE_OPTIONS: UiLanguageOption[] = [
+export const UI_LANGUAGE_OPTIONS = [
   {
     code: "en",
     flag: "🇺🇸",
     label: "English",
     nativeLabel: "English",
+    locale: "en-US",
   },
   {
     code: "ru",
     flag: "🇷🇺",
     label: "Russian",
     nativeLabel: "Русский",
+    locale: "ru-RU",
   },
-];
+] as const satisfies readonly UiLanguageOption[];
 
-export const DEFAULT_UI_LANGUAGE: UiLanguageCode = "ru";
+export type UiLanguageCode = (typeof UI_LANGUAGE_OPTIONS)[number]["code"];
+
+export const DEFAULT_UI_LANGUAGE: UiLanguageCode = "en";
 export const IMAGE_SEARCH_QUERY_TOKEN = "__image_search__";
 
 const LANGUAGE_CODES = new Set<UiLanguageCode>(
   UI_LANGUAGE_OPTIONS.map((language) => language.code)
+);
+const UI_LANGUAGE_OPTIONS_BY_CODE: Record<string, UiLanguageOption> = Object.fromEntries(
+  UI_LANGUAGE_OPTIONS.map((option) => [option.code, option])
 );
 
 export function isUiLanguageCode(value: unknown): value is UiLanguageCode {
@@ -106,6 +114,24 @@ export function isUiLanguageCode(value: unknown): value is UiLanguageCode {
 
 export function resolveUiLanguageCode(value: unknown): UiLanguageCode {
   return isUiLanguageCode(value) ? value : DEFAULT_UI_LANGUAGE;
+}
+
+export function getUiLanguageOption(value: unknown): UiLanguageOption {
+  const code = resolveUiLanguageCode(value);
+  return UI_LANGUAGE_OPTIONS_BY_CODE[code] ?? UI_LANGUAGE_OPTIONS_BY_CODE[DEFAULT_UI_LANGUAGE];
+}
+
+export function getUiLanguageLocale(value: unknown): string {
+  return getUiLanguageOption(value).locale || "en-US";
+}
+
+export function getLocalizedText(
+  language: unknown,
+  translations: Partial<Record<UiLanguageCode, string>>,
+  fallback = ""
+): string {
+  const code = resolveUiLanguageCode(language);
+  return translations[code] ?? translations[DEFAULT_UI_LANGUAGE] ?? fallback;
 }
 
 export const UI_COPY: Record<UiLanguageCode, UiCopy> = {
@@ -126,6 +152,14 @@ export const UI_COPY: Record<UiLanguageCode, UiCopy> = {
         showSnapshotSection: {
           label: "Show Snapshot Section",
           hint: "Storage tab transfer block",
+        },
+        showStorageVlmFieldAnalytics: {
+          label: "Detailed VLM Analytics",
+          hint: "Storage: per-field valid/fallback/missing breakdown",
+        },
+        showOpenAIBatchAnnotation: {
+          label: "API VLM Annotation Block",
+          hint: "Annotation tab: API JSON batch backfill form",
         },
         showSyntheticInAnnotation: {
           label: "Show Synthetic Dataset",
@@ -202,8 +236,8 @@ export const UI_COPY: Record<UiLanguageCode, UiCopy> = {
       storage: "ХРАНИЛИЩЕ",
       vlm: "VLM",
       browser: "ПОИСК",
-      annotation: "АННОТАЦИЯ",
-      jobMonitor: "МОНИТОР",
+      annotation: "РАЗМЕТКА",
+      jobMonitor: "МОНИТОРИНГ",
     },
     settings: {
       openSettingsAriaLabel: "Открыть настройки",
@@ -212,12 +246,20 @@ export const UI_COPY: Record<UiLanguageCode, UiCopy> = {
       languageHint: "Подписи и сообщения в веб-интерфейсе",
       toggles: {
         showSnapshotSection: {
-          label: "Показывать Transfer Snapshot",
+          label: "Показывать выгрузку снапшота",
           hint: "Блок передачи во вкладке Хранилище",
+        },
+        showStorageVlmFieldAnalytics: {
+          label: "Детальная VLM аналитика",
+          hint: "Хранилище: разбивка по полям valid/fallback/missing",
+        },
+        showOpenAIBatchAnnotation: {
+          label: "Блок API VLM разметки",
+          hint: "форма VLM разметки по API",
         },
         showSyntheticInAnnotation: {
           label: "Показывать Synthetic Dataset",
-          hint: "В списке preprocessors во вкладке Аннотация",
+          hint: "В списке препроцессоров данных",
         },
         showSearchMeta: {
           label: "Показывать метаданные поиска",

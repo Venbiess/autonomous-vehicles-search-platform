@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
+import { getLocalizedText, type UiLanguageCode } from "../lib/uiLanguage";
 
 type SnapshotTransferJob = {
   job_id?: string;
@@ -37,17 +38,21 @@ function formatBytes(value: number): string {
   return `${size.toFixed(unit === 0 ? 0 : 2)} ${units[unit]}`;
 }
 
-function getJobTitle(job: SnapshotTransferJob): string {
+function getJobTitle(job: SnapshotTransferJob, language: unknown): string {
+  const tr = (ru: string, en: string) => getLocalizedText(language, { ru, en }, en);
   const type = String(job.job_type || "").trim();
-  if (type === "snapshot_import") return "Импорт snapshot";
-  if (type === "snapshot_transfer" || type === "snapshot_export") return "Выгрузка snapshot";
-  if (type === "snapshot_export_full") return "Выгрузка full snapshot";
-  if (type === "snapshot_export_embeddings") return "Выгрузка embeddings";
-  if (type === "snapshot_export_vlm") return "Выгрузка VLM";
-  return "Transfer snapshot";
+  if (type === "snapshot_import") return tr("Импорт snapshot", "Snapshot import");
+  if (type === "snapshot_transfer" || type === "snapshot_export") {
+    return tr("Выгрузка snapshot", "Snapshot export");
+  }
+  if (type === "snapshot_export_full") return tr("Выгрузка full snapshot", "Full snapshot export");
+  if (type === "snapshot_export_embeddings") return tr("Выгрузка embeddings", "Embeddings export");
+  if (type === "snapshot_export_vlm") return tr("Выгрузка VLM", "VLM export");
+  return tr("Transfer snapshot", "Snapshot transfer");
 }
 
-function getJobPhaseHint(job: SnapshotTransferJob): string {
+function getJobPhaseHint(job: SnapshotTransferJob, language: unknown): string {
+  const tr = (ru: string, en: string) => getLocalizedText(language, { ru, en }, en);
   const type = String(job.job_type || "").trim();
   const phase = String(job.phase || "").trim().toLowerCase();
   const isExport =
@@ -55,13 +60,13 @@ function getJobPhaseHint(job: SnapshotTransferJob): string {
     type === "snapshot_export" ||
     type.startsWith("snapshot_export_");
   if (type === "snapshot_import") {
-    if (phase === "uploading") return "Загрузка snapshot...";
-    if (phase === "processing") return "Разархивация snapshot...";
+    if (phase === "uploading") return tr("Загрузка snapshot...", "Uploading snapshot...");
+    if (phase === "processing") return tr("Разархивация snapshot...", "Extracting snapshot...");
   }
   if (isExport) {
-    if (phase === "preparing") return "Подготовка snapshot...";
-    if (phase === "archiving") return "Архивация snapshot...";
-    if (phase === "streaming") return "Скачивание snapshot...";
+    if (phase === "preparing") return tr("Подготовка snapshot...", "Preparing snapshot...");
+    if (phase === "archiving") return tr("Архивация snapshot...", "Archiving snapshot...");
+    if (phase === "streaming") return tr("Скачивание snapshot...", "Downloading snapshot...");
   }
   return "";
 }
@@ -78,12 +83,16 @@ function normalizeProgress(job: SnapshotTransferJob): number {
 }
 
 export default function TransferToast({
+  language = "ru",
   onOpenTransfer,
   isStorageMode = false,
 }: {
+  language?: UiLanguageCode;
   onOpenTransfer?: () => void;
   isStorageMode?: boolean;
 }) {
+  const tr = (ru: string, en: string) =>
+    getLocalizedText(language, { ru, en }, en);
   const [jobs, setJobs] = useState<SnapshotTransferJob[]>([]);
   const pollTokenRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -149,7 +158,7 @@ export default function TransferToast({
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference * (1 - progress / 100);
   const phase = String(primaryJob.phase || "").trim().toLowerCase();
-  const phaseHint = getJobPhaseHint(primaryJob);
+  const phaseHint = getJobPhaseHint(primaryJob, language);
   const isImportExtractPhase =
     String(primaryJob.job_type || "").trim() === "snapshot_import" && phase === "processing";
   const progressStrokeColor = isImportExtractPhase ? "#10b981" : "#0ea5e9";
@@ -165,7 +174,7 @@ export default function TransferToast({
           }
         }}
         className="flex min-w-[18rem] items-center gap-3 rounded-2xl border border-slate-200 bg-white/95 px-4 py-3 text-left shadow-xl backdrop-blur transition hover:border-sky-300 hover:bg-white"
-        title="Открыть раздел Transfer Snapshot"
+        title={tr("Открыть раздел Transfer Snapshot", "Open Transfer Snapshot section")}
       >
         <div className="relative h-[54px] w-[54px] shrink-0">
           <svg
@@ -175,7 +184,7 @@ export default function TransferToast({
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={progress}
-            aria-label={`${getJobTitle(primaryJob)} ${progress}%`}
+            aria-label={`${getJobTitle(primaryJob, language)} ${progress}%`}
           >
             <circle
               cx={center}
@@ -206,7 +215,7 @@ export default function TransferToast({
 
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold text-slate-900">
-            {getJobTitle(primaryJob)}
+            {getJobTitle(primaryJob, language)}
           </div>
           <div className="truncate text-xs text-slate-600">
             {totalPlanned && totalPlanned > 0
@@ -215,7 +224,9 @@ export default function TransferToast({
           </div>
           {phaseHint && <div className="truncate text-xs text-slate-500">{phaseHint}</div>}
           {remainingCount > 0 && (
-            <div className="text-[11px] text-slate-500">{`+${remainingCount} active`}</div>
+            <div className="text-[11px] text-slate-500">
+              {tr(`+${remainingCount} активных`, `+${remainingCount} active`)}
+            </div>
           )}
         </div>
       </button>

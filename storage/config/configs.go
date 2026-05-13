@@ -55,11 +55,12 @@ type PreprocessorCatalog struct {
 }
 
 type PreprocessorMethodConfig struct {
-	Key           string         `yaml:"key" json:"key"`
-	Label         string         `yaml:"label" json:"label"`
-	Description   string         `yaml:"description" json:"description,omitempty"`
-	Runner        RunnerConfig   `yaml:"runner" json:"runner"`
-	DefaultConfig map[string]any `yaml:"default_config" json:"default_config,omitempty"`
+	Key             string            `yaml:"key" json:"key"`
+	Label           string            `yaml:"label" json:"label"`
+	Description     string            `yaml:"description" json:"description,omitempty"`
+	DescriptionI18n map[string]string `yaml:"description_i18n" json:"description_i18n,omitempty"`
+	Runner          RunnerConfig      `yaml:"runner" json:"runner"`
+	DefaultConfig   map[string]any    `yaml:"default_config" json:"default_config,omitempty"`
 }
 
 type RunnerConfig struct {

@@ -16,6 +16,25 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+func trimDescriptionI18n(input map[string]string) map[string]string {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(input))
+	for rawLang, rawText := range input {
+		lang := strings.ToLower(strings.TrimSpace(rawLang))
+		text := strings.TrimSpace(rawText)
+		if lang == "" || text == "" {
+			continue
+		}
+		out[lang] = text
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func loadPreprocessorMethods(manifestPath string) ([]core.PreprocessorMethod, error) {
 	catalog, err := config.LoadPreprocessorCatalog(manifestPath)
 	if err != nil {
@@ -30,9 +49,10 @@ func loadPreprocessorMethods(manifestPath string) ([]core.PreprocessorMethod, er
 			continue
 		}
 		methods = append(methods, core.PreprocessorMethod{
-			Key:         key,
-			Label:       label,
-			Description: strings.TrimSpace(item.Description),
+			Key:             key,
+			Label:           label,
+			Description:     strings.TrimSpace(item.Description),
+			DescriptionI18n: trimDescriptionI18n(item.DescriptionI18n),
 			Runner: core.PreprocessorRunner{
 				Entrypoint: strings.TrimSpace(item.Runner.Entrypoint),
 				Module:     strings.TrimSpace(item.Runner.Module),

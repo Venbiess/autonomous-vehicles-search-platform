@@ -3,15 +3,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import axios from "axios";
-import { Cog6ToothIcon } from "@heroicons/react/24/outline";
+import { CheckIcon, ChevronUpDownIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
 import {
   SEARCH_MODE_STORAGE_KEY,
   type SearchMode,
 } from "../lib/searchMode";
+import {
+  DEFAULT_UI_LANGUAGE,
+  IMAGE_SEARCH_QUERY_TOKEN,
+  UI_LANGUAGE_OPTIONS,
+  getUiCopy,
+  resolveUiLanguageCode,
+  type UiLanguageCode,
+} from "../lib/uiLanguage";
 
 import SearchBar from "../components/SearchBar";
 import ImageGallery from "../components/ImageGallery";
 import TransferToast from "../components/TransferToast";
+import LanguageFlagIcon from "../components/LanguageFlagIcon";
 
 interface ImageResult {
   id: string;
@@ -24,6 +33,7 @@ interface ImageResult {
 }
 
 interface UISettings {
+  language: UiLanguageCode;
   showSnapshotSection: boolean;
   showStorageVlmFieldAnalytics: boolean;
   showSyntheticInAnnotation: boolean;
@@ -50,15 +60,16 @@ interface EmbeddingMismatchDialogState {
 const IMAGES_PER_PAGE_OPTIONS = [6, 9, 12, 18, 24];
 const SEARCH_MODE_COOKIE_KEY = SEARCH_MODE_STORAGE_KEY;
 const UI_SETTINGS_STORAGE_KEY = "avsp_ui_settings_v1";
-const SEARCH_MODE_TABS: Array<{ mode: SearchMode; label: string }> = [
-  { mode: "STORAGE", label: "STORAGE" },
-  { mode: "VLM", label: "VLM" },
-  { mode: "Browser", label: "BROWSER" },
-  { mode: "ANNOTATION", label: "ANNOTATION" },
-  { mode: "Job Monitor", label: "JOB MONITOR" },
+const SEARCH_MODE_TABS: SearchMode[] = [
+  "STORAGE",
+  "VLM",
+  "Browser",
+  "ANNOTATION",
+  "Job Monitor",
 ];
 
 const DEFAULT_UI_SETTINGS: UISettings = {
+  language: DEFAULT_UI_LANGUAGE,
   showSnapshotSection: true,
   showStorageVlmFieldAnalytics: false,
   showSyntheticInAnnotation: false,
@@ -168,16 +179,35 @@ export default function HomePageClient({
   const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS);
   const [uiSettingsHydrated, setUiSettingsHydrated] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [embeddingMismatchDialog, setEmbeddingMismatchDialog] =
     useState<EmbeddingMismatchDialogState | null>(null);
   const [isRebuildingEmbeddings, setIsRebuildingEmbeddings] = useState(false);
   const settingsPopoverRef = useRef<HTMLDivElement | null>(null);
+  const languageMenuRef = useRef<HTMLDivElement | null>(null);
 
   const minScore = minScoreInput.trim() === "" ? null : Number(minScoreInput);
   const maxScore = maxScoreInput.trim() === "" ? null : Number(maxScoreInput);
   const hasValidMinScore = minScore !== null && Number.isFinite(minScore);
   const hasValidMaxScore = maxScore !== null && Number.isFinite(maxScore);
   const hasScoreFilter = hasValidMinScore || hasValidMaxScore;
+  const copy = useMemo(() => getUiCopy(uiSettings.language), [uiSettings.language]);
+  const selectedLanguage = useMemo(
+    () =>
+      UI_LANGUAGE_OPTIONS.find((language) => language.code === uiSettings.language) ||
+      UI_LANGUAGE_OPTIONS[0],
+    [uiSettings.language]
+  );
+  const searchModeTabLabels = useMemo(
+    () => ({
+      STORAGE: copy.tabs.storage,
+      VLM: copy.tabs.vlm,
+      Browser: copy.tabs.browser,
+      ANNOTATION: copy.tabs.annotation,
+      "Job Monitor": copy.tabs.jobMonitor,
+    }),
+    [copy]
+  );
 
   const presentedImages = useMemo(
     () =>
@@ -237,7 +267,7 @@ export default function HomePageClient({
         if (response.data?.source_table_exists === false) {
           setSourceWarning(
             response.data?.warning ??
-              "Исходные данные еще не скачаны. Таблица кадров отсутствует."
+              copy.search.sourceDataMissing
           );
         } else {
           setSourceWarning(null);
@@ -247,7 +277,7 @@ export default function HomePageClient({
       }
     };
     loadSourceStatus();
-  }, []);
+  }, [copy.search.sourceDataMissing]);
 
   useEffect(() => {
     window.localStorage.setItem(SEARCH_MODE_STORAGE_KEY, searchMode);
@@ -284,6 +314,7 @@ export default function HomePageClient({
             : undefined;
 
         setUiSettings({
+          language: resolveUiLanguageCode(parsed?.language),
           showSnapshotSection:
             typeof parsed?.showSnapshotSection === "boolean"
               ? parsed.showSnapshotSection
@@ -333,13 +364,34 @@ export default function HomePageClient({
   }, [uiSettings, uiSettingsHydrated]);
 
   useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.lang = uiSettings.language;
+    }
+  }, [uiSettings.language]);
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      setLanguageMenuOpen(false);
+    }
+  }, [settingsOpen]);
+
+  useEffect(() => {
     if (!settingsOpen) return;
     const handlePointerDown = (event: MouseEvent | TouchEvent) => {
       const root = settingsPopoverRef.current;
+      const languageMenuRoot = languageMenuRef.current;
       const target = event.target as Node | null;
       if (!root || !target) return;
       if (!root.contains(target)) {
         setSettingsOpen(false);
+        return;
+      }
+      if (
+        languageMenuOpen &&
+        languageMenuRoot &&
+        !languageMenuRoot.contains(target)
+      ) {
+        setLanguageMenuOpen(false);
       }
     };
     document.addEventListener("mousedown", handlePointerDown);
@@ -348,7 +400,7 @@ export default function HomePageClient({
       document.removeEventListener("mousedown", handlePointerDown);
       document.removeEventListener("touchstart", handlePointerDown);
     };
-  }, [settingsOpen]);
+  }, [settingsOpen, languageMenuOpen]);
 
   const runSearch = async ({
     query,
@@ -369,7 +421,7 @@ export default function HomePageClient({
     setIsLoading(true);
     setErrorMessage(null);
     setSearchWarningMessage(null);
-    setLastQuery(cleanedQuery || (imageFile ? "image search" : ""));
+    setLastQuery(cleanedQuery || (imageFile ? IMAGE_SEARCH_QUERY_TOKEN : ""));
     try {
       const response = imageFile
         ? await axios.post("/api/search?limit=100", imageFile, {
@@ -395,8 +447,8 @@ export default function HomePageClient({
         const storedDim = Number(warning.stored_dim || 0);
         const warningMessage =
           queryDim > 0 && storedDim > 0
-            ? `Размерность нового embedder (${queryDim}) не совпадает с текущей разметкой storage (${storedDim}). Поиск будет возвращать пустой результат, пока не пересоздать embeddings.`
-            : "Размерность нового embedder не совпадает с текущей разметкой storage. Поиск может возвращать пустой результат.";
+            ? copy.search.embeddingMismatchDetailed(queryDim, storedDim)
+            : copy.search.embeddingMismatchGeneric;
         setSearchWarningMessage(warningMessage);
         setEmbeddingMismatchDialog({
           queryDim,
@@ -407,7 +459,7 @@ export default function HomePageClient({
         const warningMessage =
           typeof warning.message === "string" && warning.message.trim().length > 0
             ? warning.message.trim()
-            : "Search backend недоступен. Дождитесь запуска модели.";
+            : copy.search.searchBackendUnavailable;
         setSearchWarningMessage(warningMessage);
       }
       setImages(items);
@@ -417,7 +469,7 @@ export default function HomePageClient({
         ? error.response?.data?.error || error.message
         : error instanceof Error
           ? error.message
-          : "Не удалось выполнить поиск";
+          : copy.search.searchFailed;
       setErrorMessage(message);
       setSearchWarningMessage(null);
       setImages([]);
@@ -460,9 +512,10 @@ export default function HomePageClient({
 
       setEmbeddingMismatchDialog(null);
       setSearchWarningMessage(
-        `Embeddings reset: ${resetEmbeddings}. Backfill job started: ${String(
-          backfillResponse.data?.job_id || ""
-        )}.`
+        copy.search.embeddingsResetAndBackfillStarted(
+          resetEmbeddings,
+          String(backfillResponse.data?.job_id || "")
+        )
       );
       setSearchMode("Job Monitor");
     } catch (error) {
@@ -470,7 +523,7 @@ export default function HomePageClient({
         ? error.response?.data?.error || error.message
         : error instanceof Error
           ? error.message
-          : "Не удалось пересоздать embeddings";
+          : copy.search.rebuildEmbeddingsFailed;
       setErrorMessage(message);
     } finally {
       setIsRebuildingEmbeddings(false);
@@ -554,18 +607,22 @@ export default function HomePageClient({
             type="button"
             onClick={() => setSettingsOpen((value) => !value)}
             className="group rounded-full border border-slate-300 bg-white p-2.5 text-slate-700 shadow-md transition hover:bg-slate-50"
-            aria-label="Open settings"
+            aria-label={copy.settings.openSettingsAriaLabel}
           >
-            <Cog6ToothIcon className="h-6 w-6 transition-transform duration-500 group-hover:rotate-180" />
+          <Cog6ToothIcon className="h-6 w-6 transition-transform duration-500 group-hover:rotate-180" />
           </button>
           {settingsOpen && (
             <div className="absolute right-0 mt-3 w-[min(22rem,calc(100vw-1.5rem))] rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl">
-              <div className="mb-3 text-sm font-semibold text-slate-900">Interface Settings</div>
+              <div className="mb-3 text-sm font-semibold text-slate-900">{copy.settings.panelTitle}</div>
               <div className="space-y-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">Show Snapshot Section</div>
-                    <div className="text-xs text-slate-500">Storage tab transfer block</div>
+                    <div className="text-sm font-medium text-slate-800">
+                      {copy.settings.toggles.showSnapshotSection.label}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {copy.settings.toggles.showSnapshotSection.hint}
+                    </div>
                   </div>
                   <IOSSwitch
                     checked={uiSettings.showSnapshotSection}
@@ -576,23 +633,28 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">Show Job Monitor Models</div>
-                    <div className="text-xs text-slate-500">Model runtime block</div>
+                    <div className="text-sm font-medium text-slate-800">
+                      {copy.settings.toggles.showJobMonitorModels.label}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {copy.settings.toggles.showJobMonitorModels.hint}
+                    </div>
                   </div>
                   <IOSSwitch
                     checked={uiSettings.showJobMonitorModels}
                     onChange={(next) =>
-                      setUiSettings((prev) => ({
-                        ...prev,
-                        showJobMonitorModels: next,
-                      }))
+                      setUiSettings((prev) => ({ ...prev, showJobMonitorModels: next }))
                     }
                   />
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">Show Job Monitor GPU</div>
-                    <div className="text-xs text-slate-500">GPU host block</div>
+                    <div className="text-sm font-medium text-slate-800">
+                      {copy.settings.toggles.showJobMonitorGpu.label}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {copy.settings.toggles.showJobMonitorGpu.hint}
+                    </div>
                   </div>
                   <IOSSwitch
                     checked={uiSettings.showJobMonitorGpu}
@@ -603,9 +665,11 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">Detailed VLM Analytics</div>
+                    <div className="text-sm font-medium text-slate-800">
+                      {copy.settings.toggles.showStorageVlmFieldAnalytics.label}
+                    </div>
                     <div className="text-xs text-slate-500">
-                      Storage: per-field valid/fallback/missing breakdown
+                      {copy.settings.toggles.showStorageVlmFieldAnalytics.hint}
                     </div>
                   </div>
                   <IOSSwitch
@@ -620,9 +684,11 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">API VLM Annotation Block</div>
+                    <div className="text-sm font-medium text-slate-800">
+                      {copy.settings.toggles.showOpenAIBatchAnnotation.label}
+                    </div>
                     <div className="text-xs text-slate-500">
-                      Annotation tab: API JSON batch backfill form
+                      {copy.settings.toggles.showOpenAIBatchAnnotation.hint}
                     </div>
                   </div>
                   <IOSSwitch
@@ -637,8 +703,12 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">Show Search Metadata</div>
-                    <div className="text-xs text-slate-500">Dataset and storage info in result titles</div>
+                    <div className="text-sm font-medium text-slate-800">
+                      {copy.settings.toggles.showSearchMeta.label}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {copy.settings.toggles.showSearchMeta.hint}
+                    </div>
                   </div>
                   <IOSSwitch
                     checked={uiSettings.showSearchMeta}
@@ -649,8 +719,12 @@ export default function HomePageClient({
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-sm font-medium text-slate-800">Show Synthetic Dataset</div>
-                    <div className="text-xs text-slate-500">In annotation preprocessor list</div>
+                    <div className="text-sm font-medium text-slate-800">
+                      {copy.settings.toggles.showSyntheticInAnnotation.label}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {copy.settings.toggles.showSyntheticInAnnotation.hint}
+                    </div>
                   </div>
                   <IOSSwitch
                     checked={uiSettings.showSyntheticInAnnotation}
@@ -662,6 +736,60 @@ export default function HomePageClient({
                     }
                   />
                 </div>
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">{copy.settings.languageLabel}</div>
+                  </div>
+                  <div ref={languageMenuRef} className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setLanguageMenuOpen((value) => !value)}
+                      className="flex w-44 items-center justify-between gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 transition hover:bg-slate-50"
+                      aria-label={copy.settings.languageLabel}
+                      aria-haspopup="listbox"
+                      aria-expanded={languageMenuOpen}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <LanguageFlagIcon code={selectedLanguage.code} className="h-6 w-6" />
+                        <span className="truncate">{selectedLanguage.nativeLabel}</span>
+                      </span>
+                      <ChevronUpDownIcon className="h-4 w-4 shrink-0 text-slate-500" />
+                    </button>
+                    {languageMenuOpen && (
+                      <div className="absolute bottom-full right-0 z-10 mb-2 w-52 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                        <div role="listbox" aria-label={copy.settings.languageLabel}>
+                          {UI_LANGUAGE_OPTIONS.map((language) => {
+                            const active = uiSettings.language === language.code;
+                            return (
+                              <button
+                                key={language.code}
+                                type="button"
+                                onClick={() => {
+                                  setUiSettings((prev) => ({
+                                    ...prev,
+                                    language: resolveUiLanguageCode(language.code),
+                                  }));
+                                  setLanguageMenuOpen(false);
+                                }}
+                                className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm transition ${
+                                  active
+                                    ? "bg-blue-50 text-blue-700"
+                                    : "text-slate-700 hover:bg-slate-100"
+                                }`}
+                                role="option"
+                                aria-selected={active}
+                              >
+                                <LanguageFlagIcon code={language.code} className="h-6 w-6" />
+                                <span className="flex-1 truncate">{language.nativeLabel}</span>
+                                {active && <CheckIcon className="h-4 w-4" />}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -671,17 +799,17 @@ export default function HomePageClient({
       <section className="bg-white border-b border-gray-200 shadow-sm">
         <div className="mx-auto max-w-5xl px-2 sm:px-6">
           <div className="hide-scrollbar flex items-center gap-1 overflow-x-auto py-3 sm:justify-center sm:gap-2 sm:py-6">
-            {SEARCH_MODE_TABS.map((tab) => (
+            {SEARCH_MODE_TABS.map((mode) => (
               <button
-                key={tab.mode}
-                onClick={() => setSearchMode(tab.mode)}
+                key={mode}
+                onClick={() => setSearchMode(mode)}
                 className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-xl font-black tracking-wide font-bebas transition-all duration-200 sm:px-6 sm:py-3 sm:text-3xl ${
-                  searchMode === tab.mode
+                  searchMode === mode
                     ? "border-blue-600 bg-blue-50 text-blue-600"
                     : "border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-900"
                 }`}
               >
-                {tab.label}
+                {searchModeTabLabels[mode]}
               </button>
             ))}
           </div>
@@ -691,15 +819,17 @@ export default function HomePageClient({
       {searchMode === "Job Monitor" ? (
         <section className="px-4 pb-16 pt-8 sm:px-6">
           <SystemMonitor
+            language={uiSettings.language}
             showModelsPanel={uiSettings.showJobMonitorModels}
             showGpuPanel={uiSettings.showJobMonitorGpu}
             isActive={searchMode === "Job Monitor"}
           />
         </section>
       ) : searchMode === "VLM" ? (
-        <VlmPanel />
+        <VlmPanel language={uiSettings.language} />
       ) : searchMode === "ANNOTATION" ? (
         <AnnotationPanel
+          language={uiSettings.language}
           onOpenJobsMonitor={() => setSearchMode("Job Monitor")}
           onOpenStorage={() => setSearchMode("STORAGE")}
           showSyntheticMethod={uiSettings.showSyntheticInAnnotation}
@@ -707,6 +837,7 @@ export default function HomePageClient({
         />
       ) : searchMode === "STORAGE" ? (
         <StoragePanel
+          language={uiSettings.language}
           showSnapshotSection={uiSettings.showSnapshotSection}
           showVlmFieldBreakdown={uiSettings.showStorageVlmFieldAnalytics}
         />
@@ -715,12 +846,13 @@ export default function HomePageClient({
           <section className="px-4 pb-8 pt-10 sm:px-6 sm:pt-12">
             <div className="mx-auto flex max-w-5xl flex-col items-center gap-6 text-center">
               <h1 className="text-2xl font-bold text-gray-900 sm:text-3xl">
-                Поиск сцен автономного транспорта
+                {copy.browser.heroTitle}
               </h1>
 
               <SearchBar
                 onSearch={handleSearch}
                 loading={isLoading}
+                copy={copy.searchBar}
                 initialQuery={browserQueryDraft}
                 initialImageFile={browserImageDraft}
                 onStateChange={({ query, imageFile }) => {
@@ -750,13 +882,13 @@ export default function HomePageClient({
           <section className="px-4 pb-16 sm:px-6">
             <div className="mx-auto max-w-5xl">
               {isLoading && (
-                <div className="text-sm text-gray-500">Ищем подходящие кадры...</div>
+                <div className="text-sm text-gray-500">{copy.browser.loadingResults}</div>
               )}
               {!isLoading && images.length === 0 && lastQuery && !errorMessage && !searchWarningMessage && (
                 <div className="text-sm text-gray-500">
-                  {lastQuery === "image search"
-                    ? "Ничего не найдено по загруженному изображению."
-                    : `Ничего не найдено по запросу "${lastQuery}".`}
+                  {lastQuery === IMAGE_SEARCH_QUERY_TOKEN
+                    ? copy.browser.emptyFromImage
+                    : copy.browser.emptyFromQuery(lastQuery)}
                 </div>
               )}
               {!isLoading && lastQuery && !errorMessage && (
@@ -764,13 +896,17 @@ export default function HomePageClient({
                   <div className="mt-4 flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="text-sm text-gray-600">
                       {filteredImages.length > 0
-                        ? `Показаны ${pageStart + 1}-${Math.min(pageStart + imagesPerPage, filteredImages.length)} из ${filteredImages.length}`
-                        : "По текущему фильтру результаты отсутствуют"}
-                      {hasScoreFilter && ` (всего найдено: ${images.length})`}
+                        ? copy.browser.resultsShown(
+                            pageStart + 1,
+                            Math.min(pageStart + imagesPerPage, filteredImages.length),
+                            filteredImages.length
+                          )
+                        : copy.browser.noResultsForFilter}
+                      {hasScoreFilter && copy.browser.totalFoundSuffix(images.length)}
                     </div>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                       <label className="flex items-center gap-2 text-sm text-gray-600">
-                        Картинок на странице
+                        {copy.browser.imagesPerPage}
                         <select
                           value={imagesPerPage}
                           onChange={(event) => {
@@ -793,7 +929,7 @@ export default function HomePageClient({
                           disabled={currentPage === 1 || filteredImages.length === 0}
                           className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          ← Назад
+                          {copy.browser.previousPage}
                         </button>
                         <div className="min-w-[5rem] text-center text-sm font-medium text-gray-700">
                           {currentPage} / {totalPages}
@@ -804,7 +940,7 @@ export default function HomePageClient({
                           disabled={currentPage === totalPages || filteredImages.length === 0}
                           className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          Вперёд →
+                          {copy.browser.nextPage}
                         </button>
                       </div>
                     </div>
@@ -817,11 +953,11 @@ export default function HomePageClient({
                   <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                       <div className="text-sm font-semibold text-gray-700">
-                        Фильтр по score и экспорт
+                        {copy.browser.scoreFilterAndExport}
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
                         <label className="flex items-center gap-2 text-sm text-gray-600">
-                          score от
+                          {copy.browser.scoreFrom}
                           <input
                             type="number"
                             value={minScoreInput}
@@ -831,7 +967,7 @@ export default function HomePageClient({
                           />
                         </label>
                         <label className="flex items-center gap-2 text-sm text-gray-600">
-                          до
+                          {copy.browser.scoreTo}
                           <input
                             type="number"
                             value={maxScoreInput}
@@ -848,7 +984,7 @@ export default function HomePageClient({
                           }}
                           className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
                         >
-                          Сбросить score
+                          {copy.browser.resetScore}
                         </button>
                         <button
                           type="button"
@@ -856,7 +992,7 @@ export default function HomePageClient({
                           disabled={filteredImages.length === 0}
                           className="rounded-lg border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          Экспорт CSV
+                          {copy.browser.exportCsv}
                         </button>
                       </div>
                     </div>
@@ -868,6 +1004,7 @@ export default function HomePageClient({
         </>
       )}
       <TransferToast
+        language={uiSettings.language}
         onOpenTransfer={openTransferSnapshotSection}
         isStorageMode={searchMode === "STORAGE"}
       />
@@ -884,7 +1021,7 @@ export default function HomePageClient({
           <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
             <div className="border-b border-slate-200 px-5 py-4">
               <div className="text-base font-semibold text-slate-900">
-                Несовместимая размерность embeddings
+                {copy.embeddingDialog.title}
               </div>
               <div className="mt-1 text-sm text-slate-600">
                 {embeddingMismatchDialog.message}
@@ -892,13 +1029,15 @@ export default function HomePageClient({
             </div>
             <div className="space-y-3 px-5 py-4 text-sm text-slate-700">
               <div>
-                Текущий запрос embedder: <span className="font-semibold">{embeddingMismatchDialog.queryDim || "—"}</span>
+                {copy.embeddingDialog.currentQueryEmbedder}:{" "}
+                <span className="font-semibold">{embeddingMismatchDialog.queryDim || "—"}</span>
               </div>
               <div>
-                Разметка в storage: <span className="font-semibold">{embeddingMismatchDialog.storedDim || "—"}</span>
+                {copy.embeddingDialog.storageEmbeddings}:{" "}
+                <span className="font-semibold">{embeddingMismatchDialog.storedDim || "—"}</span>
               </div>
               <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
-                Стоит пересоздать embedding storage под новую размерность и заново запустить embedding backfill, либо вернуть прежнюю модель.
+                {copy.embeddingDialog.recommendation}
               </div>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
@@ -911,7 +1050,7 @@ export default function HomePageClient({
                 className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
                 disabled={isRebuildingEmbeddings}
               >
-                Открыть ANNOTATION
+                {copy.embeddingDialog.openAnnotation}
               </button>
               <button
                 type="button"
@@ -922,8 +1061,8 @@ export default function HomePageClient({
                 disabled={isRebuildingEmbeddings}
               >
                 {isRebuildingEmbeddings
-                  ? "Пересоздаю embeddings..."
-                  : "Пересоздать и запустить backfill"}
+                  ? copy.embeddingDialog.rebuilding
+                  : copy.embeddingDialog.rebuildAndStartBackfill}
               </button>
             </div>
           </div>

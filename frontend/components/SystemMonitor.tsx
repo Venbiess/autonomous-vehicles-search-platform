@@ -2,6 +2,11 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
+import {
+  getLocalizedText,
+  getUiLanguageLocale,
+  type UiLanguageCode,
+} from "../lib/uiLanguage";
 
 interface RuntimeServiceData {
   name?: string;
@@ -159,14 +164,19 @@ type ModelServiceKey = "embedder" | "vlm";
 type RuntimeServiceStatus = "online" | "starting" | "offline";
 
 export default function SystemMonitor({
+  language = "ru",
   showModelsPanel = true,
   showGpuPanel = true,
   isActive = true,
 }: {
+  language?: UiLanguageCode;
   showModelsPanel?: boolean;
   showGpuPanel?: boolean;
   isActive?: boolean;
 }) {
+  const tr = (ru: string, en: string) =>
+    getLocalizedText(language, { ru, en }, en);
+  const dateLocale = getUiLanguageLocale(language);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -211,17 +221,44 @@ export default function SystemMonitor({
       setSystemInfo(response.data);
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Не удалось загрузить информацию о системе";
+        err instanceof Error
+          ? err.message
+          : tr("Не удалось загрузить информацию о системе", "Failed to load system info");
       setError(message);
     }
   };
 
   const fetchJobs = async () => {
     try {
-      const response = await axios.get("/api/jobs");
-      setJobs(response.data.jobs || []);
+      const response = await axios.get("/api/jobs", {
+        validateStatus: () => true,
+      });
+      const payload = response?.data;
+      setJobs((prev) => (Array.isArray(payload?.jobs) ? payload.jobs : prev));
+      if (response.status >= 400) {
+        const message =
+          typeof payload?.error === "string" && payload.error.trim()
+            ? payload.error
+            : `HTTP ${response.status}`;
+        console.warn("Jobs endpoint returned non-2xx status:", message);
+      }
+      if (typeof payload?.error === "string" && payload.error.trim()) {
+        console.warn("Jobs endpoint returned a degraded response:", payload.error);
+      }
     } catch (err) {
-      console.error("Failed to fetch jobs:", err);
+      if (axios.isAxiosError(err)) {
+        const fallbackJobs = err.response?.data?.jobs;
+        if (Array.isArray(fallbackJobs)) {
+          setJobs(fallbackJobs);
+        }
+        const message =
+          typeof err.response?.data?.error === "string"
+            ? err.response.data.error
+            : err.message;
+        if (message) {
+          console.warn("Jobs polling temporary failure:", message);
+        }
+      }
     }
   };
 
@@ -361,7 +398,7 @@ export default function SystemMonitor({
     const days = Math.floor(seconds / 86400);
     const hours = Math.floor((seconds % 86400) / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
-    return `${days}д ${hours}ч ${minutes}м`;
+    return tr(`${days}д ${hours}ч ${minutes}м`, `${days}d ${hours}h ${minutes}m`);
   };
 
   const getUsageColor = (percent: number): string => {
@@ -388,9 +425,9 @@ export default function SystemMonitor({
   };
 
   const getServiceStatusLabel = (status: RuntimeServiceStatus): string => {
-    if (status === "online") return "online";
-    if (status === "starting") return "starting";
-    return "offline";
+    if (status === "online") return tr("онлайн", "online");
+    if (status === "starting") return tr("запуск", "starting");
+    return tr("офлайн", "offline");
   };
 
   const getServiceUiStatus = (
@@ -432,17 +469,17 @@ export default function SystemMonitor({
 
   const getJobStatusText = (status: string, cancelRequested?: boolean): string => {
     if (status === "running" && cancelRequested) {
-      return "Cancelling";
+      return tr("Отмена", "Cancelling");
     }
     switch (status) {
       case "running":
-        return "Running";
+        return tr("В работе", "Running");
       case "success":
-        return "Success";
+        return tr("Успех", "Success");
       case "error":
-        return "Error";
+        return tr("Ошибка", "Error");
       case "cancelled":
-        return "Cancelled";
+        return tr("Отменено", "Cancelled");
       default:
         return status;
     }
@@ -450,7 +487,7 @@ export default function SystemMonitor({
 
   const getJobErrorLog = useCallback((job: Job): string => {
     if (!Array.isArray(job.errors) || job.errors.length === 0) {
-      return "No error details available.";
+      return tr("Детали ошибок отсутствуют.", "No error details available.");
     }
     return job.errors
       .map((entry, index) => {
@@ -465,18 +502,18 @@ export default function SystemMonitor({
         return log ? `${prefix}\n${log}` : prefix;
       })
       .join("\n\n");
-  }, []);
+  }, [language]);
 
   const getJobMainLog = useCallback((job: Job): string => {
     const lines = Array.isArray(job.job_log) ? job.job_log : [];
     if (lines.length === 0) {
-      return "No job log available.";
+      return tr("Лог джобы отсутствует.", "No job log available.");
     }
     return lines.join("\n");
-  }, []);
+  }, [language]);
 
   const formatDate = (timestamp: number): string => {
-    return new Date(timestamp * 1000).toLocaleString("ru-RU");
+    return new Date(timestamp * 1000).toLocaleString(dateLocale);
   };
 
   const formatJobTypeLabel = useCallback((jobType: string): string => {
@@ -526,9 +563,15 @@ export default function SystemMonitor({
     const minutes = Math.floor((safe % 3600) / 60);
     const secs = safe % 60;
     if (hours > 0) {
-      return `${hours}ч ${String(minutes).padStart(2, "0")}м ${String(secs).padStart(2, "0")}с`;
+      return tr(
+        `${hours}ч ${String(minutes).padStart(2, "0")}м ${String(secs).padStart(2, "0")}с`,
+        `${hours}h ${String(minutes).padStart(2, "0")}m ${String(secs).padStart(2, "0")}s`
+      );
     }
-    return `${minutes}м ${String(secs).padStart(2, "0")}с`;
+    return tr(
+      `${minutes}м ${String(secs).padStart(2, "0")}с`,
+      `${minutes}m ${String(secs).padStart(2, "0")}s`
+    );
   };
 
   const getEtaCounters = (job: Job): EtaCounters => {
@@ -663,8 +706,8 @@ export default function SystemMonitor({
       await fetchJobs();
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Не удалось отменить джобу";
-      alert(`Ошибка: ${message}`);
+        err instanceof Error ? err.message : tr("Не удалось отменить джобу", "Failed to cancel job");
+      alert(`${tr("Ошибка", "Error")}: ${message}`);
     } finally {
       setCancellingJobId(null);
     }
@@ -684,8 +727,8 @@ export default function SystemMonitor({
             ? detail.error
             : err instanceof Error
               ? err.message
-              : "Не удалось перезапустить джобу";
-      alert(`Ошибка: ${message}`);
+              : tr("Не удалось перезапустить джобу", "Failed to retry job");
+      alert(`${tr("Ошибка", "Error")}: ${message}`);
     } finally {
       setRetryingJobId(null);
     }
@@ -698,35 +741,44 @@ export default function SystemMonitor({
 
   const getCancelDialogDescription = (jobType: string): string => {
     if (jobType.startsWith("install_")) {
-      return "Выберите, что сделать с уже загруженными этой джобой данными.";
+      return tr(
+        "Выберите, что сделать с уже загруженными этой джобой данными.",
+        "Choose what to do with data already downloaded by this job."
+      );
     }
     if (jobType === "backfill_vlm") {
-      return "Выберите, что сделать с уже размеченными этой джобой сценами.";
+      return tr(
+        "Выберите, что сделать с уже размеченными этой джобой сценами.",
+        "Choose what to do with scenes already annotated by this job."
+      );
     }
     if (jobType === "backfill_embeddings") {
-      return "Выберите, что сделать с уже созданными этой джобой эмбеддингами.";
+      return tr(
+        "Выберите, что сделать с уже созданными этой джобой эмбеддингами.",
+        "Choose what to do with embeddings already created by this job."
+      );
     }
-    return "Подтвердите остановку джобы.";
+    return tr("Подтвердите остановку джобы.", "Confirm stopping the job.");
   };
 
   const getCancelKeepLabel = (jobType: string): string => {
     if (jobType === "backfill_vlm") {
-      return "Остановить и сохранить разметку";
+      return tr("Остановить и сохранить разметку", "Stop and keep annotations");
     }
     if (jobType === "backfill_embeddings") {
-      return "Остановить и сохранить эмбеддинги";
+      return tr("Остановить и сохранить эмбеддинги", "Stop and keep embeddings");
     }
-    return "Остановить и сохранить";
+    return tr("Остановить и сохранить", "Stop and keep");
   };
 
   const getCancelDeleteLabel = (jobType: string): string => {
     if (jobType === "backfill_vlm") {
-      return "Остановить и удалить разметку";
+      return tr("Остановить и удалить разметку", "Stop and delete annotations");
     }
     if (jobType === "backfill_embeddings") {
-      return "Остановить и удалить эмбеддинги";
+      return tr("Остановить и удалить эмбеддинги", "Stop and delete embeddings");
     }
-    return "Остановить и удалить";
+    return tr("Остановить и удалить", "Stop and delete");
   };
 
   const isWaymoAuthPermissionError = (job: Job): boolean => {
@@ -761,13 +813,21 @@ export default function SystemMonitor({
       const sessionId = String(payload.session_id || "").trim();
       const authUrl = String(payload.auth_url || "").trim();
       if (!sessionId) {
-        throw new Error("Не удалось создать сессию авторизации Waymo.");
+        throw new Error(
+          tr(
+            "Не удалось создать сессию авторизации Waymo.",
+            "Failed to create a Waymo auth session."
+          )
+        );
       }
       setWaymoAuthSessionId(sessionId);
       setWaymoAuthUrl(authUrl || null);
       if (!authUrl) {
         setWaymoAuthError(
-          "Ссылка авторизации пока не получена. Нажмите «Обновить ссылку» через несколько секунд."
+          tr(
+            "Ссылка авторизации пока не получена. Нажмите «Обновить ссылку» через несколько секунд.",
+            "The auth link is not ready yet. Click Refresh link in a few seconds."
+          )
         );
       }
     } catch (err) {
@@ -779,7 +839,7 @@ export default function SystemMonitor({
             ? detail.error
             : typeof err === "object" && err && "message" in err
               ? String((err as { message?: string }).message || "")
-              : "Не удалось запустить авторизацию Waymo.";
+              : tr("Не удалось запустить авторизацию Waymo.", "Failed to start Waymo auth.");
       setWaymoAuthError(serverMessage);
     } finally {
       setWaymoAuthBusy(false);
@@ -788,12 +848,12 @@ export default function SystemMonitor({
 
   const submitWaymoAuthCode = async () => {
     if (!waymoAuthSessionId) {
-      setWaymoAuthError("Сначала получите ссылку авторизации.");
+      setWaymoAuthError(tr("Сначала получите ссылку авторизации.", "Get the auth link first."));
       return;
     }
     const code = waymoAuthCode.trim();
     if (!code) {
-      setWaymoAuthError("Введите код авторизации.");
+      setWaymoAuthError(tr("Введите код авторизации.", "Enter the auth code."));
       return;
     }
     try {
@@ -805,7 +865,11 @@ export default function SystemMonitor({
       });
       const message = String(response.data?.message || "").trim();
       setWaymoAuthSuccess(
-        message || "Авторизация Google ADC выполнена. Повторите установку Waymo."
+        message ||
+          tr(
+            "Авторизация Google ADC выполнена. Повторите установку Waymo.",
+            "Google ADC authorization completed. Retry Waymo installation."
+          )
       );
       setWaymoAuthModalOpen(false);
       setWaymoAuthCode("");
@@ -814,13 +878,15 @@ export default function SystemMonitor({
       const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
       if (detail && typeof detail === "object" && Array.isArray(detail.logs_tail)) {
         setWaymoAuthError(
-          `${String(detail.message || "Ошибка авторизации")}\n\n${detail.logs_tail.join("\n")}`
+          `${String(detail.message || tr("Ошибка авторизации", "Authorization error"))}\n\n${detail.logs_tail.join("\n")}`
         );
       } else if (typeof detail === "string") {
         setWaymoAuthError(detail);
       } else {
         const message =
-          err instanceof Error ? err.message : "Не удалось завершить авторизацию.";
+          err instanceof Error
+            ? err.message
+            : tr("Не удалось завершить авторизацию.", "Failed to complete authorization.");
         setWaymoAuthError(message);
       }
     } finally {
@@ -913,12 +979,12 @@ export default function SystemMonitor({
         });
         const updatedAtRaw = String(response.data?.updated_at || "").trim();
         const updatedAtLabel = updatedAtRaw
-          ? new Date(updatedAtRaw).toLocaleTimeString("ru-RU")
+          ? new Date(updatedAtRaw).toLocaleTimeString(dateLocale)
           : "—";
         const content =
           typeof response.data?.content === "string" && response.data.content.trim()
             ? response.data.content
-            : "No startup logs yet.";
+            : tr("Пока нет startup-логов.", "No startup logs yet.");
         if (!active) {
           return;
         }
@@ -928,7 +994,10 @@ export default function SystemMonitor({
           }
           return {
             ...current,
-            title: `${service.toUpperCase()} startup logs (updated ${updatedAtLabel})`,
+            title: tr(
+              `${service.toUpperCase()} startup-логи (обновлено ${updatedAtLabel})`,
+              `${service.toUpperCase()} startup logs (updated ${updatedAtLabel})`
+            ),
             content,
           };
         });
@@ -936,14 +1005,17 @@ export default function SystemMonitor({
         if (!active) {
           return;
         }
-        const message = err instanceof Error ? err.message : "Failed to load model logs";
+        const message = err instanceof Error ? err.message : tr("Не удалось загрузить model logs", "Failed to load model logs");
         setLogViewer((current) => {
           if (!current || current.source !== "model" || current.modelService !== service) {
             return current;
           }
           return {
             ...current,
-            content: `Failed to load logs: ${message}`,
+            content: tr(
+              `Не удалось загрузить логи: ${message}`,
+              `Failed to load logs: ${message}`
+            ),
           };
         });
       }
@@ -991,7 +1063,9 @@ export default function SystemMonitor({
   if (isLoading && !systemInfo) {
     return (
       <div className="flex items-center justify-center py-12">
-        <div className="text-gray-500">Загрузка информации о системе...</div>
+        <div className="text-gray-500">
+          {tr("Загрузка информации о системе...", "Loading system information...")}
+        </div>
       </div>
     );
   }
@@ -999,7 +1073,7 @@ export default function SystemMonitor({
   if (error) {
     return (
       <div className="flex items-center justify-center py-12">
-        <div className="text-red-600">Ошибка: {error}</div>
+        <div className="text-red-600">{tr("Ошибка", "Error")}: {error}</div>
       </div>
     );
   }
@@ -1024,24 +1098,28 @@ export default function SystemMonitor({
 
       <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-lg p-6">
         <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-gray-900">Мониторинг системы</h2>
+          <h2 className="text-2xl font-bold text-gray-900">
+            {tr("Мониторинг системы", "System Monitor")}
+          </h2>
           <button
             onClick={fetchSystemInfo}
             className="px-4 py-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition-colors"
           >
-            Обновить
+            {tr("Обновить", "Refresh")}
           </button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className="bg-gray-50 rounded-lg p-4">
             <div className="flex justify-between items-center mb-2">
-              <h3 className="text-lg font-semibold text-gray-700">Процессор (CPU)</h3>
-              <span className="text-sm text-gray-500">{systemInfo.cpu.cores} ядер</span>
+              <h3 className="text-lg font-semibold text-gray-700">{tr("Процессор (CPU)", "CPU")}</h3>
+              <span className="text-sm text-gray-500">
+                {systemInfo.cpu.cores} {tr("ядер", "cores")}
+              </span>
             </div>
             <div className="mb-2">
               <div className="flex justify-between text-sm mb-1">
-                <span className="text-gray-600">Использование</span>
+                <span className="text-gray-600">{tr("Использование", "Usage")}</span>
                 <span className="font-bold">{systemInfo.cpu.usage_percent.toFixed(1)}%</span>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-3">
@@ -1057,14 +1135,14 @@ export default function SystemMonitor({
 
           <div className="bg-gray-50 rounded-lg p-4">
             <div className="flex justify-between items-center mb-2">
-              <h3 className="text-lg font-semibold text-gray-700">Память (RAM)</h3>
+              <h3 className="text-lg font-semibold text-gray-700">{tr("Память (RAM)", "Memory (RAM)")}</h3>
               <span className="text-sm text-gray-500">
                 {systemInfo.memory.total_gb.toFixed(1)} GB
               </span>
             </div>
             <div className="mb-2">
               <div className="flex justify-between text-sm mb-1">
-                <span className="text-gray-600">Использовано</span>
+                <span className="text-gray-600">{tr("Использовано", "Used")}</span>
                 <span className="font-bold">
                   {systemInfo.memory.used_gb.toFixed(1)} GB / {systemInfo.memory.total_gb.toFixed(1)} GB
                 </span>
@@ -1079,20 +1157,20 @@ export default function SystemMonitor({
               </div>
             </div>
             <div className="text-xs text-gray-500 mt-1">
-              Доступно: {systemInfo.memory.available_gb.toFixed(1)} GB
+              {tr("Доступно", "Available")}: {systemInfo.memory.available_gb.toFixed(1)} GB
             </div>
           </div>
 
           <div className="bg-gray-50 rounded-lg p-4">
             <div className="flex justify-between items-center mb-2">
-              <h3 className="text-lg font-semibold text-gray-700">Диск</h3>
+              <h3 className="text-lg font-semibold text-gray-700">{tr("Диск", "Disk")}</h3>
               <span className="text-sm text-gray-500">
                 {systemInfo.disk.total_gb.toFixed(1)} GB
               </span>
             </div>
             <div className="mb-2">
               <div className="flex justify-between text-sm mb-1">
-                <span className="text-gray-600">Использовано</span>
+                <span className="text-gray-600">{tr("Использовано", "Used")}</span>
                 <span className="font-bold">
                   {systemInfo.disk.used_gb.toFixed(1)} GB / {systemInfo.disk.total_gb.toFixed(1)} GB
                 </span>
@@ -1107,19 +1185,20 @@ export default function SystemMonitor({
               </div>
             </div>
             <div className="text-xs text-gray-500 mt-1">
-              Доступно: {systemInfo.disk.available_gb.toFixed(1)} GB
+              {tr("Доступно", "Available")}: {systemInfo.disk.available_gb.toFixed(1)} GB
             </div>
           </div>
 
           <div className="bg-gray-50 rounded-lg p-4">
             <div className="flex justify-between items-center mb-2">
-              <h3 className="text-lg font-semibold text-gray-700">Время работы</h3>
+              <h3 className="text-lg font-semibold text-gray-700">{tr("Время работы", "Uptime")}</h3>
             </div>
             <div className="text-2xl font-bold text-gray-900">
               {formatUptime(systemInfo.uptime_seconds)}
             </div>
             <div className="text-xs text-gray-500 mt-2">
-              Последнее обновление: {new Date(systemInfo.timestamp).toLocaleString("ru-RU")}
+              {tr("Последнее обновление", "Last update")}:{" "}
+              {new Date(systemInfo.timestamp).toLocaleString(dateLocale)}
             </div>
           </div>
         </div>
@@ -1129,7 +1208,7 @@ export default function SystemMonitor({
             {showModelsPanel && (
               <div className="mt-6">
                 <h3 className="text-lg font-semibold text-gray-800 mb-3">
-                  Модели и устройства
+                  {tr("Модели и устройства", "Models and devices")}
                 </h3>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {serviceEntries.map((service) => {
@@ -1148,8 +1227,11 @@ export default function SystemMonitor({
                             type="button"
                             onClick={() =>
                               setLogViewer({
-                                title: `${service.label} startup logs`,
-                                content: "Loading startup logs...",
+                                title: tr(
+                                  `${service.label} startup-логи`,
+                                  `${service.label} startup logs`
+                                ),
+                                content: tr("Загрузка startup-логов...", "Loading startup logs..."),
                                 source: "model",
                                 modelService: service.key,
                               })
@@ -1160,8 +1242,8 @@ export default function SystemMonitor({
                             disabled={!canOpenStartupLogs}
                             title={
                               canOpenStartupLogs
-                                ? "Open startup logs"
-                                : "No startup logs available yet"
+                                ? tr("Открыть startup-логи", "Open startup logs")
+                                : tr("Startup-логи пока недоступны", "No startup logs available yet")
                             }
                           >
                             {getServiceStatusLabel(uiStatus)}
@@ -1169,22 +1251,22 @@ export default function SystemMonitor({
                         </div>
                         <div className="mt-2 space-y-1 text-sm text-slate-700">
                           <div>
-                            <span className="text-slate-500">Модель: </span>
+                            <span className="text-slate-500">{tr("Модель", "Model")}: </span>
                             <span className="font-medium">{service.data?.model || "—"}</span>
                           </div>
                           <div>
-                            <span className="text-slate-500">Endpoint: </span>
+                            <span className="text-slate-500">{tr("Endpoint", "Endpoint")}: </span>
                             <span className="font-mono text-xs">{service.data?.endpoint || "—"}</span>
                           </div>
                           <div>
-                            <span className="text-slate-500">Устройство: </span>
+                            <span className="text-slate-500">{tr("Устройство", "Device")}: </span>
                             <span className="font-semibold">{selectedDevice}</span>
                             {runtime.cuda_device_name ? (
                               <span className="text-xs text-slate-500">{` (${runtime.cuda_device_name})`}</span>
                             ) : null}
                           </div>
                           <div>
-                            <span className="text-slate-500">Конфиг: </span>
+                            <span className="text-slate-500">{tr("Конфиг", "Config")}: </span>
                             <span>{String(runtime.configured_device || "—")}</span>
                             {runtime.dtype ? (
                               <span className="text-xs text-slate-500">{` · dtype=${runtime.dtype}`}</span>
@@ -1194,20 +1276,25 @@ export default function SystemMonitor({
                             ) : null}
                           </div>
                           <div>
-                            <span className="text-slate-500">RAM процесса: </span>
+                            <span className="text-slate-500">{tr("RAM процесса", "Process RAM")}: </span>
                             <span>{formatMb(memory.process_rss_mb)}</span>
                           </div>
                           <div>
-                            <span className="text-slate-500">GPU память: </span>
+                            <span className="text-slate-500">{tr("GPU память", "GPU memory")}: </span>
                             <span>
-                              {`${formatMb(memory.gpu_allocated_mb)} alloc / ${formatMb(
-                                memory.gpu_reserved_mb
-                              )} reserved`}
+                              {tr(
+                                `${formatMb(memory.gpu_allocated_mb)} выделено / ${formatMb(
+                                  memory.gpu_reserved_mb
+                                )} зарезервировано`,
+                                `${formatMb(memory.gpu_allocated_mb)} alloc / ${formatMb(
+                                  memory.gpu_reserved_mb
+                                )} reserved`
+                              )}
                             </span>
                           </div>
                           {(memory.gpu_total_mb ?? 0) > 0 ? (
                             <div>
-                              <span className="text-slate-500">GPU всего/свободно: </span>
+                              <span className="text-slate-500">{tr("GPU всего/свободно", "GPU total/free")}: </span>
                               <span>{`${formatMb(memory.gpu_total_mb)} / ${formatMb(
                                 memory.gpu_free_mb
                               )}`}</span>
@@ -1228,12 +1315,18 @@ export default function SystemMonitor({
 
             {showGpuPanel && (
               <div className="mt-6">
-                <h3 className="text-lg font-semibold text-gray-800 mb-3">GPU хоста</h3>
+                <h3 className="text-lg font-semibold text-gray-800 mb-3">{tr("GPU хоста", "Host GPU")}</h3>
                 {gpuList.length === 0 ? (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
                     {systemInfo.gpu?.error
-                      ? `GPU недоступен: ${systemInfo.gpu.error}`
-                      : "GPU не обнаружен на текущем хосте master-сервиса."}
+                      ? tr(
+                          `GPU недоступен: ${systemInfo.gpu.error}`,
+                          `GPU unavailable: ${systemInfo.gpu.error}`
+                        )
+                      : tr(
+                          "GPU не обнаружен на текущем хосте master-сервиса.",
+                          "GPU was not detected on the current master-service host."
+                        )}
                   </div>
                 ) : (
                   <div className="overflow-x-auto rounded-lg border border-slate-200">
@@ -1286,7 +1379,9 @@ export default function SystemMonitor({
 
       <div className="max-w-[96rem] mx-auto bg-white rounded-lg shadow-lg p-6 mt-6">
         <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-gray-900">Джобы</h2>
+          <h2 className="text-2xl font-bold text-gray-900">
+            {tr("Джобы", "Jobs")}
+          </h2>
           <div className="flex items-center gap-2">
             <a
               href={grafanaDashboardUrl}
@@ -1320,7 +1415,7 @@ export default function SystemMonitor({
         
         {jobs.length === 0 ? (
           <div className="text-center py-8 text-gray-500">
-            Нет запущенных джоб
+            {tr("Нет запущенных джоб", "No running jobs")}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -1331,25 +1426,25 @@ export default function SystemMonitor({
                     ID
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Тип
+                    {tr("Тип", "Type")}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Прогресс
+                    {tr("Прогресс", "Progress")}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Статус
+                    {tr("Статус", "Status")}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Обработано
+                    {tr("Обработано", "Processed")}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Создано
+                    {tr("Создано", "Created")}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Время / ETA
+                    {tr("Время / ETA", "Time / ETA")}
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Действия
+                    {tr("Действия", "Actions")}
                   </th>
                 </tr>
               </thead>
@@ -1449,8 +1544,14 @@ export default function SystemMonitor({
                     ? snapshotMainLabel
                     : `${job.total_seen} / ${plannedTotal ?? "?"}`;
                   const processedLabel = progressLabel;
-                  const scenesSavedLabel = `Сцен сохранено: ${job.total_inserted}`;
-                  const installScenesSavedLabel = `Сцен сохранено: ${job.total_inserted}`;
+                  const scenesSavedLabel = tr(
+                    `Сцен сохранено: ${job.total_inserted}`,
+                    `Scenes saved: ${job.total_inserted}`
+                  );
+                  const installScenesSavedLabel = tr(
+                    `Сцен сохранено: ${job.total_inserted}`,
+                    `Scenes saved: ${job.total_inserted}`
+                  );
                   const embeddingTasksCompleted = job.embedding_tasks_completed ?? 0;
                   const embeddingTasksTotal = job.embedding_tasks_total ?? 0;
                   const embeddingProgress =
@@ -1467,7 +1568,7 @@ export default function SystemMonitor({
                   const embeddingStatusLabel =
                     embeddingTasksTotal > 0
                       ? `Embedding: ${embeddingTasksCompleted} / ${embeddingTasksTotal}`
-                      : "Embedding: ожидание скачанных сцен";
+                      : tr("Embedding: ожидание скачанных сцен", "Embedding: waiting for downloaded scenes");
                   const currentSceneTasksCompleted = job.current_scene_tasks_completed ?? 0;
                   const currentSceneTasksTotal = job.current_scene_tasks_total ?? 0;
                   const isApiBatchVlmJob =
@@ -1606,7 +1707,10 @@ export default function SystemMonitor({
                               ? scenesSavedLabel
                               : isInstallJob
                                 ? installScenesSavedLabel
-                                : `Вставлено: ${job.total_inserted}`}
+                                    : tr(
+                                        `Вставлено: ${job.total_inserted}`,
+                                        `Inserted: ${job.total_inserted}`
+                                      )}
                           </div>
                           {showSnapshotImportDetails && (
                             <div className="mt-3 space-y-2">
@@ -1649,7 +1753,10 @@ export default function SystemMonitor({
                           )}
                           {showEmbeddingProgress && (
                             <div className="text-xs text-gray-500 mt-1">
-                              {`Эмбеддингов сохранено: ${job.total_embeddings_inserted ?? 0}`}
+                              {tr(
+                                `Эмбеддингов сохранено: ${job.total_embeddings_inserted ?? 0}`,
+                                `Embeddings saved: ${job.total_embeddings_inserted ?? 0}`
+                              )}
                             </div>
                           )}
                           {showSecondaryProgress && (
@@ -1829,14 +1936,16 @@ export default function SystemMonitor({
                                   : "bg-red-600 text-white hover:bg-red-700"
                               }`}
                             >
-                              {cancellingJobId === job.job_id ? "Отмена..." : "Отменить"}
+                              {cancellingJobId === job.job_id
+                                ? tr("Отмена...", "Cancelling...")
+                                : tr("Отменить", "Cancel")}
                             </button>
                           ) : isCancellableJobType && job.status === "cancelled" ? (
-                            <span className="text-gray-500 font-medium">Отменено</span>
+                            <span className="text-gray-500 font-medium">{tr("Отменено", "Cancelled")}</span>
                           ) : isCancellableJobType &&
                             job.status === "running" &&
                             job.cancel_requested ? (
-                            <span className="text-red-600 font-medium">Остановка...</span>
+                            <span className="text-red-600 font-medium">{tr("Остановка...", "Stopping...")}</span>
                           ) : (
                             !canRetryJob && <span className="text-gray-400">-</span>
                           )}
@@ -1847,7 +1956,7 @@ export default function SystemMonitor({
                               onClick={openWaymoAuthModal}
                               className="rounded-lg border border-indigo-300 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
                             >
-                              Авторизовать Waymo
+                              {tr("Авторизовать Waymo", "Authorize Waymo")}
                             </button>
                           )}
 
@@ -1856,8 +1965,8 @@ export default function SystemMonitor({
                               type="button"
                               onClick={() => executeRetryJob(job)}
                               disabled={retryingJobId === job.job_id}
-                              title="Повторить джобу"
-                              aria-label="Повторить джобу"
+                              title={tr("Повторить джобу", "Retry job")}
+                              aria-label={tr("Повторить джобу", "Retry job")}
                               className={`inline-flex w-fit items-center justify-center rounded-md p-1 transition ${
                                 retryingJobId === job.job_id
                                   ? "cursor-not-allowed text-slate-300"
@@ -1907,7 +2016,9 @@ export default function SystemMonitor({
                   {logViewer.title}
                 </div>
                 {logViewer.source === "model" ? (
-                  <div className="text-xs text-slate-500">Live refresh: every 2.5s</div>
+                  <div className="text-xs text-slate-500">
+                    {tr("Обновление в реальном времени: каждые 2.5с", "Live refresh: every 2.5s")}
+                  </div>
                 ) : null}
               </div>
               <button
@@ -1915,7 +2026,7 @@ export default function SystemMonitor({
                 onClick={() => setLogViewer(null)}
                 className="rounded-lg border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100"
               >
-                Close
+                {tr("Закрыть", "Close")}
               </button>
             </div>
             <div className="max-h-[calc(80vh-72px)] overflow-auto p-5">
@@ -1944,7 +2055,7 @@ export default function SystemMonitor({
                 onClick={() => setConfigViewer(null)}
                 className="rounded-lg border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100"
               >
-                Close
+                {tr("Закрыть", "Close")}
               </button>
             </div>
             <div className="max-h-[calc(80vh-72px)] overflow-auto p-5">
@@ -1968,25 +2079,34 @@ export default function SystemMonitor({
         >
           <div className="w-full max-w-2xl overflow-hidden rounded-xl bg-white shadow-2xl">
             <div className="border-b border-slate-200 px-5 py-4">
-              <div className="text-base font-semibold text-slate-900">
-                Авторизация доступа к Waymo
+                <div className="text-base font-semibold text-slate-900">
+                {tr("Авторизация доступа к Waymo", "Waymo Access Authorization")}
               </div>
               <div className="mt-1 text-xs text-slate-500">
-                Требуется `gcloud auth application-default login` для чтения датасета.
+                {tr(
+                  "Требуется `gcloud auth application-default login` для чтения датасета.",
+                  "`gcloud auth application-default login` is required to read this dataset."
+                )}
               </div>
             </div>
             <div className="space-y-4 px-5 py-4">
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                1. Откройте ссылку ниже и войдите в Google-аккаунт с доступом к Waymo.
+                {tr(
+                  "1. Откройте ссылку ниже и войдите в Google-аккаунт с доступом к Waymo.",
+                  "1. Open the link below and sign in to a Google account with Waymo access."
+                )}
                 <br />
-                2. Скопируйте код подтверждения и вставьте его в поле.
+                {tr(
+                  "2. Скопируйте код подтверждения и вставьте его в поле.",
+                  "2. Copy the verification code and paste it into the field."
+                )}
                 <br />
-                3. Нажмите `Подтвердить код`.
+                {tr("3. Нажмите `Подтвердить код`.", "3. Click `Confirm code`.")}
               </div>
 
               <div>
                 <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Ссылка авторизации
+                  {tr("Ссылка авторизации", "Authorization link")}
                 </div>
                 {waymoAuthUrl ? (
                   <a
@@ -1999,20 +2119,23 @@ export default function SystemMonitor({
                   </a>
                 ) : (
                   <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                    Ссылка пока не получена. Нажмите «Обновить ссылку».
+                    {tr(
+                      "Ссылка пока не получена. Нажмите «Обновить ссылку».",
+                      "Link is not available yet. Click Refresh link."
+                    )}
                   </div>
                 )}
               </div>
 
               <div>
                 <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Код подтверждения
+                  {tr("Код подтверждения", "Verification code")}
                 </label>
                 <input
                   type="text"
                   value={waymoAuthCode}
                   onChange={(event) => setWaymoAuthCode(event.target.value)}
-                  placeholder="Вставьте код из Google"
+                  placeholder={tr("Вставьте код из Google", "Paste code from Google")}
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm text-slate-900 outline-none ring-0 transition focus:border-indigo-500"
                 />
               </div>
@@ -2032,7 +2155,7 @@ export default function SystemMonitor({
                 }}
                 className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
               >
-                Закрыть
+                {tr("Закрыть", "Close")}
               </button>
               <button
                 type="button"
@@ -2040,7 +2163,7 @@ export default function SystemMonitor({
                 disabled={waymoAuthBusy}
                 className="rounded-lg border border-indigo-300 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60"
               >
-                {waymoAuthBusy ? "Загрузка..." : "Обновить ссылку"}
+                {waymoAuthBusy ? tr("Загрузка...", "Loading...") : tr("Обновить ссылку", "Refresh link")}
               </button>
               <button
                 type="button"
@@ -2048,7 +2171,7 @@ export default function SystemMonitor({
                 disabled={waymoAuthBusy}
                 className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
               >
-                {waymoAuthBusy ? "Проверка..." : "Подтвердить код"}
+                {waymoAuthBusy ? tr("Проверка...", "Checking...") : tr("Подтвердить код", "Confirm code")}
               </button>
             </div>
           </div>
@@ -2066,8 +2189,8 @@ export default function SystemMonitor({
         >
           <div className="w-full max-w-lg rounded-xl bg-white shadow-2xl">
             <div className="border-b border-slate-200 px-5 py-4">
-              <div className="text-base font-semibold text-slate-900">
-                Остановить джобу?
+                <div className="text-base font-semibold text-slate-900">
+                {tr("Остановить джобу?", "Stop job?")}
               </div>
               <div className="mt-1 text-xs text-slate-500">
                 {formatJobTypeLabel(cancelDialogJob.job_type)} · {cancelDialogJob.job_id}
@@ -2082,7 +2205,7 @@ export default function SystemMonitor({
                 onClick={() => setCancelDialogJob(null)}
                 className="inline-flex h-10 items-center justify-center rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
               >
-                Закрыть
+                {tr("Закрыть", "Close")}
               </button>
               {supportsCleanupChoice(cancelDialogJob.job_type) ? (
                 <>
@@ -2110,7 +2233,7 @@ export default function SystemMonitor({
                   disabled={cancellingJobId === cancelDialogJob.job_id}
                   className="inline-flex h-10 items-center justify-center rounded-lg border border-red-600 bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
                 >
-                  Остановить
+                  {tr("Остановить", "Stop")}
                 </button>
               )}
             </div>

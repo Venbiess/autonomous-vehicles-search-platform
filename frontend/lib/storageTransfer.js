@@ -13,8 +13,21 @@ export const SNAPSHOT_KIND_FULL = "full";
 export const SNAPSHOT_KIND_VLM = "vlm";
 export const SNAPSHOT_KIND_EMBEDDINGS = "embeddings";
 
+export function masterEndpoints() {
+  const candidates = [
+    process.env.MASTER_ENDPOINT,
+    process.env.MASTER_SERVER_ENDPOINT,
+    "http://localhost:9002",
+    "http://master-server:9002",
+    "http://master:9002",
+  ]
+    .map((value) => String(value || "").trim().replace(/\/$/, ""))
+    .filter(Boolean);
+  return Array.from(new Set(candidates));
+}
+
 export function masterEndpoint() {
-  return (process.env.MASTER_ENDPOINT || "http://localhost:9002").replace(/\/$/, "");
+  return masterEndpoints()[0] || "http://localhost:9002";
 }
 
 export function chunkArray(values, chunkSize) {
@@ -39,16 +52,30 @@ export async function readJsonResponse(response) {
 }
 
 export async function readMasterJson(pathname, init = {}) {
-  const response = await fetch(`${masterEndpoint()}${pathname}`, init);
-  const payload = await readJsonResponse(response);
-  if (!response.ok) {
-    const message = payload?.detail || payload?.error || response.statusText;
-    const error = new Error(message);
-    error.status = response.status;
-    error.payload = payload;
-    throw error;
+  const endpoints = masterEndpoints();
+  let lastError = null;
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(`${endpoint}${pathname}`, init);
+      const payload = await readJsonResponse(response);
+      if (!response.ok) {
+        const message = payload?.detail || payload?.error || response.statusText;
+        const error = new Error(message);
+        error.status = response.status;
+        error.payload = payload;
+        throw error;
+      }
+      return payload;
+    } catch (error) {
+      lastError = error;
+    }
   }
-  return payload;
+  const fallbackError =
+    lastError instanceof Error ? lastError : new Error("master endpoint is unavailable");
+  if (!fallbackError.message.includes("master endpoint")) {
+    fallbackError.message = `${fallbackError.message}; tried: ${endpoints.join(", ")}`;
+  }
+  throw fallbackError;
 }
 
 export function buildSnapshotFilename(kind, timestampIso) {

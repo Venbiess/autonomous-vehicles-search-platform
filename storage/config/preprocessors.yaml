@@ -2,6 +2,8 @@ preprocessors:
   - key: synthetic
     label: Synthetic Road Scenes
     description: Generate synthetic road images and upload them to storage.
+    description_i18n:
+      ru: Генерирует синтетические дорожные изображения и загружает их в storage.
     runner:
       entrypoint: python -m backend.processors.synthetic_preprocessor
       module: backend.processors.synthetic_preprocessor
@@ -15,6 +17,8 @@ preprocessors:
   - key: waymo
     label: Waymo Open Dataset
     description: Download Waymo camera frames, preprocess, and upload to storage.
+    description_i18n:
+      ru: Скачивает кадры камер Waymo, выполняет предобработку и загружает в storage.
     runner:
       entrypoint: python -m backend.processors.waymo_preprocessor
       module: backend.processors.waymo_preprocessor
@@ -30,6 +34,8 @@ preprocessors:
   - key: argoverse
     label: Argoverse 2
     description: Download Argoverse parts, preprocess camera frames, and upload to storage.
+    description_i18n:
+      ru: Скачивает части Argoverse, выполняет предобработку кадров камер и загружает в storage.
     runner:
       entrypoint: python -m backend.processors.argoverse_preprocessor
       module: backend.processors.argoverse_preprocessor
@@ -49,6 +55,8 @@ preprocessors:
   - key: nuimages
     label: NuImages (nuScenes)
     description: Read local nuImages archives/frames, preprocess, and upload camera frames to storage.
+    description_i18n:
+      ru: Читает локальные архивы/кадры nuImages, выполняет предобработку и загружает кадры камер в storage.
     runner:
       entrypoint: python -m backend.processors.nuimages_preprocessor
       module: backend.processors.nuimages_preprocessor
@@ -67,6 +75,8 @@ preprocessors:
   - key: once
     label: ONCE
     description: "Read local ONCE archives or download from Google Drive, preprocess, and upload camera frames to storage. Sources: https://once-for-auto-driving.github.io/download.html#downloads and configured Google Drive split folders."
+    description_i18n:
+      ru: "Читает локальные архивы ONCE или скачивает из Google Drive, выполняет предобработку и загружает кадры камер в storage. Источник: https://once-for-auto-driving.github.io/download.html#downloads"
     runner:
       entrypoint: python -m backend.processors.once_preprocessor
       module: backend.processors.once_preprocessor
@@ -100,6 +110,8 @@ preprocessors:
   - key: bdd100k
     label: BDD100K
     description: "Read local BDD100K zip archives, preprocess, and upload camera frames to storage. Dataset: https://www.kaggle.com/datasets/alesssaulea/bdd100k?resource=download"
+    description_i18n:
+      ru: "Читает локальные zip-архивы BDD100K, выполняет предобработку и загружает кадры камер в storage. Источник: https://www.kaggle.com/datasets/alesssaulea/bdd100k?resource=download"
     runner:
       entrypoint: python -m backend.processors.bdd100k_preprocessor
       module: backend.processors.bdd100k_preprocessor
@@ -121,6 +133,8 @@ preprocessors:
   - key: drivingdojo
     label: DrivingDojo
     description: "Download DrivingDojo videos from Hugging Face or use local videos, sample frames, and upload to storage. Dataset: https://huggingface.co/datasets/Yuqi1997/DrivingDojo"
+    description_i18n:
+      ru: "Скачивает видео DrivingDojo из Hugging Face или использует локальные видео, извлекает кадры и загружает в storage. Источник: https://huggingface.co/datasets/Yuqi1997/DrivingDojo"
     runner:
       entrypoint: python -m backend.processors.drivingdojo_preprocessor
       module: backend.processors.drivingdojo_preprocessor

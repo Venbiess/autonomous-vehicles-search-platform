@@ -42,9 +42,10 @@ type PreprocessorRunner struct {
 }
 
 type PreprocessorMethod struct {
-	Key           string             `json:"key"`
-	Label         string             `json:"label"`
-	Description   string             `json:"description,omitempty"`
-	Runner        PreprocessorRunner `json:"runner"`
-	DefaultConfig map[string]any     `json:"default_config,omitempty"`
+	Key             string             `json:"key"`
+	Label           string             `json:"label"`
+	Description     string             `json:"description,omitempty"`
+	DescriptionI18n map[string]string  `json:"description_i18n,omitempty"`
+	Runner          PreprocessorRunner `json:"runner"`
+	DefaultConfig   map[string]any     `json:"default_config,omitempty"`
 }
