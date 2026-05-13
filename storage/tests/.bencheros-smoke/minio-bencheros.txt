@@ -1,18 +1,18 @@
 bencherOS target: minio
-size: 256KB
-ops: 30
-concurrency: 4
+size: 64KB
+ops: 10
+concurrency: 2
 DISK:
-  bytes_mb=7.50 put_like_write_mb_s=599.1 get_like_read_mb_s=3348.5 uncached_read=true
+  bytes_mb=0.62 put_like_write_mb_s=301.6 get_like_read_mb_s=2092.8 uncached_read=true
 PUT:
-  ops=30 success=30 errors=0 concurrency=4
-  elapsed=0.058s rps=516.0 data_mb=7.50 throughput_mb_s=129.0
-  latency_ms p50=7.53 p95=9.51 max=9.54
+  ops=10 success=10 errors=0 concurrency=2
+  elapsed=0.016s rps=612.6 data_mb=0.62 throughput_mb_s=38.3
+  latency_ms p50=2.94 p95=4.77 max=5.66
 GET:
-  ops=30 success=30 errors=0 concurrency=4
-  elapsed=0.032s rps=952.2 data_mb=7.50 throughput_mb_s=238.1
-  latency_ms p50=3.88 p95=6.15 max=6.61
+  ops=10 success=10 errors=0 concurrency=2
+  elapsed=0.007s rps=1528.3 data_mb=0.62 throughput_mb_s=95.5
+  latency_ms p50=1.22 p95=1.73 max=1.76
 DELETE:
-  ops=30 success=30 errors=0 concurrency=4
-  elapsed=0.006s rps=4778.6 data_mb=7.50 throughput_mb_s=1194.7
-  latency_ms p50=0.70 p95=1.32 max=2.01
+  ops=10 success=10 errors=0 concurrency=2
+  elapsed=0.004s rps=2441.9 data_mb=0.62 throughput_mb_s=152.6
+  latency_ms p50=0.77 p95=0.92 max=0.93

@@ -18,7 +18,10 @@ mkdir -p "$REPORT_DIR"
 run_benchervs() {
   local -a args=("$@")
   if command -v go >/dev/null 2>&1; then
-    go run ./storage/tools/bencher vector "${args[@]}"
+    (
+      cd "$ROOT_DIR/storage"
+      go run ./tools/bencher vector "${args[@]}"
+    )
     return 0
   fi
 

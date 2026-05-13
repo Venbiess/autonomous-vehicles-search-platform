@@ -15,7 +15,10 @@ mkdir -p "$REPORT_DIR"
 run_bencher_object() {
   local -a args=("$@")
   if command -v go >/dev/null 2>&1; then
-    go run ./storage/tools/bencher object "${args[@]}"
+    (
+      cd "$ROOT_DIR/storage"
+      go run ./tools/bencher object "${args[@]}"
+    )
     return 0
   fi
 
@@ -89,4 +92,3 @@ if [[ "$TARGET" == "all" ]]; then
 else
   run_target "$TARGET"
 fi
-
