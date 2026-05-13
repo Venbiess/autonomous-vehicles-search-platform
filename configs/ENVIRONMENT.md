@@ -68,7 +68,7 @@ This file is the single reference for runtime environment variables used by AVSP
 |---|---:|---|
 | `EMBEDDER_PORT` | `8000` | Embedder worker HTTP port. `embedder` worker always exposes HTTP alongside RabbitMQ. |
 | `WORKER_METRICS_PORT` | `9108` | Prometheus metrics port for worker. |
-| `EMBEDDER_BACKEND` | from `configs.hw_settings` (`ALIGN`) | Embedder backend selection (`ALIGN`, `QWEN`). |
+| `EMBEDDER_BACKEND` | from `configs.hw_settings` (`ALIGN`) | Embedder backend selection (`ALIGN`, `CLIP`, `BLIP`, `SIGLIP`, `QWEN`). |
 | `EMBEDDER_MODEL_NAME` | backend default | HF model id override. |
 | `EMBEDDER_TORCH_DTYPE` | backend/runtime default | Runtime dtype policy override. |
 | `EMBEDDER_ATTN_IMPLEMENTATION` | backend/runtime default | Attention implementation override. |

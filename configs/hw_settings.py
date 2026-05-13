@@ -14,7 +14,7 @@ TORCH_CONFIG = SimpleNamespace(
 EMBEDDER_CONFIG = SimpleNamespace(
     PORT=8000,
     DEVICE="CPU",           # CPU, CUDA, MPS
-    BACKEND="ALIGN",         # ALIGN, QWEN
+    BACKEND="ALIGN",         # ALIGN, CLIP, BLIP, SIGLIP, QWEN
     MODEL_NAME=None,  # Optional HF model id override
     TORCH_DTYPE="auto",     # auto, fp32/float32, fp16/float16, bf16/bfloat16
 )

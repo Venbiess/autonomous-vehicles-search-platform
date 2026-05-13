@@ -35,7 +35,37 @@ def create_embedder(
             dtype_label=dtype_label,
             attn_implementation=attn_implementation,
         )
+    if normalized_backend == "CLIP":
+        from backend.models.embedder.clip_embedder import ClipEmbedder
+
+        return ClipEmbedder(
+            model_name or ClipEmbedder.DEFAULT_MODEL_NAME,
+            device=device,
+            torch_dtype=torch_dtype,
+            dtype_label=dtype_label,
+            attn_implementation=attn_implementation,
+        )
+    if normalized_backend == "BLIP":
+        from backend.models.embedder.blip_embedder import BlipEmbedder
+
+        return BlipEmbedder(
+            model_name or BlipEmbedder.DEFAULT_MODEL_NAME,
+            device=device,
+            torch_dtype=torch_dtype,
+            dtype_label=dtype_label,
+            attn_implementation=attn_implementation,
+        )
+    if normalized_backend == "SIGLIP":
+        from backend.models.embedder.siglip_embedder import SiglipEmbedder
+
+        return SiglipEmbedder(
+            model_name or SiglipEmbedder.DEFAULT_MODEL_NAME,
+            device=device,
+            torch_dtype=torch_dtype,
+            dtype_label=dtype_label,
+            attn_implementation=attn_implementation,
+        )
     raise ValueError(
         f"Unsupported EMBEDDER_BACKEND={backend_name!r}. "
-        "Supported values: ALIGN, QWEN."
+        "Supported values: ALIGN, CLIP, BLIP, SIGLIP, QWEN."
     )

@@ -39,6 +39,17 @@ This directory contains AVSP application logic: API orchestration, model executi
 - Service endpoints/timeouts are sourced from `configs/common.py` (with env-driven overrides).
 - Runtime env reference is documented in `configs/ENVIRONMENT.md`.
 
+## Embedder Backends
+
+- Supported `EMBEDDER_BACKEND` values: `ALIGN`, `CLIP`, `BLIP`, `SIGLIP`, `QWEN`.
+- Default model ids (when `EMBEDDER_MODEL_NAME` is not set):
+  - `ALIGN`: `kakaobrain/align-base`
+  - `CLIP`: `openai/clip-vit-base-patch32`
+  - `BLIP`: `Salesforce/blip-itm-base-coco`
+  - `SIGLIP`: `google/siglip-base-patch16-224`
+  - `QWEN`: `Qwen/Qwen3-VL-Embedding-2B`
+- For `SIGLIP`, text encoding uses fixed-length padding (`padding="max_length"`) to match model training setup.
+
 ## Entrypoints
 
 - Master API:
