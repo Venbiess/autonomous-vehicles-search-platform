@@ -12,7 +12,7 @@ on:
           - all
           - pgvector
           - qdrant
-          - ydb
+          - milvus
       seed_count:
         description: "How many vectors to insert before query phase"
         required: true
@@ -43,7 +43,7 @@ jobs:
         include:
           - backend: pgvector
           - backend: qdrant
-          - backend: ydb
+          - backend: milvus
 
     steps:
       - name: Checkout repository

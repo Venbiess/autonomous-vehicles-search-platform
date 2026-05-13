@@ -1,7 +1,7 @@
 package server
 
 import (
-	infra "avsp/storage/infra"
+	infra "github.com/Venbiess/autonomous-vehicles-search-platform/storage/infra"
 	"context"
 	"io"
 	"strings"

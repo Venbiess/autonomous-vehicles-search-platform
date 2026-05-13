@@ -24,8 +24,6 @@ func ResolveVectorAdapter(cfg VectorIndexConfig) (VectorAdapter, error) {
 		return NewQdrantAdapter(cfg)
 	case "milvus":
 		return NewMilvusAdapter(cfg)
-	case "ydb":
-		return NewYDBAdapter(cfg)
 	default:
 		return nil, fmt.Errorf("unsupported vector adapter provider: %s", cfg.Provider)
 	}

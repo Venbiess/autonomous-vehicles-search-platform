@@ -1,7 +1,7 @@
 package httptransport
 
 import (
-	core "avsp/storage/server"
+	core "github.com/Venbiess/autonomous-vehicles-search-platform/storage/server"
 	"database/sql"
 	"errors"
 	"net/http"

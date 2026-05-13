@@ -132,18 +132,23 @@ jobs:
           - name: pgvector
             compose_file: docker/storage/docker-compose.pgvector.yml
             ready_retries: 60
+            request_timeout_sec: 20
           - name: qdrant
             compose_file: docker/storage/docker-compose.qdrant.yml
             ready_retries: 60
-          - name: ydb
-            compose_file: docker/storage/docker-compose.ydb.yml
+            request_timeout_sec: 20
+          - name: milvus
+            compose_file: docker/storage/docker-compose.milvus.yml
             ready_retries: 120
+            request_timeout_sec: 60
           - name: ytsaurus
             compose_file: docker/storage/docker-compose.ytsaurus.yml
             ready_retries: 180
+            request_timeout_sec: 20
           - name: seaweedfs
             compose_file: docker/storage/docker-compose.seaweedfs.yml
             ready_retries: 60
+            request_timeout_sec: 20
 
     steps:
       - name: Checkout repository
@@ -153,6 +158,7 @@ jobs:
         env:
           STORAGE_TEST_COMPOSE_FILE: ${{ github.workspace }}/${{ matrix.compose_file }}
           STORAGE_READY_RETRIES: ${{ matrix.ready_retries }}
+          STORAGE_TEST_TIMEOUT_SEC: ${{ matrix.request_timeout_sec }}
         run: bash storage/tests/tests.sh --down
 
   full-stack-smoke:

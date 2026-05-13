@@ -124,7 +124,7 @@ It runs `benchervs` for:
 
 - `pgvector`
 - `qdrant`
-- `ydb`
+- `milvus`
 
 You can run one backend or `all`, tune `seed_count/query_count/vector_size/topk/concurrency`, and get:
 
@@ -135,10 +135,10 @@ You can run one backend or `all`, tune `seed_count/query_count/vector_size/topk/
 
 ```bash
 storage/tests/run_benchervs_backend.sh
-# по умолчанию: all (pgvector -> qdrant -> ydb)
+# по умолчанию: all (pgvector -> qdrant -> milvus)
 
 BACKEND=pgvector storage/tests/run_benchervs_backend.sh
-# or BACKEND=qdrant / BACKEND=ydb
+# or BACKEND=qdrant / BACKEND=milvus
 ```
 
 Outputs are saved in:
@@ -156,7 +156,7 @@ This runs `storage/tests/tests.sh` sequentially for:
 
 - `pgvector`
 - `qdrant`
-- `ydb`
+- `milvus`
 - `ytsaurus`
 - `seaweedfs`
 
@@ -177,32 +177,6 @@ You can also override them via env:
 - `OBJECT_STORE_ENDPOINT_URL=http://yt-proxy:80`
 - `OBJECT_STORE_AUTH_TOKEN=<token>`
 - `OBJECT_STORE_PATH_PREFIX=//tmp/avsp`
-
-## External YDB as Vector Store
-
-`storage-server` also supports `vector_index.provider: ydb`.
-
-Required vector fields:
-
-- `provider: ydb`
-- `conn_str`: YDB connection string, for example `grpc://localhost:2136/local`
-- `table`: vector table name
-
-Optional fields:
-
-- `schema`: table directory or path prefix
-- `distance`: `cosine`, `euclidean`, or `manhattan`
-- `vector_size`
-- `index_name`: existing YDB vector index name to query through `VIEW`
-- `search_top_size`: value for `PRAGMA ydb.KMeansTreeSearchTopSize`
-
-Current behavior:
-
-- writes use ordinary `UPSERT`
-- default search is exact KNN without a vector index
-- if `index_name` is set, search uses `VIEW <index_name>`
-
-This is intentional because YDB currently documents limitations around vector index updates after mutations.
 
 ## External Milvus as Vector Store
 
