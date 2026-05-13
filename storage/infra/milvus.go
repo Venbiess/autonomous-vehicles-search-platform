@@ -20,8 +20,8 @@ const (
 	defaultMilvusPrimaryField   = "object_id"
 	defaultMilvusVectorField    = "embedding"
 	defaultMilvusPrimaryMaxLen  = 512
-	defaultMilvusTimeoutSeconds = 10
-	defaultMilvusConsistency    = "Bounded"
+	defaultMilvusTimeoutSeconds = 30
+	defaultMilvusConsistency    = "Strong"
 )
 
 type MilvusAdapter struct {
@@ -95,7 +95,11 @@ func (m *MilvusAdapter) Upsert(ctx context.Context, objectID string, embedding [
 			},
 		},
 	}
-	return m.doJSON(ctx, http.MethodPost, "/v2/vectordb/entities/upsert", reqBody, nil)
+	if err := m.doJSON(ctx, http.MethodPost, "/v2/vectordb/entities/upsert", reqBody, nil); err != nil {
+		return err
+	}
+	// Keep read-after-write behavior deterministic for integration/API flows.
+	return m.flush(ctx)
 }
 
 func (m *MilvusAdapter) QueryTopK(ctx context.Context, embedding []float64, topK int) ([]VectorQueryResult, error) {
@@ -122,7 +126,9 @@ func (m *MilvusAdapter) QueryTopK(ctx context.Context, embedding []float64, topK
 			"params":     map[string]any{},
 		},
 	}
-	if err := m.doJSON(ctx, http.MethodPost, "/v2/vectordb/entities/search", reqBody, &resp); err != nil {
+	if err := m.retryOnRecovering(ctx, func() error {
+		return m.doJSON(ctx, http.MethodPost, "/v2/vectordb/entities/search", reqBody, &resp)
+	}); err != nil {
 		return nil, err
 	}
 	results := make([]VectorQueryResult, 0, len(resp))
@@ -161,8 +167,12 @@ func (m *MilvusAdapter) Delete(ctx context.Context, objectIDs []string) error {
 		"dbName":         m.dbName,
 		"collectionName": m.collectionName,
 		"filter":         milvusIDFilter(normalized),
+		"consistencyLevel": defaultMilvusConsistency,
 	}
-	return m.doJSON(ctx, http.MethodPost, "/v2/vectordb/entities/delete", reqBody, nil)
+	if err := m.doJSON(ctx, http.MethodPost, "/v2/vectordb/entities/delete", reqBody, nil); err != nil {
+		return err
+	}
+	return m.flush(ctx)
 }
 
 func (m *MilvusAdapter) Count(ctx context.Context) (int64, error) {
@@ -173,19 +183,24 @@ func (m *MilvusAdapter) Count(ctx context.Context) (int64, error) {
 	if !hasCollection {
 		return 0, nil
 	}
-	var resp struct {
-		RowCount any `json:"rowCount"`
-	}
+	var resp map[string]any
 	reqBody := map[string]any{
 		"dbName":         m.dbName,
 		"collectionName": m.collectionName,
+		"consistencyLevel": defaultMilvusConsistency,
 	}
-	if err := m.doJSON(ctx, http.MethodPost, "/v2/vectordb/collections/get_stats", reqBody, &resp); err != nil {
+	if err := m.retryOnRecovering(ctx, func() error {
+		return m.doJSON(ctx, http.MethodPost, "/v2/vectordb/collections/get_stats", reqBody, &resp)
+	}); err != nil {
 		return 0, err
 	}
-	count, ok := anyToInt64(resp.RowCount)
+	countValue, ok := resp["rowCount"]
 	if !ok {
-		return 0, fmt.Errorf("milvus returned non-numeric rowCount: %v", resp.RowCount)
+		countValue = resp["row_count"]
+	}
+	count, ok := anyToInt64(countValue)
+	if !ok {
+		return 0, fmt.Errorf("milvus returned non-numeric row count: %v", countValue)
 	}
 	return count, nil
 }
@@ -248,15 +263,20 @@ func (m *MilvusAdapter) getEntities(ctx context.Context, objectIDs []string, out
 		return []map[string]any{}, nil
 	}
 	var resp []map[string]any
+	fields := make([]string, 0, len(outputFields)+1)
+	fields = append(fields, defaultMilvusPrimaryField)
+	fields = append(fields, outputFields...)
 	reqBody := map[string]any{
 		"dbName":         m.dbName,
 		"collectionName": m.collectionName,
-		"id":             objectIDs,
+		"filter":         milvusIDFilter(objectIDs),
+		"limit":          len(objectIDs),
+		"outputFields":   fields,
+		"consistencyLevel": defaultMilvusConsistency,
 	}
-	if len(outputFields) > 0 {
-		reqBody["outputFields"] = outputFields
-	}
-	if err := m.doJSON(ctx, http.MethodPost, "/v2/vectordb/entities/get", reqBody, &resp); err != nil {
+	if err := m.retryOnRecovering(ctx, func() error {
+		return m.doJSON(ctx, http.MethodPost, "/v2/vectordb/entities/query", reqBody, &resp)
+	}); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -286,6 +306,9 @@ func (m *MilvusAdapter) ensureCollection(ctx context.Context, vectorSize int) er
 		return err
 	}
 	if hasCollection {
+		if err := m.loadCollection(ctx); err != nil {
+			return err
+		}
 		m.mu.Lock()
 		m.ensured = true
 		m.mu.Unlock()
@@ -307,6 +330,9 @@ func (m *MilvusAdapter) ensureCollection(ctx context.Context, vectorSize int) er
 	if err := m.doJSON(ctx, http.MethodPost, "/v2/vectordb/collections/create", reqBody, nil); err != nil {
 		return err
 	}
+	if err := m.loadCollection(ctx); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	m.ensured = true
 	m.mu.Unlock()
@@ -325,6 +351,50 @@ func (m *MilvusAdapter) hasCollection(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return resp.Has, nil
+}
+
+func (m *MilvusAdapter) flush(ctx context.Context) error {
+	reqBody := map[string]any{
+		"dbName":          m.dbName,
+		"collectionNames": []string{m.collectionName},
+	}
+	return m.doJSON(ctx, http.MethodPost, "/v2/vectordb/collections/flush", reqBody, nil)
+}
+
+func (m *MilvusAdapter) loadCollection(ctx context.Context) error {
+	reqBody := map[string]any{
+		"dbName":         m.dbName,
+		"collectionName": m.collectionName,
+	}
+	return m.doJSON(ctx, http.MethodPost, "/v2/vectordb/collections/load", reqBody, nil)
+}
+
+func (m *MilvusAdapter) retryOnRecovering(ctx context.Context, call func() error) error {
+	const maxAttempts = 20
+	const baseDelay = 500 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		err := call()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		msg := strings.ToLower(err.Error())
+		if !strings.Contains(msg, "collection on recovering") &&
+			!strings.Contains(msg, "loaded collection do not found any channel in target") {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(baseDelay):
+		}
+	}
+	return lastErr
 }
 
 func (m *MilvusAdapter) doJSON(ctx context.Context, method, path string, reqBody any, out any) error {

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	infra "avsp/storage/infra"
+	infra "github.com/Venbiess/autonomous-vehicles-search-platform/storage/infra"
 )
 
 var ErrInvalidArgument = errors.New("invalid argument")

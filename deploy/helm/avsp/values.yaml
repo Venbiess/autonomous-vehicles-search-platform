@@ -35,7 +35,7 @@ minio:
   enabled: true
   image:
     repository: minio/minio
-    tag: latest
+    tag: RELEASE.2025-04-08T15-41-24Z
     pullPolicy: IfNotPresent
   service:
     apiPort: 9000
@@ -52,7 +52,7 @@ minioInit:
   enabled: true
   image:
     repository: minio/mc
-    tag: latest
+    tag: RELEASE.2025-03-12T17-29-24Z
     pullPolicy: IfNotPresent
 
 qdrant:
@@ -63,6 +63,19 @@ qdrant:
     pullPolicy: IfNotPresent
   service:
     port: 6333
+  persistence:
+    enabled: true
+    size: 20Gi
+
+milvus:
+  enabled: false
+  image:
+    repository: milvusdb/milvus
+    tag: v2.5.4
+    pullPolicy: IfNotPresent
+  service:
+    port: 19530
+    httpPort: 9091
   persistence:
     enabled: true
     size: 20Gi

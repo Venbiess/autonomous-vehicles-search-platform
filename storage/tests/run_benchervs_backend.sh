@@ -18,7 +18,7 @@ mkdir -p "$REPORT_DIR"
 run_benchervs() {
   local -a args=("$@")
   if command -v go >/dev/null 2>&1; then
-    go run ./storage/cmd/benchervs "${args[@]}"
+    go run ./storage/tools/bencher vector "${args[@]}"
     return 0
   fi
 
@@ -32,20 +32,7 @@ run_benchervs() {
     -v "$ROOT_DIR:/app" \
     -w /app/storage \
     golang:1.25 \
-    sh -lc 'export PATH="/usr/local/go/bin:$PATH"; go run ./cmd/benchervs "$@"' sh "${docker_args[@]}"
-}
-
-run_benchervs_in_network() {
-  local network="$1"
-  shift
-  local -a args=("$@")
-
-  docker run --rm \
-    --network "$network" \
-    -v "$ROOT_DIR:/app" \
-    -w /app/storage \
-    golang:1.25 \
-    sh -lc 'export PATH="/usr/local/go/bin:$PATH"; go run ./cmd/benchervs "$@"' sh "${args[@]}"
+    sh -lc 'export PATH="/usr/local/go/bin:$PATH"; go run ./tools/bencher vector "$@"' sh "${docker_args[@]}"
 }
 
 run_single_backend() {
@@ -71,17 +58,17 @@ run_single_backend() {
         -collection image_embeddings
       )
       ;;
-    ydb)
-      compose_file="${COMPOSE_FILE:-$ROOT_DIR/docker/storage/docker-compose.ydb.yml}"
+    milvus)
+      compose_file="${COMPOSE_FILE:-$ROOT_DIR/docker/storage/docker-compose.milvus.yml}"
       bench_args=(
-        -type ydb
-        -dsn "grpc://localhost:2136/local"
-        -schema avsp
-        -table image_embeddings
+        -type milvus
+        -endpoint http://localhost:19530
+        -schema default
+        -collection image_embeddings
       )
       ;;
     *)
-      echo "Unsupported backend=$backend (supported: pgvector, qdrant, ydb)" >&2
+      echo "Unsupported backend=$backend (supported: pgvector, qdrant, milvus)" >&2
       return 1
       ;;
   esac
@@ -98,32 +85,17 @@ run_single_backend() {
 
   echo "Running benchervs for backend=$backend..."
   set -o pipefail
-  if [[ "$backend" == "ydb" ]]; then
-    run_benchervs_in_network \
-      "storage_storage-net" \
-      "${bench_args[@]/localhost/ydb}" \
-      -mode run \
-      -seed-count "$SEED_COUNT" \
-      -query-count "$QUERY_COUNT" \
-      -vector-size "$VECTOR_SIZE" \
-      -topk "$TOPK" \
-      -concurrency "$CONCURRENCY" \
-      -timeout-sec "$TIMEOUT_SEC" \
-      -json \
-      >"$json_report"
-  else
-    run_benchervs \
-      "${bench_args[@]}" \
-      -mode run \
-      -seed-count "$SEED_COUNT" \
-      -query-count "$QUERY_COUNT" \
-      -vector-size "$VECTOR_SIZE" \
-      -topk "$TOPK" \
-      -concurrency "$CONCURRENCY" \
-      -timeout-sec "$TIMEOUT_SEC" \
-      -json \
-      >"$json_report"
-  fi
+  run_benchervs \
+    "${bench_args[@]}" \
+    -mode run \
+    -seed-count "$SEED_COUNT" \
+    -query-count "$QUERY_COUNT" \
+    -vector-size "$VECTOR_SIZE" \
+    -topk "$TOPK" \
+    -concurrency "$CONCURRENCY" \
+    -timeout-sec "$TIMEOUT_SEC" \
+    -json \
+    >"$json_report"
   set +o pipefail
 
   {
@@ -140,7 +112,7 @@ run_single_backend() {
 }
 
 if [[ "$BACKEND" == "all" ]]; then
-  for backend in pgvector qdrant ydb; do
+  for backend in pgvector qdrant milvus; do
     run_single_backend "$backend"
   done
 else

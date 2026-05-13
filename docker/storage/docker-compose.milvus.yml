@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: postgres:16
     container_name: "avsp-storage-postgres-${USER}"
     environment:
       POSTGRES_DB: avsp
@@ -43,23 +43,41 @@ services:
       until mc alias set local http://minio:9000 minioadmin minioadmin; do
         sleep 2;
       done &&
-      for bucket in waymo argoverse nuimages nuscenes avsp; do
+      for bucket in waymo argoverse nuimages nuscenes avsp milvus; do
         mc mb --ignore-existing local/$$bucket;
       done
       '
     networks:
       - storage-net
 
-  ydb:
-    image: ydbplatform/local-ydb:latest
-    container_name: "avsp-storage-ydb-${USER}"
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: "avsp-storage-etcd-${USER}"
+    command: >
+      etcd
+      --advertise-client-urls=http://etcd:2379
+      --listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd
+    volumes:
+      - storage-etcd-data:/etcd
+    networks:
+      - storage-net
+
+  milvus:
+    image: milvusdb/milvus:v2.4.13
+    container_name: "avsp-storage-milvus-${USER}"
+    command: ["milvus", "run", "standalone"]
     environment:
-      GRPC_PORT: 2136
-      MON_PORT: 8765
-      YDB_USE_IN_MEMORY_PDISKS: "true"
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    depends_on:
+      - etcd
+      - minio
+    volumes:
+      - storage-milvus-data:/var/lib/milvus
     ports:
-      - "2136:2136"
-      - "8765:8765"
+      - "19530:19530"
+      - "9091:9091"
     networks:
       - storage-net
 
@@ -75,13 +93,12 @@ services:
         condition: service_started
       minio-init:
         condition: service_completed_successfully
-      ydb:
+      milvus:
         condition: service_started
       clickhouse:
         condition: service_healthy
-    restart: on-failure
     environment:
-      STORAGE_CONFIG_PATH: /app/storage/config/storage.integration.ydb.yaml
+      STORAGE_CONFIG_PATH: /app/storage/config/storage.integration.milvus.yaml
     volumes:
       - ../../storage/config:/app/storage/config:ro
     ports:
@@ -113,6 +130,8 @@ services:
 volumes:
   storage-postgres-data:
   storage-minio-data:
+  storage-etcd-data:
+  storage-milvus-data:
   storage-clickhouse-data:
 
 networks:

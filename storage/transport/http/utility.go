@@ -1,8 +1,8 @@
 package httptransport
 
 import (
-	infra "avsp/storage/infra"
-	"avsp/storage/observability"
+	infra "github.com/Venbiess/autonomous-vehicles-search-platform/storage/infra"
+	"github.com/Venbiess/autonomous-vehicles-search-platform/storage/observability"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	core "avsp/storage/server"
+	core "github.com/Venbiess/autonomous-vehicles-search-platform/storage/server"
 )
 
 type errorResponse struct {

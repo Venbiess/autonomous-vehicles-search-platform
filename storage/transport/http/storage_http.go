@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	core "avsp/storage/server"
+	core "github.com/Venbiess/autonomous-vehicles-search-platform/storage/server"
 )
 
 const maxUnifiedBatchObjectIDs = 256

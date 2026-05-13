@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import time
 import uuid
 
 
@@ -34,6 +35,63 @@ def _upload_object(settings, http_session, headers, payload: bytes, filename: st
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def _wait_until(predicate, timeout_sec: int = 15, sleep_sec: float = 0.5) -> bool:
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(sleep_sec)
+    return False
+
+
+def _collect_query_results(settings, http_session, embedding: list[float], out: list[dict]) -> bool:
+    query = http_session.post(
+        f"{settings.storage_base_url}/vectors/query",
+        json={"embedding": embedding, "top_k": 5},
+        timeout=settings.request_timeout_sec,
+    )
+    if query.status_code != 200:
+        return False
+    out.clear()
+    out.extend(query.json().get("results", []))
+    return len(out) > 0
+
+
+def _count_vectors(settings, http_session) -> int:
+    response = http_session.get(
+        f"{settings.storage_base_url}/vectors/count",
+        timeout=settings.request_timeout_sec,
+    )
+    if response.status_code != 200:
+        return -1
+    return int(response.json().get("count", 0))
+
+
+def _collect_vectors_get(settings, http_session, object_ids: list[str], out: list[dict]) -> bool:
+    fetched = http_session.post(
+        f"{settings.storage_base_url}/vectors/get",
+        json={"object_ids": object_ids},
+        timeout=settings.request_timeout_sec,
+    )
+    if fetched.status_code != 200:
+        return False
+    out.clear()
+    out.extend(fetched.json().get("items", []))
+    return len(out) > 0
+
+
+def _is_object_absent_in_query(settings, http_session, embedding: list[float], object_id: str) -> bool:
+    query = http_session.post(
+        f"{settings.storage_base_url}/vectors/query",
+        json={"embedding": embedding, "top_k": 10},
+        timeout=settings.request_timeout_sec,
+    )
+    if query.status_code != 200:
+        return False
+    ids = {item.get("object_id", "") for item in query.json().get("results", [])}
+    return object_id not in ids
 
 
 def test_health_ready_and_metrics(settings, http_session):
@@ -240,21 +298,17 @@ def test_vector_upsert_query_count_and_delete_cascade(settings, http_session):
     assert upsert.status_code == 200, upsert.text
     assert upsert.json()["upserted"] == 1
 
-    query = http_session.post(
-        f"{settings.storage_base_url}/vectors/query",
-        json={"embedding": vector, "top_k": 5},
-        timeout=settings.request_timeout_sec,
-    )
-    assert query.status_code == 200, query.text
-    results = query.json()["results"]
-    assert any(item["object_id"] == object_id for item in results)
+    query_results: list[dict] = []
+    assert _wait_until(
+        lambda: _collect_query_results(settings, http_session, vector, query_results),
+        timeout_sec=20,
+    ), "vector did not become query-visible in time"
+    assert any(item["object_id"] == object_id for item in query_results)
 
-    count_after_upsert = http_session.get(
-        f"{settings.storage_base_url}/vectors/count",
-        timeout=settings.request_timeout_sec,
-    )
-    assert count_after_upsert.status_code == 200, count_after_upsert.text
-    assert int(count_after_upsert.json().get("count", 0)) >= before_val + 1
+    assert _wait_until(
+        lambda: _count_vectors(settings, http_session) >= before_val + 1,
+        timeout_sec=20,
+    ), "vector count did not update in time"
 
     delete = http_session.delete(
         f"{settings.storage_base_url}/objects/{object_id}",
@@ -264,13 +318,10 @@ def test_vector_upsert_query_count_and_delete_cascade(settings, http_session):
     assert delete.status_code == 200, delete.text
     assert delete.json()["deleted"] is True
 
-    query_after = http_session.post(
-        f"{settings.storage_base_url}/vectors/query",
-        json={"embedding": vector, "top_k": 10},
-        timeout=settings.request_timeout_sec,
-    )
-    assert query_after.status_code == 200, query_after.text
-    assert object_id not in {item["object_id"] for item in query_after.json()["results"]}
+    assert _wait_until(
+        lambda: _is_object_absent_in_query(settings, http_session, vector, object_id),
+        timeout_sec=20,
+    ), "deleted vector is still visible in query results"
 
 
 def test_vectors_get_and_completed_ids_ignore_missing(settings, http_session):
@@ -311,13 +362,16 @@ def test_vectors_get_and_completed_ids_ignore_missing(settings, http_session):
     assert upsert.json()["upserted"] == 2
 
     missing_id = uuid.uuid4().hex
-    fetched = http_session.post(
-        f"{settings.storage_base_url}/vectors/get",
-        json={"object_ids": [object_id_b, missing_id, object_id_a, object_id_b]},
-        timeout=settings.request_timeout_sec,
-    )
-    assert fetched.status_code == 200, fetched.text
-    items = fetched.json()["items"]
+    items: list[dict] = []
+    assert _wait_until(
+        lambda: _collect_vectors_get(
+            settings,
+            http_session,
+            [object_id_b, missing_id, object_id_a, object_id_b],
+            items,
+        ),
+        timeout_sec=20,
+    ), "vectors/get did not return expected rows in time"
     assert [item["object_id"] for item in items] == [object_id_b, object_id_a]
     assert items[0]["embedding"] == vector_b
     assert items[1]["embedding"] == vector_a

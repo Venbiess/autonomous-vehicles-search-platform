@@ -57,10 +57,14 @@ func TestMilvusAdapterCreateUpsertSearchDeleteCount(t *testing.T) {
 				t.Fatalf("unexpected primary field: %v", payload["primaryFieldName"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
+		case "/v2/vectordb/collections/load":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
 		case "/v2/vectordb/entities/upsert":
 			if got := r.Header.Get("Authorization"); got != "Bearer root:Milvus" {
 				t.Fatalf("unexpected auth header: %q", got)
 			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
+		case "/v2/vectordb/collections/flush":
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
 		case "/v2/vectordb/entities/search":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -134,7 +138,7 @@ func TestMilvusAdapterGetHelpers(t *testing.T) {
 				"code": 0,
 				"data": map[string]any{"has": true},
 			})
-		case "/v2/vectordb/entities/get":
+		case "/v2/vectordb/entities/query":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"code": 0,
 				"data": []map[string]any{

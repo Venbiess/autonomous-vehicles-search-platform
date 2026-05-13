@@ -5,11 +5,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="$ROOT_DIR/storage/tests/tests.sh"
 
 declare -a BACKENDS=(
-  "pgvector|docker/storage/docker-compose.pgvector.yml|60"
-  "qdrant|docker/storage/docker-compose.qdrant.yml|60"
-  "ydb|docker/storage/docker-compose.ydb.yml|120"
-  "ytsaurus|docker/storage/docker-compose.ytsaurus.yml|180"
-  "seaweedfs|docker/storage/docker-compose.seaweedfs.yml|60"
+  "pgvector|docker/storage/docker-compose.pgvector.yml|60|20"
+  "qdrant|docker/storage/docker-compose.qdrant.yml|60|20"
+  "milvus|docker/storage/docker-compose.milvus.yml|120|60"
+  "ytsaurus|docker/storage/docker-compose.ytsaurus.yml|180|20"
+  "seaweedfs|docker/storage/docker-compose.seaweedfs.yml|60|20"
 )
 
 BUILD=1
@@ -50,7 +50,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 for item in "${BACKENDS[@]}"; do
-  IFS='|' read -r name compose_file ready_retries <<<"$item"
+  IFS='|' read -r name compose_file ready_retries request_timeout_sec <<<"$item"
   echo "============================================================"
   echo "Running storage integration tests for backend: $name"
   echo "Compose: $compose_file"
@@ -66,6 +66,7 @@ for item in "${BACKENDS[@]}"; do
 
   STORAGE_TEST_COMPOSE_FILE="$ROOT_DIR/$compose_file" \
   STORAGE_READY_RETRIES="$ready_retries" \
+  STORAGE_TEST_TIMEOUT_SEC="$request_timeout_sec" \
   PYTHON_BIN="$PYTHON_BIN" \
   "${cmd[@]}"
 done

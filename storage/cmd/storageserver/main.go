@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"avsp/storage/config"
-	infra "avsp/storage/infra"
-	"avsp/storage/observability"
-	core "avsp/storage/server"
-	apiv1 "avsp/storage/transport/http"
+	"github.com/Venbiess/autonomous-vehicles-search-platform/storage/config"
+	infra "github.com/Venbiess/autonomous-vehicles-search-platform/storage/infra"
+	"github.com/Venbiess/autonomous-vehicles-search-platform/storage/observability"
+	core "github.com/Venbiess/autonomous-vehicles-search-platform/storage/server"
+	apiv1 "github.com/Venbiess/autonomous-vehicles-search-platform/storage/transport/http"
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )

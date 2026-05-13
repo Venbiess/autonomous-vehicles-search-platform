@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	infra "avsp/storage/infra"
+	infra "github.com/Venbiess/autonomous-vehicles-search-platform/storage/infra"
 	"gopkg.in/yaml.v3"
 )
 

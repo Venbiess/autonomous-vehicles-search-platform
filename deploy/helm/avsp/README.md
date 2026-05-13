@@ -53,3 +53,4 @@ kubectl -n avsp logs deploy/storage-server
 - Worker-based model execution is enabled by default (`modelExecutionMode: rabbitmq`).
 - Ingress is enabled in `values-k3s.yaml` and uses Traefik by default.
 - Storage backend defaults to `pgvector` in chart config.
+- Milvus datastore support is available via `milvus.enabled=true` (and `storageServer.config.vectorIndex.provider=milvus`).

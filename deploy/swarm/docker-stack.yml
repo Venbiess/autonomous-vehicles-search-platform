@@ -1,0 +1,328 @@
+version: "3.9"
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.3
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - target: 9090
+        published: 9090
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - type: bind
+        source: ${PROJECT_ROOT:?set PROJECT_ROOT}/docker/server/observability/prometheus/prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+      - prometheus-data:/prometheus
+    networks: [avsp-net]
+    deploy:
+      replicas: 1
+
+  grafana:
+    image: grafana/grafana-oss:11.1.4
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    ports:
+      - target: 3000
+        published: 3004
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - type: bind
+        source: ${PROJECT_ROOT:?set PROJECT_ROOT}/docker/server/observability/grafana/provisioning
+        target: /etc/grafana/provisioning
+        read_only: true
+      - type: bind
+        source: ${PROJECT_ROOT:?set PROJECT_ROOT}/docker/server/observability/grafana/dashboards
+        target: /var/lib/grafana/dashboards
+        read_only: true
+      - grafana-data:/var/lib/grafana
+    networks: [avsp-net]
+    deploy:
+      replicas: 1
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.55.1
+    command:
+      - --docker_only=true
+      - --store_container_labels=true
+      - --enable_metrics=cpu,memory,network,disk,process
+      - --containerd=/run/containerd/containerd.sock
+    ports:
+      - target: 8080
+        published: 8088
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    networks: [avsp-net]
+    deploy:
+      mode: global
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    environment:
+      RABBITMQ_NODENAME: rabbit@rabbitmq
+    ports:
+      - target: 5672
+        published: 5672
+        protocol: tcp
+        mode: ingress
+      - target: 15672
+        published: 15672
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - type: bind
+        source: ${PROJECT_ROOT:?set PROJECT_ROOT}/docker/rabbitmq/conf.d/20-logging.conf
+        target: /etc/rabbitmq/conf.d/20-logging.conf
+        read_only: true
+    networks: [avsp-net]
+    deploy:
+      replicas: 1
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+    ports:
+      - target: 8123
+        published: 8123
+        protocol: tcp
+        mode: ingress
+      - target: 9000
+        published: 9003
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    networks: [avsp-net]
+    deploy:
+      replicas: 1
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: avsp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - target: 5432
+        published: 5432
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: ${PROJECT_ROOT:?set PROJECT_ROOT}/docker/server/postgres-init
+        target: /docker-entrypoint-initdb.d
+        read_only: true
+    networks: [avsp-net]
+    deploy:
+      replicas: 1
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-08T15-41-24Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - target: 9000
+        published: 9000
+        protocol: tcp
+        mode: ingress
+      - target: 9001
+        published: 9001
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - minio-data:/data
+    networks: [avsp-net]
+    deploy:
+      replicas: 1
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-03-12T17-29-24Z
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 minioadmin minioadmin; do
+          sleep 2
+        done
+        for bucket in waymo argoverse nuimages nuscenes avsp synthetic; do
+          mc mb --ignore-existing local/$${bucket}
+          mc anonymous set download local/$${bucket}
+        done
+    networks: [avsp-net]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: none
+
+  storage-server:
+    image: avsp/storage-server:swarm
+    environment:
+      STORAGE_CONFIG_PATH: /app/storage/config/storage.yaml
+      OBJECT_STORE_PROVIDER: s3
+      OBJECT_STORE_ENDPOINT_URL: http://minio:9000
+      OBJECT_STORE_ACCESS_KEY: minioadmin
+      OBJECT_STORE_SECRET_KEY: minioadmin
+      OBJECT_STORE_REGION: us-east-1
+      OBJECT_STORE_USE_SSL: "false"
+      OBJECT_STORE_FORCE_PATH_STYLE: "true"
+    ports:
+      - target: 9012
+        published: 9013
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - type: bind
+        source: ${PROJECT_ROOT:?set PROJECT_ROOT}/storage/config
+        target: /app/storage/config
+        read_only: true
+    networks: [avsp-net]
+    deploy:
+      replicas: 1
+
+  embedder-worker:
+    image: avsp/models-cpu:swarm
+    command: ["python", "-m", "backend.models.queue_worker", "--worker", "embedder"]
+    environment:
+      EMBEDDER_PORT: 8000
+      WORKER_METRICS_PORT: 9108
+      HF_HOME: /app/.cache/huggingface
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
+      RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
+      RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
+      RABBITMQ_PREFETCH: 1
+      RABBITMQ_HEARTBEAT_SEC: 900
+      RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SEC: 960
+    networks: [avsp-net]
+    deploy:
+      replicas: 1
+
+  vlm-worker:
+    image: avsp/models-cpu:swarm
+    command: ["python", "-m", "backend.models.queue_worker", "--worker", "vlm"]
+    environment:
+      VLM_PORT: 8001
+      WORKER_METRICS_PORT: 9109
+      HF_HOME: /app/.cache/huggingface
+      VLM_BACKEND: ${VLM_BACKEND:-SMOLVLM}
+      VLM_MODEL_NAME: ${VLM_MODEL_NAME:-}
+      VLM_OPENAI_API_KEY: ${VLM_OPENAI_API_KEY:-}
+      VLM_OPENAI_BASE_URL: ${VLM_OPENAI_BASE_URL:-}
+      VLM_OPENAI_TIMEOUT_SEC: ${VLM_OPENAI_TIMEOUT_SEC:-120}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
+      RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
+      RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
+      RABBITMQ_PREFETCH: 1
+      RABBITMQ_HEARTBEAT_SEC: 900
+      RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SEC: 960
+    networks: [avsp-net]
+    deploy:
+      replicas: 1
+
+  master-server:
+    image: avsp/master:swarm
+    command:
+      - uvicorn
+      - backend.server.master:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9002"
+      - --log-level
+      - debug
+    environment:
+      PYTHONWARNINGS: ignore::FutureWarning:google.api_core._python_version_support
+      CUDA_VISIBLE_DEVICES: ""
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: avsp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      EMBEDDER_ENDPOINT: http://embedder-worker:8000
+      EMBEDDER_ENDPOINTS: http://embedder-worker:8000
+      VLM_ENDPOINT: http://vlm-worker:8001
+      MODEL_EXECUTION_MODE: rabbitmq
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
+      RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
+      RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
+      RABBITMQ_RPC_TIMEOUT_SEC: 900
+      MODEL_BACKEND_READY_WAIT_SEC: 45
+      MODEL_BACKEND_READY_POLL_SEC: 1
+      STORAGE_SERVER_ENDPOINT: http://storage-server:9012
+      STORAGE_SERVER_TIMEOUT_SEC: 30
+      STORAGE_WRITE_TOKEN: change-me-storage-write-token
+      ANALYTICS_SERVER_ENDPOINT: http://storage-server:9012
+      ANALYTICS_SERVER_TIMEOUT_SEC: 30
+    ports:
+      - target: 9002
+        published: 9002
+        protocol: tcp
+        mode: ingress
+    networks: [avsp-net]
+    deploy:
+      replicas: 1
+
+  frontend:
+    image: avsp/frontend:swarm
+    environment:
+      MASTER_ENDPOINT: http://master-server:9002
+      MASTER_PROXY_TIMEOUT_MS: 10000
+      STORAGE_SERVER_ENDPOINT: http://storage-server:9012
+      ANALYTICS_SERVER_ENDPOINT: http://storage-server:9012
+      STORAGE_WRITE_TOKEN: change-me-storage-write-token
+      OBJECT_STORE_PUBLIC_ENDPOINT: http://localhost:9000
+      OBJECT_STORE_DEFAULT_BUCKET: avsp
+      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
+      MINIO_BUCKET: avsp
+      FRONTEND_REQUEST_TIMEOUT_MS: "0"
+      STORAGE_TRANSFER_IMPORT_MAX_BYTES: "17179869184"
+      NEXT_PUBLIC_GRAFANA_DASHBOARD_URL: http://localhost:3004/d/avsp-observability/avsp-observability?orgId=1
+      NEXT_PUBLIC_GRAFANA_CONTAINER_DASHBOARD_URL: http://localhost:3004/d/avsp-container-drilldown/avsp-container-drilldown?orgId=1
+      NEXT_PUBLIC_CADVISOR_CONTAINERS_URL: http://localhost:8088/containers/
+      NODE_OPTIONS: --max-old-space-size=1024
+    ports:
+      - target: 3001
+        published: 3001
+        protocol: tcp
+        mode: ingress
+    networks: [avsp-net]
+    deploy:
+      replicas: 1
+
+volumes:
+  clickhouse-data:
+  grafana-data:
+  minio-data:
+  postgres-data:
+  prometheus-data:
+
+networks:
+  avsp-net:
+    driver: overlay
