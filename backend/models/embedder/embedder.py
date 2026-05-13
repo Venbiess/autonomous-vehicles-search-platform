@@ -13,9 +13,9 @@ from PIL import Image
 
 from backend.models.common.hf import configure_hf_download_logging
 from backend.models.common.runtime import resolve_bool_flag
+from backend.models.common.runtime import resolve_device
+from backend.models.common.runtime import runtime_payload
 from backend.models.common.runtime import resolve_torch_dtype
-from backend.models.embedder.base import resolve_device
-from backend.models.embedder.base import runtime_payload
 from backend.models.embedder.factory import create_embedder
 from configs.hw_settings import EMBEDDER_CONFIG
 from configs.hw_settings import TORCH_CONFIG
