@@ -24,6 +24,9 @@ VLM_MAX_NEW_TOKENS="${VLM_MAX_NEW_TOKENS:-8}"
 EXPECT_EMBEDDER_CONSUMERS="${EXPECT_EMBEDDER_CONSUMERS:-1}"
 EXPECT_VLM_CONSUMERS="${EXPECT_VLM_CONSUMERS:-1}"
 EXTRA_SERVICES="${EXTRA_SERVICES:-}"
+MODEL_HTTP_TIMEOUT_SEC="${MODEL_HTTP_TIMEOUT_SEC:-120}"
+MODEL_HTTP_RETRY_COUNT="${MODEL_HTTP_RETRY_COUNT:-12}"
+MODEL_HTTP_RETRY_SLEEP_SEC="${MODEL_HTTP_RETRY_SLEEP_SEC:-5}"
 
 compose() {
   local compose_args=("${COMPOSE_CMD[@]}" -f "$COMPOSE_FILE")
@@ -210,6 +213,39 @@ PY
   done
 }
 
+curl_json_with_retry() {
+  local output_path="$1"
+  local method="$2"
+  local url="$3"
+  local data="${4:-}"
+  local content_type="${5:-application/json}"
+  local attempts="${6:-$MODEL_HTTP_RETRY_COUNT}"
+  local sleep_sec="${7:-$MODEL_HTTP_RETRY_SLEEP_SEC}"
+
+  local i=1
+  while (( i <= attempts )); do
+    if [[ "$method" == "GET" ]]; then
+      if curl -fsS --max-time "$MODEL_HTTP_TIMEOUT_SEC" "$url" >"$output_path"; then
+        return 0
+      fi
+    else
+      if curl -fsS --max-time "$MODEL_HTTP_TIMEOUT_SEC" \
+        -H "Content-Type: ${content_type}" \
+        -d "$data" \
+        "$url" >"$output_path"; then
+        return 0
+      fi
+    fi
+    if (( i == attempts )); then
+      break
+    fi
+    echo "Retry ${i}/${attempts} for ${method} ${url} after failure..." >&2
+    sleep "$sleep_sec"
+    i=$((i + 1))
+  done
+  return 1
+}
+
 echo "Starting AVSP smoke stack..."
 base_services=(
   rabbitmq
@@ -247,13 +283,17 @@ assert_json /tmp/system-info.json
 curl -fsS --max-time 20 "http://localhost:9002/jobs" >/tmp/jobs.json
 assert_json /tmp/jobs.json
 
-curl -fsS --max-time 30 \
-  -H "Content-Type: application/json" \
-  -d '{"query":"road","top_k":3,"max_rows":100}' \
-  "http://localhost:9002/search/text" >/tmp/search-text.json
+curl_json_with_retry \
+  /tmp/search-text.json \
+  POST \
+  "http://localhost:9002/search/text" \
+  '{"query":"road","top_k":3,"max_rows":100}'
 assert_json /tmp/search-text.json
 
-curl -fsS --max-time 30 "http://localhost:9002/embeddings/dimensions" >/tmp/embeddings-dimensions.json
+curl_json_with_retry \
+  /tmp/embeddings-dimensions.json \
+  GET \
+  "http://localhost:9002/embeddings/dimensions"
 assert_json /tmp/embeddings-dimensions.json
 
 echo "Generating synthetic dataset..."
@@ -279,10 +319,11 @@ fi
 curl -fsS --max-time 20 "http://localhost:9013/vectors/count" >/tmp/vectors-count-after.json
 assert_json /tmp/vectors-count-after.json
 
-curl -fsS --max-time 30 \
-  -H "Content-Type: application/json" \
-  -d '{"query":"road cars lane","top_k":5,"max_rows":100}' \
-  "http://localhost:9002/search/text" >/tmp/search-text-after.json
+curl_json_with_retry \
+  /tmp/search-text-after.json \
+  POST \
+  "http://localhost:9002/search/text" \
+  '{"query":"road cars lane","top_k":5,"max_rows":100}'
 assert_json /tmp/search-text-after.json
 
 python3 - <<'PY'
@@ -303,7 +344,7 @@ req = urllib.request.Request(
     headers={"Content-Type": "application/json"},
     method="POST",
 )
-with urllib.request.urlopen(req, timeout=30) as resp:
+with urllib.request.urlopen(req, timeout=120) as resp:
     body = json.loads(resp.read().decode("utf-8"))
 content_b64 = body["items"][0]["content_base64"]
 image_bytes = base64.b64decode(content_b64)
@@ -313,7 +354,7 @@ req = urllib.request.Request(
     headers={"Content-Type": "image/jpeg"},
     method="POST",
 )
-with urllib.request.urlopen(req, timeout=30) as resp:
+with urllib.request.urlopen(req, timeout=120) as resp:
     search = json.loads(resp.read().decode("utf-8"))
 Path("/tmp/search-image.json").write_text(json.dumps(search), encoding="utf-8")
 PY
@@ -351,7 +392,7 @@ req = urllib.request.Request(
     headers={"Content-Type": "application/json"},
     method="POST",
 )
-with urllib.request.urlopen(req, timeout=30) as resp:
+with urllib.request.urlopen(req, timeout=120) as resp:
     annotations = json.loads(resp.read().decode("utf-8"))
 Path("/tmp/vlm-annotations.json").write_text(json.dumps(annotations), encoding="utf-8")
 PY

@@ -364,6 +364,25 @@ func (m *MilvusAdapter) ensureVectorIndex(ctx context.Context) error {
 	if err == nil || milvusIndexAlreadyExists(err) {
 		return nil
 	}
+	if milvusAutoIndexOnlyMetricError(err) {
+		autoReqBody := map[string]any{
+			"dbName":         m.dbName,
+			"collectionName": m.collectionName,
+			"indexParams": []map[string]any{
+				{
+					"fieldName":  defaultMilvusVectorField,
+					"indexName":  defaultMilvusIndexName,
+					"metricType": m.metricType,
+					"indexType":  "AUTOINDEX",
+				},
+			},
+		}
+		autoErr := m.doJSON(ctx, http.MethodPost, "/v2/vectordb/indexes/create", autoReqBody, nil)
+		if autoErr == nil || milvusIndexAlreadyExists(autoErr) || milvusFieldAlreadyIndexedError(autoErr) {
+			return nil
+		}
+		return fmt.Errorf("milvus autoindex creation failed after hnsw rejection: %w", autoErr)
+	}
 	return fmt.Errorf("milvus hnsw index creation failed: %w", err)
 }
 
@@ -375,6 +394,22 @@ func milvusIndexAlreadyExists(err error) bool {
 	return strings.Contains(msg, "already exist") ||
 		strings.Contains(msg, "already exists") ||
 		strings.Contains(msg, "duplicated index")
+}
+
+func milvusAutoIndexOnlyMetricError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "only metric type can be passed when use autoindex")
+}
+
+func milvusFieldAlreadyIndexedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "multiple indexes on same field is not supported")
 }
 
 func (m *MilvusAdapter) hasCollection(ctx context.Context) (bool, error) {

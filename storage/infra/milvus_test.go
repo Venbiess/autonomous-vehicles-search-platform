@@ -190,3 +190,73 @@ func TestMilvusAdapterGetHelpers(t *testing.T) {
 		t.Fatalf("unexpected vectors: %+v", vectors)
 	}
 }
+
+func TestMilvusAdapterIndexFallsBackToAutoIndexWhenRequired(t *testing.T) {
+	t.Parallel()
+
+	indexCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v2/vectordb/collections/has":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code": 0,
+				"data": map[string]any{"has": false},
+			})
+		case "/v2/vectordb/collections/create":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
+		case "/v2/vectordb/indexes/create":
+			indexCalls++
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode index payload: %v", err)
+			}
+			rawParams, ok := payload["indexParams"].([]any)
+			if !ok || len(rawParams) == 0 {
+				t.Fatalf("indexParams is required: %+v", payload)
+			}
+			first, ok := rawParams[0].(map[string]any)
+			if !ok {
+				t.Fatalf("invalid indexParams[0]: %#v", rawParams[0])
+			}
+			if first["indexType"] == "HNSW" {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"code":    1,
+					"message": "only metric type can be passed when use AutoIndex",
+				})
+				return
+			}
+			if first["indexType"] != "AUTOINDEX" {
+				t.Fatalf("unexpected fallback index type: %v", first["indexType"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code":    1,
+				"message": "CreateIndex failed: creating multiple indexes on same field is not supported",
+			})
+		case "/v2/vectordb/collections/load":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
+		case "/v2/vectordb/entities/upsert":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewMilvusAdapter(VectorIndexConfig{
+		Provider:    "milvus",
+		EndpointURL: server.URL,
+		Schema:      "default",
+		Table:       "image_embeddings",
+		Distance:    "cosine",
+	})
+	if err != nil {
+		t.Fatalf("NewMilvusAdapter error: %v", err)
+	}
+	if err := adapter.Upsert(context.Background(), "obj-1", []float64{0.1, 0.2}); err != nil {
+		t.Fatalf("Upsert error: %v", err)
+	}
+	if indexCalls < 2 {
+		t.Fatalf("expected HNSW attempt and AUTOINDEX fallback, calls=%d", indexCalls)
+	}
+}

@@ -71,8 +71,13 @@ services:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
     depends_on:
-      - etcd
-      - minio
+      etcd:
+        condition: service_started
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
     volumes:
       - storage-milvus-data:/var/lib/milvus
     ports:
