@@ -62,8 +62,16 @@ func TestMilvusAdapterCreateUpsertSearchDeleteCount(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode index payload: %v", err)
 			}
-			if payload["indexType"] != "HNSW" {
-				t.Fatalf("unexpected index type: %v", payload["indexType"])
+			rawParams, ok := payload["indexParams"].([]any)
+			if !ok || len(rawParams) == 0 {
+				t.Fatalf("indexParams is required: %+v", payload)
+			}
+			first, ok := rawParams[0].(map[string]any)
+			if !ok {
+				t.Fatalf("invalid indexParams[0]: %#v", rawParams[0])
+			}
+			if first["indexType"] != "HNSW" {
+				t.Fatalf("unexpected index type: %v", first["indexType"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
 		case "/v2/vectordb/collections/load":

@@ -347,13 +347,17 @@ func (m *MilvusAdapter) ensureVectorIndex(ctx context.Context) error {
 	reqBody := map[string]any{
 		"dbName":         m.dbName,
 		"collectionName": m.collectionName,
-		"fieldName":      defaultMilvusVectorField,
-		"indexName":      defaultMilvusIndexName,
-		"metricType":     m.metricType,
-		"indexType":      "HNSW",
-		"params": map[string]any{
-			"M":              16,
-			"efConstruction": 128,
+		"indexParams": []map[string]any{
+			{
+				"fieldName":  defaultMilvusVectorField,
+				"indexName":  defaultMilvusIndexName,
+				"metricType": m.metricType,
+				"indexType":  "HNSW",
+				"params": map[string]any{
+					"M":              16,
+					"efConstruction": 128,
+				},
+			},
 		},
 	}
 	err := m.doJSON(ctx, http.MethodPost, "/v2/vectordb/indexes/create", reqBody, nil)
