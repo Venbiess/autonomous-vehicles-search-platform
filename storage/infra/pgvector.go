@@ -17,7 +17,6 @@ const pgvectorUpsertChunkSize = 128
 const pgvectorLookupChunkSize = 512
 const pgvectorStartupWait = 60 * time.Second
 const pgvectorStartupPingInterval = 2 * time.Second
-const pgvectorDefaultANNLists = 100
 const pgvectorDefaultHNSWEfSearch = 40
 
 type VectorIndexConfig struct {
@@ -157,26 +156,13 @@ func (p *PgVectorAdapter) ensureANNIndexes(ctx context.Context) error {
 	qualified := p.qualifiedTable()
 	hnswIdx := p.indexName("embedding_hnsw_idx")
 	hnswQuery := fmt.Sprintf(
-		"CREATE INDEX IF NOT EXISTS %s ON %s USING hnsw (embedding vector_cosine_ops)",
+		"CREATE INDEX IF NOT EXISTS %s ON %s USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 128)",
 		hnswIdx,
 		qualified,
 	)
-	if _, err := p.db.ExecContext(ctx, hnswQuery); err == nil {
-		return nil
+	if _, err := p.db.ExecContext(ctx, hnswQuery); err != nil {
+		return fmt.Errorf("pgvector hnsw index creation failed for %s.%s: %w", p.schema, p.tableName, err)
 	}
-	log.Printf("pgvector: hnsw index creation skipped, falling back to ivfflat")
-
-	ivfIdx := p.indexName("embedding_ivfflat_idx")
-	ivfQuery := fmt.Sprintf(
-		"CREATE INDEX IF NOT EXISTS %s ON %s USING ivfflat (embedding vector_cosine_ops) WITH (lists = %d)",
-		ivfIdx,
-		qualified,
-		pgvectorDefaultANNLists,
-	)
-	if _, err := p.db.ExecContext(ctx, ivfQuery); err == nil {
-		return nil
-	}
-	log.Printf("pgvector: ivfflat index creation skipped")
 	return nil
 }
 

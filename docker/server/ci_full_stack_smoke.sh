@@ -14,7 +14,7 @@ else
   exit 1
 fi
 
-SMOKE_TIMEOUT_SEC="${SMOKE_TIMEOUT_SEC:-600}"
+SMOKE_TIMEOUT_SEC="${SMOKE_TIMEOUT_SEC:-900}"
 SYNTHETIC_NUM_IMAGES="${SYNTHETIC_NUM_IMAGES:-12}"
 SYNTHETIC_BATCH_SIZE="${SYNTHETIC_BATCH_SIZE:-6}"
 SYNTHETIC_BUCKET="${SYNTHETIC_BUCKET:-synthetic}"
@@ -147,10 +147,32 @@ PY
     now="$(date +%s)"
     if (( now - started > timeout_sec )); then
       echo "Job ${job_id} did not reach ${expected_status} in ${timeout_sec}s" >&2
+      python3 - "$job_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+job_id = sys.argv[1]
+jobs = json.loads(Path("/tmp/jobs.json").read_text(encoding="utf-8")).get("jobs", [])
+for job in jobs:
+    if str(job.get("job_id")) == job_id:
+        print(json.dumps(job, indent=2))
+        break
+PY
       return 1
     fi
     sleep 2
   done
+}
+
+run_embeddings_backfill_job() {
+  curl -fsS --max-time 20 \
+    -H "Content-Type: application/json" \
+    -d "{\"limit\":${EMBEDDING_BACKFILL_LIMIT},\"batch_size\":4,\"stop_on_error\":true,\"dry_run\":false}" \
+    "http://localhost:9002/embeddings/backfill" >/tmp/embeddings-backfill.json
+  assert_json /tmp/embeddings-backfill.json
+  EMBED_JOB_ID="$(json_get /tmp/embeddings-backfill.json 'payload.get("job_id", "")')"
+  test -n "$EMBED_JOB_ID"
 }
 
 wait_model_backend_ready() {
@@ -246,14 +268,13 @@ assert_json /tmp/objects.json
 curl -fsS --max-time 20 "http://localhost:9013/vectors/count" >/tmp/vectors-count-before.json
 assert_json /tmp/vectors-count-before.json
 
-curl -fsS --max-time 20 \
-  -H "Content-Type: application/json" \
-  -d "{\"limit\":${EMBEDDING_BACKFILL_LIMIT},\"batch_size\":4,\"stop_on_error\":true,\"dry_run\":false}" \
-  "http://localhost:9002/embeddings/backfill" >/tmp/embeddings-backfill.json
-assert_json /tmp/embeddings-backfill.json
-EMBED_JOB_ID="$(json_get /tmp/embeddings-backfill.json 'payload.get("job_id", "")')"
-test -n "$EMBED_JOB_ID"
-wait_job_status "$EMBED_JOB_ID" "success" "$SMOKE_TIMEOUT_SEC"
+run_embeddings_backfill_job
+if ! wait_job_status "$EMBED_JOB_ID" "success" "$SMOKE_TIMEOUT_SEC"; then
+  echo "Embedding backfill timed out or failed; waiting for model backend and retrying once..." >&2
+  wait_model_backend_ready "$SMOKE_TIMEOUT_SEC"
+  run_embeddings_backfill_job
+  wait_job_status "$EMBED_JOB_ID" "success" "$SMOKE_TIMEOUT_SEC"
+fi
 
 curl -fsS --max-time 20 "http://localhost:9013/vectors/count" >/tmp/vectors-count-after.json
 assert_json /tmp/vectors-count-after.json

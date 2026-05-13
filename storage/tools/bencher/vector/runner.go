@@ -383,7 +383,7 @@ func runSeed(adapter infra.VectorAdapter, cfg runnerConfig) (manifest, benchRepo
 			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.TimeoutSec)*time.Second)
 			err := batch.UpsertBatch(ctx, ids, vectors)
 			cancel()
-			recordOutcome(stats, time.Since(t0), err)
+			recordOutcomeN(stats, time.Since(t0), err, len(ids))
 			if err != nil {
 				return mf, buildReport(cfg, stats, time.Since(start), ""), err
 			}
@@ -564,13 +564,22 @@ func mixedQueryVector(cfg runnerConfig, rng *rand.Rand, maxInserted, opIndex int
 }
 
 func recordOutcome(stats *benchStats, d time.Duration, err error) {
+	recordOutcomeN(stats, d, err, 1)
+}
+
+func recordOutcomeN(stats *benchStats, d time.Duration, err error, n int) {
+	if n <= 0 {
+		n = 1
+	}
 	if err != nil {
-		atomic.AddInt64(&stats.Errors, 1)
+		atomic.AddInt64(&stats.Errors, int64(n))
 		return
 	}
-	atomic.AddInt64(&stats.Successes, 1)
-	ms := float64(d) / float64(time.Millisecond)
-	appendLatency(stats, ms)
+	atomic.AddInt64(&stats.Successes, int64(n))
+	msPerOp := (float64(d) / float64(time.Millisecond)) / float64(n)
+	for i := 0; i < n; i++ {
+		appendLatency(stats, msPerOp)
+	}
 }
 
 func appendLatency(stats *benchStats, v float64) {

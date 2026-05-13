@@ -57,6 +57,15 @@ func TestMilvusAdapterCreateUpsertSearchDeleteCount(t *testing.T) {
 				t.Fatalf("unexpected primary field: %v", payload["primaryFieldName"])
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
+		case "/v2/vectordb/indexes/create":
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode index payload: %v", err)
+			}
+			if payload["indexType"] != "HNSW" {
+				t.Fatalf("unexpected index type: %v", payload["indexType"])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
 		case "/v2/vectordb/collections/load":
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
 		case "/v2/vectordb/entities/upsert":
