@@ -280,8 +280,9 @@ wait_job_status "$VLM_JOB_ID" "success" "$SMOKE_TIMEOUT_SEC"
 curl -fsS --max-time 20 "http://localhost:9002/vlm/fields" >/tmp/vlm-fields.json
 assert_json /tmp/vlm-fields.json
 
-python3 - <<'PY'
+EXPECT_EMBEDDER_CONSUMERS="$EXPECT_EMBEDDER_CONSUMERS" EXPECT_VLM_CONSUMERS="$EXPECT_VLM_CONSUMERS" python3 - <<'PY'
 import json
+import os
 from pathlib import Path
 import urllib.request
 
@@ -325,8 +326,8 @@ rabbitmq = models.get("rabbitmq", {})
 queues = rabbitmq.get("queues", {})
 embedder_consumers = int((queues.get("avsp.embedder.tasks") or {}).get("consumers") or 0)
 vlm_consumers = int((queues.get("avsp.vlm.tasks") or {}).get("consumers") or 0)
-expected_embedder = int("${EXPECT_EMBEDDER_CONSUMERS}")
-expected_vlm = int("${EXPECT_VLM_CONSUMERS}")
+expected_embedder = int(os.environ.get("EXPECT_EMBEDDER_CONSUMERS", "1"))
+expected_vlm = int(os.environ.get("EXPECT_VLM_CONSUMERS", "1"))
 assert embedder_consumers >= expected_embedder, (embedder_consumers, expected_embedder, queues)
 assert vlm_consumers >= expected_vlm, (vlm_consumers, expected_vlm, queues)
 assert "jobs" in jobs and isinstance(jobs["jobs"], list), jobs

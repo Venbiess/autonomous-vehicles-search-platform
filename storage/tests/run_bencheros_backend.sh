@@ -40,6 +40,7 @@ run_target() {
   local compose_file
   local bencher_target
   local bencher_url
+  local bencher_upload_url=""
 
   case "$target" in
     minio)
@@ -51,6 +52,7 @@ run_target() {
       compose_file="${COMPOSE_FILE_PICS:-$ROOT_DIR/docker/storage/docker-compose.pics.yml}"
       bencher_target="storage"
       bencher_url="http://localhost:9004"
+      bencher_upload_url="${BENCHER_PICS_UPLOAD_URL:-http://localhost:9005}"
       ;;
     *)
       echo "Unsupported TARGET=$target (supported: minio, pics)" >&2
@@ -59,6 +61,17 @@ run_target() {
   esac
 
   local text_report="$REPORT_DIR/${target}-bencheros.txt"
+  local -a bencher_args=(
+    -target "$bencher_target"
+    -url "$bencher_url"
+    -bucket avsp
+    -size "$OBJECT_SIZE"
+    -ops "$OPS"
+    -concurrency "$CONCURRENCY"
+  )
+  if [[ -n "$bencher_upload_url" ]]; then
+    bencher_args+=(-upload-url "$bencher_upload_url")
+  fi
 
   echo "Starting stack for target=$target with compose=$compose_file"
   local -a compose_up_args=(compose -f "$compose_file" up -d)
@@ -73,13 +86,10 @@ run_target() {
     echo "size: $OBJECT_SIZE"
     echo "ops: $OPS"
     echo "concurrency: $CONCURRENCY"
-    run_bencher_object \
-      -target "$bencher_target" \
-      -url "$bencher_url" \
-      -bucket avsp \
-      -size "$OBJECT_SIZE" \
-      -ops "$OPS" \
-      -concurrency "$CONCURRENCY"
+    if [[ -n "$bencher_upload_url" ]]; then
+      echo "upload_url: $bencher_upload_url"
+    fi
+    run_bencher_object "${bencher_args[@]}"
   } | tee "$text_report"
 
   echo "Done for $target. Text summary: $text_report"

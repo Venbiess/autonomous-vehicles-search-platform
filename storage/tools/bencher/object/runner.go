@@ -36,6 +36,7 @@ const (
 type config struct {
 	target      string
 	url         string
+	uploadURL   string
 	accessKey   string
 	secretKey   string
 	bucket      string
@@ -58,9 +59,10 @@ type runner interface {
 }
 
 type storageRunner struct {
-	baseURL string
-	client  *http.Client
-	bucket  string
+	baseURL       string
+	uploadBaseURL string
+	client        *http.Client
+	bucket        string
 }
 
 type minioRunner struct {
@@ -165,6 +167,7 @@ func parseFlags() (config, error) {
 	cfg := config{}
 	flag.StringVar(&cfg.target, "target", defaultStorage, "benchmark target: storage or minio")
 	flag.StringVar(&cfg.url, "url", "http://127.0.0.1:9000", "base URL for storage coordinator or S3-compatible endpoint")
+	flag.StringVar(&cfg.uploadURL, "upload-url", "", "optional base URL for upload targets returned by coordinator")
 	flag.StringVar(&cfg.accessKey, "access-key", "minioadmin", "S3 access key")
 	flag.StringVar(&cfg.secretKey, "secret-key", "minioadmin", "S3 secret key")
 	flag.StringVar(&cfg.bucket, "bucket", "bench", "bucket name")
@@ -196,9 +199,10 @@ func newRunner(cfg config) (runner, error) {
 	switch cfg.target {
 	case defaultStorage:
 		return &storageRunner{
-			baseURL: strings.TrimRight(cfg.url, "/"),
-			client:  client,
-			bucket:  cfg.bucket,
+			baseURL:       strings.TrimRight(cfg.url, "/"),
+			uploadBaseURL: strings.TrimRight(cfg.uploadURL, "/"),
+			client:        client,
+			bucket:        cfg.bucket,
 		}, nil
 	case defaultMinIO:
 		return &minioRunner{
@@ -229,7 +233,8 @@ func (r *storageRunner) put(key string, payload []byte) result {
 		return result{status: -1, latency: time.Since(started), err: "upload plan has no targets"}
 	}
 	target := plan.Targets[0]
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, target.UploadURL, bytes.NewReader(payload))
+	uploadURL := r.resolveUploadURL(target.UploadURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(payload))
 	if err != nil {
 		return result{status: -1, latency: time.Since(started), err: err.Error()}
 	}
@@ -328,6 +333,23 @@ func (r *storageRunner) createUpload(ctx context.Context, key string, size int64
 		return uploadCreateResponse{}, err
 	}
 	return out, nil
+}
+
+func (r *storageRunner) resolveUploadURL(rawURL string) string {
+	if r.uploadBaseURL == "" {
+		return rawURL
+	}
+	uploadBase, err := url.Parse(r.uploadBaseURL)
+	if err != nil || uploadBase.Scheme == "" || uploadBase.Host == "" {
+		return rawURL
+	}
+	targetURL, err := url.Parse(rawURL)
+	if err != nil || targetURL.Scheme == "" || targetURL.Host == "" {
+		return rawURL
+	}
+	targetURL.Scheme = uploadBase.Scheme
+	targetURL.Host = uploadBase.Host
+	return targetURL.String()
 }
 
 func (r *storageRunner) objectURL(key string) string {
