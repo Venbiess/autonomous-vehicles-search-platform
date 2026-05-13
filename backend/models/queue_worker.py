@@ -366,16 +366,39 @@ def main() -> None:
     )
     params.heartbeat = max(30, heartbeat_sec)
     params.blocked_connection_timeout = max(60, blocked_timeout_sec)
-    connection = _connect_with_retry(params)
-    channel = connection.channel()
+    reconnect_delay_sec = max(1, int(os.getenv("RABBITMQ_RECONNECT_DELAY_SEC", "3")))
 
-    channel.queue_declare(queue=embedder_queue, durable=True)
-    channel.queue_declare(queue=vlm_queue, durable=True)
+    while True:
+        connection = None
+        try:
+            connection = _connect_with_retry(params)
+            channel = connection.channel()
 
-    if args.worker == "embedder":
-        run_embedder_worker(channel, embedder_queue)
-    else:
-        run_vlm_worker(channel, vlm_queue)
+            channel.queue_declare(queue=embedder_queue, durable=True)
+            channel.queue_declare(queue=vlm_queue, durable=True)
+
+            if args.worker == "embedder":
+                run_embedder_worker(channel, embedder_queue)
+            else:
+                run_vlm_worker(channel, vlm_queue)
+            logger.warning("worker loop exited without error; reconnecting in %ss", reconnect_delay_sec)
+        except KeyboardInterrupt:
+            logger.info("worker interrupted, shutting down")
+            break
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "worker loop failed (%s), reconnecting in %ss",
+                exc.__class__.__name__,
+                reconnect_delay_sec,
+            )
+        finally:
+            if connection is not None:
+                try:
+                    if connection.is_open:
+                        connection.close()
+                except Exception:
+                    pass
+        time.sleep(reconnect_delay_sec)
 
 
 if __name__ == "__main__":
