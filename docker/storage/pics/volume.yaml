@@ -1,0 +1,12 @@
+server_id: "volume-a"
+listen_addr: "0.0.0.0:9002"
+public_url: "http://pics-volume:9002"
+internal_url: "http://pics-volume:9002"
+coordinator_url: "http://pics-coordinator:9000"
+data_dir: "/app/data/storage"
+max_pack_bytes: 34359738368
+max_upload_bytes: 67108864
+snapshot_interval: 5s
+heartbeat_interval: 2s
+http_timeout: 5s
+upload_token_secret: "dev-upload-token-secret"

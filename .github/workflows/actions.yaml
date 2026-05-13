@@ -105,6 +105,9 @@ jobs:
       - name: Validate main Docker Compose file
         run: docker compose -f docker/docker-compose.yml config
 
+      - name: Validate storage pics Docker Compose file
+        run: docker compose -f docker/storage/docker-compose.pics.yml config
+
   docker-build-smoke:
     runs-on: ubuntu-latest
 
@@ -149,6 +152,10 @@ jobs:
             compose_file: docker/storage/docker-compose.seaweedfs.yml
             ready_retries: 60
             request_timeout_sec: 20
+          - name: pics
+            compose_file: docker/storage/docker-compose.pics.yml
+            ready_retries: 90
+            request_timeout_sec: 30
 
     steps:
       - name: Checkout repository

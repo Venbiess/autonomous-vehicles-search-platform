@@ -64,8 +64,6 @@ func TestMilvusAdapterCreateUpsertSearchDeleteCount(t *testing.T) {
 				t.Fatalf("unexpected auth header: %q", got)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
-		case "/v2/vectordb/collections/flush":
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{}})
 		case "/v2/vectordb/entities/search":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"code": 0,

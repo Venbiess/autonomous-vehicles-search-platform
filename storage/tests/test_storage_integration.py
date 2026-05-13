@@ -117,7 +117,7 @@ def test_upload_get_meta_get_content_and_delete(settings, http_session):
     assert uploaded["bucket"] == settings.bucket
     assert uploaded["key"] == key
     assert uploaded["storage_path"].endswith(f"{settings.bucket}/{key}")
-    assert uploaded["storage_path"].startswith(("s3://", "yt://", "seaweedfs://"))
+    assert uploaded["storage_path"].startswith(("s3://", "yt://", "seaweedfs://", "pics://"))
     assert uploaded["size_bytes"] == len(payload)
 
     meta = http_session.get(
@@ -281,13 +281,6 @@ def test_vector_upsert_query_count_and_delete_cascade(settings, http_session):
     )
     object_id = uploaded["object_id"]
 
-    count_before = http_session.get(
-        f"{settings.storage_base_url}/vectors/count",
-        timeout=settings.request_timeout_sec,
-    )
-    assert count_before.status_code == 200, count_before.text
-    before_val = int(count_before.json().get("count", 0))
-
     vector = _fake_embedding(settings)
     upsert = http_session.post(
         f"{settings.storage_base_url}/vectors/upsert",
@@ -305,10 +298,12 @@ def test_vector_upsert_query_count_and_delete_cascade(settings, http_session):
     ), "vector did not become query-visible in time"
     assert any(item["object_id"] == object_id for item in query_results)
 
+    get_items: list[dict] = []
     assert _wait_until(
-        lambda: _count_vectors(settings, http_session) >= before_val + 1,
+        lambda: _collect_vectors_get(settings, http_session, [object_id], get_items),
         timeout_sec=20,
-    ), "vector count did not update in time"
+    ), "vector did not become get-visible in time"
+    assert len(get_items) == 1 and get_items[0]["object_id"] == object_id
 
     delete = http_session.delete(
         f"{settings.storage_base_url}/objects/{object_id}",

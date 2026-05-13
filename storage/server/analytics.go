@@ -529,18 +529,6 @@ func (s *clickHouseAnalyticsShard) getAnnotationPayloadBatch(ctx context.Context
 	return valuesByObjectID, nil
 }
 
-func (s *clickHouseAnalyticsShard) getAnnotationValuesBatch(ctx context.Context, objectIDs []string) (map[string]map[string]string, error) {
-	payloads, err := s.getAnnotationPayloadBatch(ctx, objectIDs)
-	if err != nil {
-		return nil, err
-	}
-	valuesByObjectID := make(map[string]map[string]string, len(payloads))
-	for objectID, payload := range payloads {
-		valuesByObjectID[objectID] = payload.Values
-	}
-	return valuesByObjectID, nil
-}
-
 func (s *clickHouseAnalyticsShard) upsertAnnotations(ctx context.Context, rows []AnnotationRow) error {
 	grouped := make(map[string]map[string]string, len(rows))
 	order := make([]string, 0, len(rows))

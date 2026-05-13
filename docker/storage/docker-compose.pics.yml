@@ -1,0 +1,120 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: "avsp-storage-postgres-${USER}"
+    environment:
+      POSTGRES_DB: avsp
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - storage-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d avsp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - storage-net
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: "avsp-storage-clickhouse-${USER}"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - storage-clickhouse-data:/var/lib/clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "default", "--password", "clickhouse", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    networks:
+      - storage-net
+
+  pics-coordinator:
+    build:
+      context: ../../storage/modules/pics
+      dockerfile: Dockerfile
+      target: coordinator
+    container_name: "avsp-storage-pics-coordinator-${USER}"
+    environment:
+      COORDINATOR_CONFIG_PATH: /app/config/coordinator.yaml
+    volumes:
+      - ./pics/coordinator.yaml:/app/config/coordinator.yaml:ro
+      - storage-pics-coordinator-data:/app/data
+    ports:
+      - "9004:9000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9000/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    networks:
+      - storage-net
+
+  pics-volume:
+    build:
+      context: ../../storage/modules/pics
+      dockerfile: Dockerfile
+      target: volume
+    container_name: "avsp-storage-pics-volume-${USER}"
+    depends_on:
+      pics-coordinator:
+        condition: service_healthy
+    environment:
+      VOLUME_CONFIG_PATH: /app/config/volume.yaml
+    volumes:
+      - ./pics/volume.yaml:/app/config/volume.yaml:ro
+      - storage-pics-volume-data:/app/data
+    ports:
+      - "9005:9002"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9002/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    networks:
+      - storage-net
+
+  storage-server:
+    build:
+      context: ../..
+      dockerfile: docker/storage/storage-server.Dockerfile
+    container_name: "avsp-storage-storage-server-${USER}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      pics-coordinator:
+        condition: service_healthy
+      pics-volume:
+        condition: service_healthy
+    environment:
+      STORAGE_CONFIG_PATH: /app/storage/config/storage.integration.pics.yaml
+    volumes:
+      - ../../storage/config:/app/storage/config:ro
+    ports:
+      - "9012:9012"
+    networks:
+      - storage-net
+
+volumes:
+  storage-postgres-data:
+  storage-clickhouse-data:
+  storage-pics-coordinator-data:
+  storage-pics-volume-data:
+
+networks:
+  storage-net:
+    driver: bridge

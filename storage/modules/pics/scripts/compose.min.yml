@@ -1,0 +1,42 @@
+services:
+  coordinator:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: coordinator
+    environment:
+      COORDINATOR_CONFIG_PATH: /app/config/coordinator.yaml
+      COORDINATOR_REPLICA_COUNT: 1
+    volumes:
+      - ./configs/coordinator.yaml:/app/config/coordinator.yaml:ro
+      - coordinator_min_data:/app/data
+    ports:
+      - "9000:9000"
+    networks:
+      - back
+
+  volume-a:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: volume
+    environment:
+      VOLUME_CONFIG_PATH: /app/config/volume.yaml
+      VOLUME_SERVER_ID: volume-a
+      VOLUME_PUBLIC_URL: http://127.0.0.1:9002
+      VOLUME_INTERNAL_URL: http://volume-a:9002
+      VOLUME_COORDINATOR_URL: http://coordinator:9000
+    volumes:
+      - ./configs/volume.yaml:/app/config/volume.yaml:ro
+      - volume_a_min_data:/app/data
+    ports:
+      - "9002:9002"
+    networks:
+      - back
+
+networks:
+  back:
+
+volumes:
+  coordinator_min_data:
+  volume_a_min_data:
