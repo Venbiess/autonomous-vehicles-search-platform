@@ -225,12 +225,11 @@ func TestCompleteUploadUpdatesPackAndCatalogAtomically(t *testing.T) {
 	}
 }
 
-func TestCompleteUploadWithWriteQuorum(t *testing.T) {
+func TestCompleteUploadRequiresAllReplicas(t *testing.T) {
 	cfg := CoordinatorConfig{
 		DBPath:             filepath.Join(t.TempDir(), "badger"),
 		PackSizeBytes:      1024,
 		ReplicaCount:       3,
-		WriteQuorum:        2,
 		ObjectCacheEntries: 4,
 		UploadTokenSecret:  "test-secret",
 	}
@@ -271,26 +270,6 @@ func TestCompleteUploadWithWriteQuorum(t *testing.T) {
 		t.Fatalf("verify upload token: %v", err)
 	}
 
-	_, record, err := registry.CompleteUpload(upload.UploadID, UploadCompleteRequest{
-		Token: claims.CompleteToken,
-		Metadata: []UploadMetadata{
-			{
-				ServerID: "s1",
-				Metadata: ImageMetadata{ContentType: "image/jpeg", Checksum: "abc", Size: 123},
-			},
-			{
-				ServerID: "s2",
-				Metadata: ImageMetadata{ContentType: "image/jpeg", Checksum: "abc", Size: 123},
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("complete upload: %v", err)
-	}
-	if record.BlobID == "" {
-		t.Fatalf("empty blob id")
-	}
-
 	upload2, err := registry.CreateUpload(t.Context(), UploadCreateRequest{
 		Bucket:      "images-demo",
 		Key:         "cats/quorum-fail.jpg",
@@ -314,16 +293,39 @@ func TestCompleteUploadWithWriteQuorum(t *testing.T) {
 		},
 	})
 	if err == nil {
-		t.Fatalf("expected quorum failure")
+		t.Fatalf("expected replica completeness failure")
+	}
+
+	_, record, err := registry.CompleteUpload(upload.UploadID, UploadCompleteRequest{
+		Token: claims.CompleteToken,
+		Metadata: []UploadMetadata{
+			{
+				ServerID: "s1",
+				Metadata: ImageMetadata{ContentType: "image/jpeg", Checksum: "abc", Size: 123},
+			},
+			{
+				ServerID: "s2",
+				Metadata: ImageMetadata{ContentType: "image/jpeg", Checksum: "abc", Size: 123},
+			},
+			{
+				ServerID: "s3",
+				Metadata: ImageMetadata{ContentType: "image/jpeg", Checksum: "abc", Size: 123},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete upload with all replicas: %v", err)
+	}
+	if record.BlobID == "" {
+		t.Fatalf("empty blob id")
 	}
 }
 
-func TestDeleteObjectSyncRequiresQuorum(t *testing.T) {
+func TestDeleteObjectSyncRequiresAllReplicas(t *testing.T) {
 	cfg := CoordinatorConfig{
 		DBPath:             filepath.Join(t.TempDir(), "badger"),
 		PackSizeBytes:      1024,
 		ReplicaCount:       2,
-		WriteQuorum:        2,
 		ObjectCacheEntries: 4,
 	}
 	registry, err := LoadRegistry(cfg)

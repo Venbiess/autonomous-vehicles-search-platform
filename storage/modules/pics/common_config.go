@@ -17,7 +17,6 @@ type CoordinatorConfig struct {
 	DBPath             string        `yaml:"db_path"`
 	PackSizeBytes      int64         `yaml:"pack_size_bytes"`
 	ReplicaCount       int           `yaml:"replica_count"`
-	WriteQuorum        int           `yaml:"write_quorum"`
 	HTTPTimeout        time.Duration `yaml:"http_timeout"`
 	MaxUploadBytes     int64         `yaml:"max_upload_bytes"`
 	ObjectCacheEntries int           `yaml:"object_cache_entries"`
@@ -47,7 +46,6 @@ func defaultCoordinatorConfig() CoordinatorConfig {
 		DBPath:             "data/coordinator/badger",
 		PackSizeBytes:      32 << 30,
 		ReplicaCount:       3,
-		WriteQuorum:        3,
 		HTTPTimeout:        10 * time.Second,
 		MaxUploadBytes:     64 << 20,
 		ObjectCacheEntries: 10000,
@@ -124,19 +122,12 @@ func applyCoordinatorEnvOverrides(cfg *CoordinatorConfig) {
 	applyStringEnv("COORDINATOR_DB_PATH", &cfg.DBPath)
 	applyInt64Env("COORDINATOR_PACK_SIZE_BYTES", &cfg.PackSizeBytes)
 	applyIntEnv("COORDINATOR_REPLICA_COUNT", &cfg.ReplicaCount)
-	applyIntEnv("COORDINATOR_WRITE_QUORUM", &cfg.WriteQuorum)
 	applyDurationEnv("COORDINATOR_HTTP_TIMEOUT", &cfg.HTTPTimeout)
 	applyInt64Env("COORDINATOR_MAX_UPLOAD_BYTES", &cfg.MaxUploadBytes)
 	applyIntEnv("COORDINATOR_OBJECT_CACHE_ENTRIES", &cfg.ObjectCacheEntries)
 	applyStringEnv("COORDINATOR_UPLOAD_TOKEN_SECRET", &cfg.UploadTokenSecret)
 	if cfg.ReplicaCount <= 0 {
 		cfg.ReplicaCount = 1
-	}
-	if cfg.WriteQuorum <= 0 {
-		cfg.WriteQuorum = cfg.ReplicaCount
-	}
-	if cfg.WriteQuorum > cfg.ReplicaCount {
-		cfg.WriteQuorum = cfg.ReplicaCount
 	}
 }
 

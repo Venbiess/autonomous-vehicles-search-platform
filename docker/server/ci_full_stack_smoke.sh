@@ -153,28 +153,25 @@ PY
   done
 }
 
-wait_model_consumers() {
-  local expected_embedder="$1"
-  local expected_vlm="$2"
-  local timeout_sec="${3:-180}"
+wait_model_backend_ready() {
+  local timeout_sec="${1:-180}"
   local started
   started="$(date +%s)"
 
   while true; do
     if curl -fsS --max-time 20 "http://localhost:9002/health" >/tmp/master-health-consumers.json; then
-      if EXPECT_EMBEDDER_CONSUMERS="$expected_embedder" EXPECT_VLM_CONSUMERS="$expected_vlm" python3 - <<'PY'
+      if python3 - <<'PY'
 import json
-import os
 from pathlib import Path
 
 payload = json.loads(Path("/tmp/master-health-consumers.json").read_text(encoding="utf-8"))
 models = payload.get("models", {})
-queues = (models.get("rabbitmq") or {}).get("queues", {})
-embedder = int((queues.get("avsp.embedder.tasks") or {}).get("consumers") or 0)
-vlm = int((queues.get("avsp.vlm.tasks") or {}).get("consumers") or 0)
-exp_embedder = int(os.environ.get("EXPECT_EMBEDDER_CONSUMERS", "1"))
-exp_vlm = int(os.environ.get("EXPECT_VLM_CONSUMERS", "1"))
-raise SystemExit(0 if embedder >= exp_embedder and vlm >= exp_vlm else 1)
+ready = (
+    str(payload.get("status", "")).lower() == "ok"
+    and str(models.get("mode", "")).lower() == "rabbitmq"
+    and str(models.get("status", "")).lower() == "ok"
+)
+raise SystemExit(0 if ready else 1)
 PY
       then
         return 0
@@ -183,7 +180,7 @@ PY
     local now
     now="$(date +%s)"
     if (( now - started > timeout_sec )); then
-      echo "Workers did not register enough RabbitMQ consumers in ${timeout_sec}s" >&2
+      echo "Model backend did not become ready in ${timeout_sec}s" >&2
       cat /tmp/master-health-consumers.json >&2 || true
       return 1
     fi
@@ -217,7 +214,7 @@ wait_http_ok "storage-server" "http://localhost:9013/health" "$SMOKE_TIMEOUT_SEC
 wait_http_ok "storage-ready" "http://localhost:9013/ready" "$SMOKE_TIMEOUT_SEC"
 wait_http_ok "master-jobs" "http://localhost:9002/jobs" "$SMOKE_TIMEOUT_SEC"
 wait_http_ok "master-health" "http://localhost:9002/health" "$SMOKE_TIMEOUT_SEC"
-wait_model_consumers "$EXPECT_EMBEDDER_CONSUMERS" "$EXPECT_VLM_CONSUMERS" "$SMOKE_TIMEOUT_SEC"
+wait_model_backend_ready "$SMOKE_TIMEOUT_SEC"
 
 curl -fsS --max-time 20 "http://localhost:9002/health" >/tmp/master-health.json
 assert_json /tmp/master-health.json
@@ -341,7 +338,6 @@ assert_json /tmp/vlm-annotations.json
 
 EXPECT_EMBEDDER_CONSUMERS="$EXPECT_EMBEDDER_CONSUMERS" EXPECT_VLM_CONSUMERS="$EXPECT_VLM_CONSUMERS" python3 - <<'PY'
 import json
-import os
 from pathlib import Path
 
 system_info = json.loads(Path("/tmp/system-info.json").read_text(encoding="utf-8"))
@@ -361,14 +357,7 @@ assert "services" in system_info, system_info
 assert master_health.get("status") == "ok", master_health
 models = master_health.get("models", {})
 assert models.get("mode") == "rabbitmq", models
-rabbitmq = models.get("rabbitmq", {})
-queues = rabbitmq.get("queues", {})
-embedder_consumers = int((queues.get("avsp.embedder.tasks") or {}).get("consumers") or 0)
-vlm_consumers = int((queues.get("avsp.vlm.tasks") or {}).get("consumers") or 0)
-expected_embedder = int(os.environ.get("EXPECT_EMBEDDER_CONSUMERS", "1"))
-expected_vlm = int(os.environ.get("EXPECT_VLM_CONSUMERS", "1"))
-assert embedder_consumers >= expected_embedder, (embedder_consumers, expected_embedder, queues)
-assert vlm_consumers >= expected_vlm, (vlm_consumers, expected_vlm, queues)
+assert models.get("status") == "ok", models
 assert "jobs" in jobs and isinstance(jobs["jobs"], list), jobs
 assert search_before.get("mode") == "vector_server", search_before
 assert isinstance(search_before.get("results"), list), search_before

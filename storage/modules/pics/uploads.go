@@ -106,7 +106,7 @@ func (r *Registry) CompleteUpload(id string, req UploadCompleteRequest) (*object
 	if claims.UploadID != id {
 		return nil, objectRecord{}, fmt.Errorf("invalid upload token")
 	}
-	meta, err := validateUploadMetadata(claims.Replicas, req.Metadata, r.writeQuorumFor(len(claims.Replicas)))
+	meta, err := validateUploadMetadata(claims.Replicas, req.Metadata)
 	if err != nil {
 		return nil, objectRecord{}, err
 	}
@@ -177,25 +177,9 @@ func (r *Registry) CompleteUpload(id string, req UploadCompleteRequest) (*object
 	return previous, current, nil
 }
 
-func (r *Registry) writeQuorumFor(replicaCount int) int {
-	if replicaCount <= 0 {
-		return 0
-	}
-	if r.cfg.WriteQuorum <= 0 {
-		return replicaCount
-	}
-	if r.cfg.WriteQuorum > replicaCount {
-		return replicaCount
-	}
-	return r.cfg.WriteQuorum
-}
-
-func validateUploadMetadata(replicas []Replica, metadataList []UploadMetadata, writeQuorum int) (ImageMetadata, error) {
+func validateUploadMetadata(replicas []Replica, metadataList []UploadMetadata) (ImageMetadata, error) {
 	if len(replicas) == 0 {
 		return ImageMetadata{}, fmt.Errorf("no replicas configured")
-	}
-	if writeQuorum <= 0 {
-		writeQuorum = len(replicas)
 	}
 	replicaSet := make(map[string]struct{}, len(replicas))
 	for _, replica := range replicas {
@@ -208,8 +192,8 @@ func validateUploadMetadata(replicas []Replica, metadataList []UploadMetadata, w
 		}
 		metadataByServer[item.ServerID] = item.Metadata
 	}
-	if len(metadataByServer) < writeQuorum {
-		return ImageMetadata{}, fmt.Errorf("upload quorum not met: got %d, need %d", len(metadataByServer), writeQuorum)
+	if len(metadataByServer) < len(replicas) {
+		return ImageMetadata{}, fmt.Errorf("upload replicas not met: got %d, need %d", len(metadataByServer), len(replicas))
 	}
 	var meta ImageMetadata
 	first := true
