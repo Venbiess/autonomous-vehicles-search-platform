@@ -35,6 +35,7 @@ interface FilterState {
   isAny: boolean;
   value: string;
   match_mode: MatchMode;
+  category_use_custom_value: boolean;
 }
 
 interface ImageResult {
@@ -100,6 +101,7 @@ function createFilterState(
     match_mode: allowedModes.has(current?.match_mode ?? DEFAULT_MATCH_MODE)
       ? (current?.match_mode ?? DEFAULT_MATCH_MODE)
       : DEFAULT_MATCH_MODE,
+    category_use_custom_value: current?.category_use_custom_value ?? false,
   };
 }
 
@@ -751,8 +753,13 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                               const categoryOptions = categoryOptionsByField[field.field_name] ?? [];
                               const currentValue = fieldState?.value ?? "";
                               const hasCurrentInOptions = categoryOptions.includes(currentValue);
+                              const isCustomSelected = Boolean(
+                                fieldState?.category_use_custom_value
+                              );
                               const isCustomMode =
-                                isExactMode && currentValue.length > 0 && !hasCurrentInOptions;
+                                isExactMode &&
+                                (isCustomSelected ||
+                                  (currentValue.length > 0 && !hasCurrentInOptions));
                               const selectValue = isCustomMode
                                 ? "__custom__"
                                 : hasCurrentInOptions
@@ -783,6 +790,8 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                                                 ),
                                                 isAny: false,
                                                 value: nextValue,
+                                                category_use_custom_value:
+                                                  event.target.value === "__custom__",
                                               },
                                             };
                                           })
@@ -811,6 +820,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                                                 ),
                                                 isAny: false,
                                                 value: event.target.value,
+                                                category_use_custom_value: true,
                                               },
                                             }))
                                           }
@@ -833,6 +843,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                                             ),
                                             isAny: false,
                                             value: event.target.value,
+                                            category_use_custom_value: false,
                                           },
                                         }))
                                       }
@@ -889,6 +900,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                                         ),
                                         isAny: true,
                                         value: "",
+                                        category_use_custom_value: false,
                                       }
                                     : {
                                         ...createFilterState(field.response_type, {

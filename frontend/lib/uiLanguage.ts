@@ -296,25 +296,25 @@ export const UI_COPY: Record<UiLanguageCode, UiCopy> = {
     search: {
       sourceDataMissing: "Исходные данные еще не скачаны. Таблица кадров отсутствует.",
       embeddingMismatchDetailed: (queryDim: number, storedDim: number) =>
-        `Размерность нового embedder (${queryDim}) не совпадает с текущей разметкой storage (${storedDim}). Поиск будет возвращать пустой результат, пока не пересоздать embeddings.`,
+        `Размерность нового эмбеддера (${queryDim}) не совпадает с текущей разметкой storage (${storedDim}). Поиск будет возвращать пустой результат, пока не пересоздать эмбеддинги.`,
       embeddingMismatchGeneric:
-        "Размерность нового embedder не совпадает с текущей разметкой storage. Поиск может возвращать пустой результат.",
+        "Размерность нового эмбеддера не совпадает с текущей разметкой хранилища. Поиск может возвращать пустой результат.",
       searchBackendUnavailable:
         "Поисковый backend недоступен. Дождитесь запуска модели.",
       searchFailed: "Не удалось выполнить поиск",
-      rebuildEmbeddingsFailed: "Не удалось пересоздать embeddings",
+      rebuildEmbeddingsFailed: "Не удалось пересоздать эмбеддинги",
       embeddingsResetAndBackfillStarted: (resetEmbeddings: number, jobId: string) =>
-        `Embeddings сброшены: ${resetEmbeddings}. Backfill-джоба запущена: ${jobId}.`,
+        `Эмбеддинги сброшены: ${resetEmbeddings}. Джоба разметки запущена: ${jobId}.`,
     },
     embeddingDialog: {
-      title: "Несовместимая размерность embeddings",
-      currentQueryEmbedder: "Текущий запрос embedder",
-      storageEmbeddings: "Разметка в storage",
+      title: "Несовместимая размерность эмбеддингов",
+      currentQueryEmbedder: "Текущий запрос эмбеддера",
+      storageEmbeddings: "Разметка в хранилище",
       recommendation:
-        "Стоит пересоздать embedding storage под новую размерность и заново запустить embedding backfill, либо вернуть прежнюю модель.",
-      openAnnotation: "Открыть ANNOTATION",
-      rebuilding: "Пересоздаю embeddings...",
-      rebuildAndStartBackfill: "Пересоздать и запустить backfill",
+        "Стоит пересоздать хранилище эмбеддингов под новую размерность и заново запустить разметку эмбеддингов, либо вернуть прежнюю модель.",
+      openAnnotation: "Открыть разметку",
+      rebuilding: "Пересоздание эмбеддингов...",
+      rebuildAndStartBackfill: "Пересоздать и запустить разметку",
     },
     searchBar: {
       openImagePreviewAria: "Открыть превью изображения",

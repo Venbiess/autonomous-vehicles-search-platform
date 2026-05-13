@@ -577,7 +577,7 @@ export default function AnnotationPanel({
           ? error.response.data.detail
           : error instanceof Error
             ? error.message
-            : tr("Не удалось запустить embedding backfill", "Failed to start embedding backfill");
+            : tr("Не удалось запустить разметку эмбеддингов", "Failed to start embedding backfill");
       setErrorMessage(message);
     } finally {
       setIsStartingJob(false);
@@ -812,7 +812,7 @@ export default function AnnotationPanel({
           ? error.response.data.detail
           : error instanceof Error
             ? error.message
-            : tr("Не удалось запустить VLM backfill", "Failed to start VLM backfill");
+            : tr("Не удалось запустить VLM разметку", "Failed to start VLM backfill");
       setVlmErrorMessage(message);
     } finally {
       setIsStartingVlmJob(false);
@@ -1508,7 +1508,7 @@ export default function AnnotationPanel({
               onClick={onOpenJobsMonitor}
               className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              {tr("Открыть Job Monitor", "Open Job Monitor")}
+              {tr("Открыть Мониторинг", "Open Job Monitor")}
             </button>
             <button
               type="button"
@@ -1543,7 +1543,7 @@ export default function AnnotationPanel({
                     onClick={onOpenJobsMonitor}
                     className="font-bold text-teal-600 underline decoration-teal-500 underline-offset-2 transition hover:text-teal-700"
                   >
-                    {tr("Перейти в Job Monitor", "Go to Job Monitor")}
+                    {tr("Перейти в Мониторинг", "Go to Job Monitor")}
                   </button>
                 </>
               )}
@@ -1851,21 +1851,21 @@ export default function AnnotationPanel({
             >
               {isStartingJob
                 ? tr("Запуск...", "Starting...")
-                : tr("Запустить embedding backfill", "Start embedding backfill")}
+                : tr("Запустить разметку эмбеддингов", "Start embedding backfill")}
             </button>
             <button
               type="button"
               onClick={onOpenJobsMonitor}
               className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              {tr("Открыть Job Monitor", "Open Job Monitor")}
+              {tr("Открыть Мониторинг", "Open Job Monitor")}
             </button>
             <button
               type="button"
               onClick={onOpenStorage}
               className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              {tr("Открыть Storage", "Go to Storage")}
+              {tr("Открыть Хранилище", "Go to Storage")}
             </button>
           </div>
 
@@ -1880,7 +1880,7 @@ export default function AnnotationPanel({
                     onClick={onOpenJobsMonitor}
                     className="font-bold text-teal-600 underline decoration-teal-500 underline-offset-2 transition hover:text-teal-700"
                   >
-                    {tr("Перейти в Job Monitor", "Go to Job Monitor")}
+                    {tr("Перейти в Мониторинг", "Go to Job Monitor")}
                   </button>
                 </>
               )}
@@ -1969,21 +1969,21 @@ export default function AnnotationPanel({
             >
               {isStartingVlmJob
                 ? tr("Запуск...", "Starting...")
-                : tr("Запустить VLM backfill", "Start VLM backfill")}
+                : tr("Запустить разметку VLM", "Start VLM backfill")}
             </button>
             <button
               type="button"
               onClick={onOpenJobsMonitor}
               className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              {tr("Перейти в Job Monitor", "Go to Job Monitor")}
+              {tr("Перейти в Мониторинг", "Go to Job Monitor")}
             </button>
             <button
               type="button"
               onClick={onOpenStorage}
               className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              {tr("Перейти в Storage", "Go to Storage")}
+              {tr("Перейти в Хранилище", "Go to Storage")}
             </button>
           </div>
 
@@ -1998,7 +1998,7 @@ export default function AnnotationPanel({
                     onClick={onOpenJobsMonitor}
                     className="font-bold text-teal-600 underline decoration-teal-500 underline-offset-2 transition hover:text-teal-700"
                   >
-                    {tr("Перейти в Job Monitor", "Go to Job Monitor")}
+                    {tr("Перейти в Мониторинг", "Go to Job Monitor")}
                   </button>
                 </>
               )}
@@ -2223,7 +2223,7 @@ export default function AnnotationPanel({
                 onClick={onOpenJobsMonitor}
                 className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
               >
-                {tr("Перейти в Job Monitor", "Go to Job Monitor")}
+                {tr("Перейти в Мониторинг", "Go to Job Monitor")}
               </button>
             </div>
 
@@ -2238,7 +2238,7 @@ export default function AnnotationPanel({
                       onClick={onOpenJobsMonitor}
                       className="font-bold text-teal-600 underline decoration-teal-500 underline-offset-2 transition hover:text-teal-700"
                     >
-                      {tr("Перейти в Job Monitor", "Go to Job Monitor")}
+                      {tr("Перейти в Мониторинг", "Go to Job Monitor")}
                     </button>
                   </>
                 )}
