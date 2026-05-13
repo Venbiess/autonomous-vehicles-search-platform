@@ -40,7 +40,7 @@ from .models import (
     WaymoAuthCompleteRequest,
 )
 from .state import (
-    JOB_LOG_DIR,
+    JOB_LOG_DIR as JOB_LOG_DIR,
     JOBS_JOB_LOG_TAIL_LINES,
     analytics_api,
     app,
