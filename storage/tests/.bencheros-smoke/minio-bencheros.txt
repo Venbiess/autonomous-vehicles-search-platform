@@ -1,0 +1,18 @@
+bencherOS target: minio
+size: 256KB
+ops: 30
+concurrency: 4
+DISK:
+  bytes_mb=7.50 put_like_write_mb_s=599.1 get_like_read_mb_s=3348.5 uncached_read=true
+PUT:
+  ops=30 success=30 errors=0 concurrency=4
+  elapsed=0.058s rps=516.0 data_mb=7.50 throughput_mb_s=129.0
+  latency_ms p50=7.53 p95=9.51 max=9.54
+GET:
+  ops=30 success=30 errors=0 concurrency=4
+  elapsed=0.032s rps=952.2 data_mb=7.50 throughput_mb_s=238.1
+  latency_ms p50=3.88 p95=6.15 max=6.61
+DELETE:
+  ops=30 success=30 errors=0 concurrency=4
+  elapsed=0.006s rps=4778.6 data_mb=7.50 throughput_mb_s=1194.7
+  latency_ms p50=0.70 p95=1.32 max=2.01

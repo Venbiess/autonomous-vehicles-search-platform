@@ -1,0 +1,76 @@
+name: BencherOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Object storage target to benchmark"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - minio
+          - pics
+      object_size:
+        description: "Single object size (e.g. 256KB, 1MB, 8MB)"
+        required: true
+        default: "1MB"
+      ops:
+        description: "Number of operations (PUT/GET/DELETE per target)"
+        required: true
+        default: "1000"
+      concurrency:
+        description: "Concurrency"
+        required: true
+        default: "8"
+
+jobs:
+  bencheros:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: minio
+          - target: pics
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Run bencherOS (${{ matrix.target }})
+        if: ${{ inputs.target == 'all' || inputs.target == matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+          OBJECT_SIZE: ${{ inputs.object_size }}
+          OPS: ${{ inputs.ops }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+          REPORT_DIR: ${{ github.workspace }}/artifacts/bencheros
+        run: |
+          chmod +x storage/tests/run_bencheros_backend.sh
+          storage/tests/run_bencheros_backend.sh
+
+      - name: Publish bencherOS artifacts (${{ matrix.target }})
+        if: ${{ inputs.target == 'all' || inputs.target == matrix.target }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: bencheros-${{ matrix.target }}
+          path: artifacts/bencheros/
+
+      - name: bencherOS summary (${{ matrix.target }})
+        if: ${{ inputs.target == 'all' || inputs.target == matrix.target }}
+        run: |
+          txt="artifacts/bencheros/${{ matrix.target }}-bencheros.txt"
+          if [ -f "$txt" ]; then
+            echo "### bencherOS ${{ matrix.target }}" >> "$GITHUB_STEP_SUMMARY"
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            cat "$txt" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+

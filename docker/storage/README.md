@@ -137,6 +137,33 @@ You can run one backend or `all`, tune `seed_count/query_count/vector_size/topk/
 - clear text summary in workflow step summary
 - JSON/text artifacts per backend
 
+### Object Storage Bencher (BencherOS)
+
+Есть отдельный ручной workflow:
+
+- **Actions** → **BencherOS** → **Run workflow**
+
+Он прогоняет object-storage benchmark для:
+
+- `minio`
+- `pics`
+
+Параметры:
+
+- `object_size` (размер одного объекта)
+- `ops` (количество операций PUT/GET/DELETE на target)
+- `concurrency`
+
+Локально:
+
+```bash
+storage/tests/run_bencheros_backend.sh
+# по умолчанию: all (minio -> pics)
+
+TARGET=minio OBJECT_SIZE=1MB OPS=1000 CONCURRENCY=8 storage/tests/run_bencheros_backend.sh
+TARGET=pics  OBJECT_SIZE=512KB OPS=500  CONCURRENCY=6 storage/tests/run_bencheros_backend.sh
+```
+
 ### Local Bench Script (single backend)
 
 ```bash
