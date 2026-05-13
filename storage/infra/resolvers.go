@@ -9,6 +9,8 @@ func ResolveObjectAdapter(cfg ObjectStoreConfig) (ObjectAdapter, error) {
 	switch strings.ToLower(strings.TrimSpace(cfg.Provider)) {
 	case "", "s3", "s3-compatible", "minio", "seaweedfs", "sweedfs":
 		return NewS3Adapter(cfg)
+	case "pics", "images", "pics-storage":
+		return NewPicsAdapter(cfg)
 	case "ytsaurus", "yt":
 		return NewYTsaurusAdapter(cfg)
 	default:

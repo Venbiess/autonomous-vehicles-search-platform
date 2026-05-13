@@ -10,6 +10,7 @@ declare -a BACKENDS=(
   "milvus|docker/storage/docker-compose.milvus.yml|120|60"
   "ytsaurus|docker/storage/docker-compose.ytsaurus.yml|180|20"
   "seaweedfs|docker/storage/docker-compose.seaweedfs.yml|60|20"
+  "pics|docker/storage/docker-compose.pics.yml|90|30"
 )
 
 BUILD=1

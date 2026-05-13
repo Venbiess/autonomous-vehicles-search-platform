@@ -35,6 +35,12 @@ docker compose -f docker/storage/docker-compose.pgvector.yml up --build
 docker compose -f docker/storage/docker-compose.seaweedfs.yml up -d --build
 ```
 
+## Start (PGVector with Pics object storage)
+
+```bash
+docker compose -f docker/storage/docker-compose.pics.yml up -d --build
+```
+
 ## Start (Qdrant)
 
 ```bash
@@ -159,6 +165,7 @@ This runs `storage/tests/tests.sh` sequentially for:
 - `milvus`
 - `ytsaurus`
 - `seaweedfs`
+- `pics`
 
 ## External YTsaurus as Object Store
 
@@ -214,6 +221,8 @@ Current behavior:
 - SeaweedFS S3 API (seaweedfs profile only): `8333`
 - SeaweedFS Filer UI/API (seaweedfs profile only): `8888`
 - SeaweedFS Master UI/API (seaweedfs profile only): `9333`
+- Pics coordinator API (pics profile only): `9004` (container `9000`)
+- Pics volume API (pics profile only): `9005` (container `9002`)
 - ClickHouse HTTP: `8123`
 - ClickHouse Native: `9000`
 - Qdrant HTTP (qdrant profile only): `6333`
@@ -226,6 +235,8 @@ docker compose -f docker/storage/docker-compose.pgvector.yml down
 docker compose -f docker/storage/docker-compose.qdrant.yml down
 # or
 docker compose -f docker/storage/docker-compose.seaweedfs.yml down
+# or
+docker compose -f docker/storage/docker-compose.pics.yml down
 ```
 
 ## Notes

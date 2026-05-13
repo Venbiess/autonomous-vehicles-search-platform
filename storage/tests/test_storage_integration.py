@@ -117,7 +117,7 @@ def test_upload_get_meta_get_content_and_delete(settings, http_session):
     assert uploaded["bucket"] == settings.bucket
     assert uploaded["key"] == key
     assert uploaded["storage_path"].endswith(f"{settings.bucket}/{key}")
-    assert uploaded["storage_path"].startswith(("s3://", "yt://", "seaweedfs://"))
+    assert uploaded["storage_path"].startswith(("s3://", "yt://", "seaweedfs://", "pics://"))
     assert uploaded["size_bytes"] == len(payload)
 
     meta = http_session.get(

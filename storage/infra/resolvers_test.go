@@ -45,3 +45,24 @@ func TestResolveObjectAdapterAcceptsYTsaurusAliases(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveObjectAdapterAcceptsPicsAliases(t *testing.T) {
+	base := ObjectStoreConfig{
+		EndpointURL: "http://pics-coordinator:9000",
+	}
+
+	for _, provider := range []string{"pics", "images", "pics-storage"} {
+		cfg := base
+		cfg.Provider = provider
+		adapter, err := ResolveObjectAdapter(cfg)
+		if err != nil {
+			t.Fatalf("ResolveObjectAdapter(%q) returned error: %v", provider, err)
+		}
+		if adapter == nil {
+			t.Fatalf("ResolveObjectAdapter(%q) returned nil adapter", provider)
+		}
+		if got := adapter.CanonicalPath("avsp", "a/b.jpg"); got != "pics://avsp/a/b.jpg" {
+			t.Fatalf("unexpected canonical path for %q: %q", provider, got)
+		}
+	}
+}

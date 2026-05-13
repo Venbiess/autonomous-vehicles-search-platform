@@ -1,0 +1,10 @@
+listen_addr: "0.0.0.0:9000"
+public_url: "http://pics-coordinator:9000"
+db_path: "/app/data/coordinator/badger"
+pack_size_bytes: 34359738368
+replica_count: 1
+write_quorum: 1
+http_timeout: 10s
+max_upload_bytes: 67108864
+object_cache_entries: 10000
+upload_token_secret: "dev-upload-token-secret"
