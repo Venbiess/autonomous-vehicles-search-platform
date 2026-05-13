@@ -263,7 +263,6 @@ interface SnapshotUiStateStorage {
   snapshotActionProgress: Partial<Record<SnapshotActionId, number>>;
   snapshotTransferSize: Partial<Record<SnapshotActionId, SnapshotTransferSize>>;
   snapshotProgressMeta: Partial<Record<SnapshotActionId, SnapshotProgressMeta>>;
-  snapshotExportInlineMessage: string | null;
   snapshotImportInlineMessage: string | null;
   snapshotWarningMessage: string | null;
 }
@@ -1020,9 +1019,6 @@ export default function StoragePanel({
         setSnapshotProgressMeta(nextMeta);
       }
 
-      if (typeof parsed?.snapshotExportInlineMessage === "string") {
-        setSnapshotExportInlineMessage(parsed.snapshotExportInlineMessage || null);
-      }
       if (typeof parsed?.snapshotImportInlineMessage === "string") {
         setSnapshotImportInlineMessage(parsed.snapshotImportInlineMessage || null);
       }
@@ -1041,7 +1037,6 @@ export default function StoragePanel({
       Object.keys(snapshotActionProgress).length > 0 ||
       Object.keys(snapshotTransferSize).length > 0 ||
       Object.keys(snapshotProgressMeta).length > 0 ||
-      Boolean(snapshotExportInlineMessage) ||
       Boolean(snapshotImportInlineMessage) ||
       Boolean(snapshotWarningMessage);
     if (!hasSnapshotState) {
@@ -1053,7 +1048,6 @@ export default function StoragePanel({
       snapshotActionProgress,
       snapshotTransferSize,
       snapshotProgressMeta,
-      snapshotExportInlineMessage,
       snapshotImportInlineMessage,
       snapshotWarningMessage,
     };
@@ -1063,10 +1057,27 @@ export default function StoragePanel({
     snapshotActionProgress,
     snapshotTransferSize,
     snapshotProgressMeta,
-    snapshotExportInlineMessage,
     snapshotImportInlineMessage,
     snapshotWarningMessage,
   ]);
+
+  useEffect(() => {
+    if (!snapshotExportInlineMessage) {
+      return;
+    }
+    const isSuccessExportMessage =
+      snapshotExportInlineMessage.startsWith("Файл '") &&
+      snapshotExportInlineMessage.endsWith("' выгружен.");
+    if (!isSuccessExportMessage) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      setSnapshotExportInlineMessage((current) =>
+        current === snapshotExportInlineMessage ? null : current
+      );
+    }, 12000);
+    return () => clearTimeout(timer);
+  }, [snapshotExportInlineMessage]);
 
   useEffect(() => {
     if (!confirmDialog && !previewObjectId) {
