@@ -1,0 +1,101 @@
+services:
+  embedder-worker-2:
+    image: avsp-embedder-worker
+    build:
+      context: ..
+      dockerfile: docker/models/models.Dockerfile
+      args:
+        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 30s
+      timeout: 5s
+      retries: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: ${EMBEDDER_WORKER_RESTART_POLICY:-no}
+    command: >
+      /bin/sh -c "
+      python -m backend.models.queue_worker --worker embedder
+      "
+    volumes:
+      - ../:/app
+    expose:
+      - "8000"
+      - "9108"
+    environment:
+      EMBEDDER_PORT: 8000
+      WORKER_METRICS_PORT: 9108
+      LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/site-packages/nvidia/nccl/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvjitlink/lib
+      HF_HOME: /app/.cache/huggingface
+      HF_HUB_DISABLE_PROGRESS_BARS: "0"
+      TQDM_POSITION: "-1"
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
+      RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
+      RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
+      RABBITMQ_PREFETCH: 1
+      RABBITMQ_HEARTBEAT_SEC: 900
+      RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SEC: 960
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    networks:
+      - avsp-net
+
+  vlm-worker-2:
+    image: avsp-vlm-worker
+    build:
+      context: ..
+      dockerfile: docker/models/models.Dockerfile
+      args:
+        EMBEDDER_ATTN_IMPLEMENTATION_OVERRIDE: ${EMBEDDER_ATTN_IMPLEMENTATION:-}
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 30s
+      timeout: 5s
+      retries: 1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: ${VLM_WORKER_RESTART_POLICY:-no}
+    command: >
+      /bin/sh -c "
+      python -m backend.models.queue_worker --worker vlm
+      "
+    volumes:
+      - ../:/app
+    expose:
+      - "8001"
+      - "9109"
+    environment:
+      VLM_PORT: 8001
+      VLM_DEBUG_EMPTY_OUTPUT: ${VLM_DEBUG_EMPTY_OUTPUT:-0}
+      VLM_BACKEND: ${VLM_BACKEND:-SMOLVLM}
+      VLM_MODEL_NAME: ${VLM_MODEL_NAME:-}
+      VLM_OPENAI_API_KEY: ${VLM_OPENAI_API_KEY:-}
+      VLM_OPENAI_BASE_URL: ${VLM_OPENAI_BASE_URL:-}
+      VLM_OPENAI_ORG_ID: ${VLM_OPENAI_ORG_ID:-}
+      VLM_OPENAI_PROJECT_ID: ${VLM_OPENAI_PROJECT_ID:-}
+      VLM_OPENAI_TIMEOUT_SEC: ${VLM_OPENAI_TIMEOUT_SEC:-120}
+      VLM_OPENAI_MAX_RETRIES: ${VLM_OPENAI_MAX_RETRIES:-2}
+      VLM_OPENAI_IMAGE_DETAIL: ${VLM_OPENAI_IMAGE_DETAIL:-low}
+      VLM_OPENAI_IMAGE_FORMAT: ${VLM_OPENAI_IMAGE_FORMAT:-jpeg}
+      VLM_OPENAI_JPEG_QUALITY: ${VLM_OPENAI_JPEG_QUALITY:-95}
+      VLM_OPENAI_TEMPERATURE: ${VLM_OPENAI_TEMPERATURE:-}
+      VLM_OPENAI_SYSTEM_PROMPT: ${VLM_OPENAI_SYSTEM_PROMPT:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_ORG_ID: ${OPENAI_ORG_ID:-}
+      OPENAI_PROJECT_ID: ${OPENAI_PROJECT_ID:-}
+      WORKER_METRICS_PORT: 9109
+      LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.10/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.10/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.10/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.10/site-packages/nvidia/nccl/lib:/usr/local/lib/python3.10/site-packages/nvidia/nvjitlink/lib
+      HF_HOME: /app/.cache/huggingface
+      HF_HUB_DISABLE_PROGRESS_BARS: "0"
+      TQDM_POSITION: "-1"
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/%2f
+      RABBITMQ_EMBEDDER_QUEUE: avsp.embedder.tasks
+      RABBITMQ_VLM_QUEUE: avsp.vlm.tasks
+      RABBITMQ_PREFETCH: 1
+      RABBITMQ_HEARTBEAT_SEC: 900
+      RABBITMQ_BLOCKED_CONNECTION_TIMEOUT_SEC: 960
+    networks:
+      - avsp-net

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="$ROOT_DIR/docker/docker-compose.yml"
+COMPOSE_EXTRA_FILES_RAW="${COMPOSE_EXTRA_FILES:-}"
 
 if docker compose version >/dev/null 2>&1; then
   COMPOSE_CMD=(docker compose)
@@ -20,9 +21,22 @@ SYNTHETIC_BUCKET="${SYNTHETIC_BUCKET:-synthetic}"
 EMBEDDING_BACKFILL_LIMIT="${EMBEDDING_BACKFILL_LIMIT:-12}"
 VLM_BACKFILL_LIMIT="${VLM_BACKFILL_LIMIT:-3}"
 VLM_MAX_NEW_TOKENS="${VLM_MAX_NEW_TOKENS:-8}"
+EXPECT_EMBEDDER_CONSUMERS="${EXPECT_EMBEDDER_CONSUMERS:-1}"
+EXPECT_VLM_CONSUMERS="${EXPECT_VLM_CONSUMERS:-1}"
+EXTRA_SERVICES="${EXTRA_SERVICES:-}"
 
 compose() {
-  "${COMPOSE_CMD[@]}" -f "$COMPOSE_FILE" "$@"
+  local compose_args=("${COMPOSE_CMD[@]}" -f "$COMPOSE_FILE")
+  if [[ -n "$COMPOSE_EXTRA_FILES_RAW" ]]; then
+    IFS=',' read -r -a extra_files <<<"$COMPOSE_EXTRA_FILES_RAW"
+    local extra_file
+    for extra_file in "${extra_files[@]}"; do
+      if [[ -n "$extra_file" ]]; then
+        compose_args+=(-f "$extra_file")
+      fi
+    done
+  fi
+  "${compose_args[@]}" "$@"
 }
 
 cleanup() {
@@ -140,16 +154,26 @@ PY
 }
 
 echo "Starting AVSP smoke stack..."
-compose up -d --build \
-  rabbitmq \
-  clickhouse \
-  postgres \
-  minio \
-  minio-init \
-  storage-server \
-  embedder-worker \
-  vlm-worker \
+base_services=(
+  rabbitmq
+  clickhouse
+  postgres
+  minio
+  minio-init
+  storage-server
+  embedder-worker
+  vlm-worker
   master-server
+)
+if [[ -n "$EXTRA_SERVICES" ]]; then
+  IFS=',' read -r -a extra_services <<<"$EXTRA_SERVICES"
+  for extra_service in "${extra_services[@]}"; do
+    if [[ -n "$extra_service" ]]; then
+      base_services+=("$extra_service")
+    fi
+  done
+fi
+compose up -d --build "${base_services[@]}"
 
 wait_http_ok "storage-server" "http://localhost:9013/health" "$SMOKE_TIMEOUT_SEC"
 wait_http_ok "storage-ready" "http://localhost:9013/ready" "$SMOKE_TIMEOUT_SEC"
@@ -297,6 +321,14 @@ assert "services" in system_info, system_info
 assert master_health.get("status") == "ok", master_health
 models = master_health.get("models", {})
 assert models.get("mode") == "rabbitmq", models
+rabbitmq = models.get("rabbitmq", {})
+queues = rabbitmq.get("queues", {})
+embedder_consumers = int((queues.get("avsp.embedder.tasks") or {}).get("consumers") or 0)
+vlm_consumers = int((queues.get("avsp.vlm.tasks") or {}).get("consumers") or 0)
+expected_embedder = int("${EXPECT_EMBEDDER_CONSUMERS}")
+expected_vlm = int("${EXPECT_VLM_CONSUMERS}")
+assert embedder_consumers >= expected_embedder, (embedder_consumers, expected_embedder, queues)
+assert vlm_consumers >= expected_vlm, (vlm_consumers, expected_vlm, queues)
 assert "jobs" in jobs and isinstance(jobs["jobs"], list), jobs
 assert search_before.get("mode") == "vector_server", search_before
 assert isinstance(search_before.get("results"), list), search_before
