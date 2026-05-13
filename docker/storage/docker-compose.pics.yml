@@ -52,6 +52,12 @@ services:
       - storage-pics-coordinator-data:/app/data
     ports:
       - "9004:9000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9000/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
     networks:
       - storage-net
 
@@ -62,7 +68,8 @@ services:
       target: volume
     container_name: "avsp-storage-pics-volume-${USER}"
     depends_on:
-      - pics-coordinator
+      pics-coordinator:
+        condition: service_healthy
     environment:
       VOLUME_CONFIG_PATH: /app/config/volume.yaml
     volumes:
@@ -70,6 +77,12 @@ services:
       - storage-pics-volume-data:/app/data
     ports:
       - "9005:9002"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9002/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
     networks:
       - storage-net
 
@@ -84,9 +97,9 @@ services:
       clickhouse:
         condition: service_healthy
       pics-coordinator:
-        condition: service_started
+        condition: service_healthy
       pics-volume:
-        condition: service_started
+        condition: service_healthy
     environment:
       STORAGE_CONFIG_PATH: /app/storage/config/storage.integration.pics.yaml
     volumes:

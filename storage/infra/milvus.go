@@ -31,7 +31,6 @@ type MilvusAdapter struct {
 	collectionName string
 	metricType     string
 	vectorSize     int
-	timeoutSec     int
 	client         *http.Client
 
 	mu      sync.Mutex
@@ -61,7 +60,6 @@ func NewMilvusAdapter(cfg VectorIndexConfig) (*MilvusAdapter, error) {
 		collectionName: collectionName,
 		metricType:     normalizeMilvusMetricType(cfg.Distance),
 		vectorSize:     cfg.VectorSize,
-		timeoutSec:     timeoutSec,
 		client: &http.Client{
 			Timeout: time.Duration(timeoutSec) * time.Second,
 		},
@@ -98,8 +96,7 @@ func (m *MilvusAdapter) Upsert(ctx context.Context, objectID string, embedding [
 	if err := m.doJSON(ctx, http.MethodPost, "/v2/vectordb/entities/upsert", reqBody, nil); err != nil {
 		return err
 	}
-	// Keep read-after-write behavior deterministic for integration/API flows.
-	return m.flush(ctx)
+	return nil
 }
 
 func (m *MilvusAdapter) QueryTopK(ctx context.Context, embedding []float64, topK int) ([]VectorQueryResult, error) {
@@ -172,7 +169,7 @@ func (m *MilvusAdapter) Delete(ctx context.Context, objectIDs []string) error {
 	if err := m.doJSON(ctx, http.MethodPost, "/v2/vectordb/entities/delete", reqBody, nil); err != nil {
 		return err
 	}
-	return m.flush(ctx)
+	return nil
 }
 
 func (m *MilvusAdapter) Count(ctx context.Context) (int64, error) {
@@ -351,14 +348,6 @@ func (m *MilvusAdapter) hasCollection(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return resp.Has, nil
-}
-
-func (m *MilvusAdapter) flush(ctx context.Context) error {
-	reqBody := map[string]any{
-		"dbName":          m.dbName,
-		"collectionNames": []string{m.collectionName},
-	}
-	return m.doJSON(ctx, http.MethodPost, "/v2/vectordb/collections/flush", reqBody, nil)
 }
 
 func (m *MilvusAdapter) loadCollection(ctx context.Context) error {
