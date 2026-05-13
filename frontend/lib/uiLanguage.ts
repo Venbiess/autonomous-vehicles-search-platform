@@ -1,10 +1,9 @@
-export type UiLanguageCode = "en" | "ru";
-
 export interface UiLanguageOption {
-  code: UiLanguageCode;
+  code: string;
   flag: string;
   label: string;
   nativeLabel: string;
+  locale: string;
 }
 
 export interface SearchBarCopy {
@@ -78,26 +77,33 @@ export interface UiCopy {
   searchBar: SearchBarCopy;
 }
 
-export const UI_LANGUAGE_OPTIONS: UiLanguageOption[] = [
+export const UI_LANGUAGE_OPTIONS = [
   {
     code: "en",
     flag: "🇺🇸",
     label: "English",
     nativeLabel: "English",
+    locale: "en-US",
   },
   {
     code: "ru",
     flag: "🇷🇺",
     label: "Russian",
     nativeLabel: "Русский",
+    locale: "ru-RU",
   },
-];
+] as const satisfies readonly UiLanguageOption[];
+
+export type UiLanguageCode = (typeof UI_LANGUAGE_OPTIONS)[number]["code"];
 
 export const DEFAULT_UI_LANGUAGE: UiLanguageCode = "ru";
 export const IMAGE_SEARCH_QUERY_TOKEN = "__image_search__";
 
 const LANGUAGE_CODES = new Set<UiLanguageCode>(
   UI_LANGUAGE_OPTIONS.map((language) => language.code)
+);
+const UI_LANGUAGE_OPTIONS_BY_CODE: Record<string, UiLanguageOption> = Object.fromEntries(
+  UI_LANGUAGE_OPTIONS.map((option) => [option.code, option])
 );
 
 export function isUiLanguageCode(value: unknown): value is UiLanguageCode {
@@ -106,6 +112,24 @@ export function isUiLanguageCode(value: unknown): value is UiLanguageCode {
 
 export function resolveUiLanguageCode(value: unknown): UiLanguageCode {
   return isUiLanguageCode(value) ? value : DEFAULT_UI_LANGUAGE;
+}
+
+export function getUiLanguageOption(value: unknown): UiLanguageOption {
+  const code = resolveUiLanguageCode(value);
+  return UI_LANGUAGE_OPTIONS_BY_CODE[code] ?? UI_LANGUAGE_OPTIONS_BY_CODE[DEFAULT_UI_LANGUAGE];
+}
+
+export function getUiLanguageLocale(value: unknown): string {
+  return getUiLanguageOption(value).locale || "en-US";
+}
+
+export function getLocalizedText(
+  language: unknown,
+  translations: Partial<Record<UiLanguageCode, string>>,
+  fallback = ""
+): string {
+  const code = resolveUiLanguageCode(language);
+  return translations[code] ?? translations[DEFAULT_UI_LANGUAGE] ?? fallback;
 }
 
 export const UI_COPY: Record<UiLanguageCode, UiCopy> = {

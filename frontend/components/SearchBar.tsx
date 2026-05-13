@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { DEFAULT_UI_COPY, type SearchBarCopy } from "../lib/uiLanguage";
 
 interface SearchBarProps {
   onSearch: (payload: { query: string; imageFile: File | null }) => void;
@@ -8,6 +9,7 @@ interface SearchBarProps {
   initialQuery?: string;
   initialImageFile?: File | null;
   onStateChange?: (payload: { query: string; imageFile: File | null }) => void;
+  copy?: SearchBarCopy;
 }
 
 export default function SearchBar({
@@ -16,6 +18,7 @@ export default function SearchBar({
   initialQuery = "",
   initialImageFile = null,
   onStateChange,
+  copy = DEFAULT_UI_COPY.searchBar,
 }: SearchBarProps) {
   const [query, setQuery] = useState(initialQuery);
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -129,11 +132,11 @@ export default function SearchBar({
                     setIsPreviewOpen(true);
                   }
                 }}
-                aria-label="Открыть превью изображения"
+                aria-label={copy.openImagePreviewAria}
               >
                 <img
                   src={previewUrl}
-                  alt="Выбранное изображение"
+                  alt={copy.selectedImageAlt}
                   className="h-full w-full object-cover"
                   onLoad={() => setIsImageLoading(false)}
                   onError={() => {
@@ -155,7 +158,7 @@ export default function SearchBar({
                   type="button"
                   onClick={clearImage}
                   className="absolute -right-2 -top-2 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-gray-900 text-[11px] leading-none text-white shadow-sm"
-                  aria-label="Удалить изображение"
+                  aria-label={copy.removeImageAria}
                 >
                   ×
                 </button>
@@ -168,7 +171,7 @@ export default function SearchBar({
             onChange={(e) => setQuery(e.target.value)}
             disabled={hasImage}
             readOnly={hasImage}
-            placeholder="Найдётся почти всё..."
+            placeholder={copy.queryPlaceholder}
             className={`min-w-0 flex-1 bg-transparent px-1 py-1 text-gray-700 outline-none ${
               hasImage ? "cursor-not-allowed opacity-60" : ""
             }`}
@@ -184,8 +187,8 @@ export default function SearchBar({
             type="button"
             onClick={() => fileInputRef.current?.click()}
             className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-gray-500 transition hover:bg-gray-200 hover:text-gray-800"
-            aria-label="Прикрепить изображение"
-            title="Прикрепить изображение"
+            aria-label={copy.attachImageAria}
+            title={copy.attachImageAria}
           >
             <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2">
               <path
@@ -209,7 +212,7 @@ export default function SearchBar({
             ${isDisabled ? "opacity-60 cursor-not-allowed" : ""}
         `}
       >
-        {loading ? "Ищем..." : "Поиск"}
+        {loading ? copy.searchButtonLoading : copy.searchButtonIdle}
       </button>
 
       {isPreviewOpen && previewUrl && (
@@ -225,13 +228,13 @@ export default function SearchBar({
               type="button"
               onClick={() => setIsPreviewOpen(false)}
               className="absolute -right-3 -top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full bg-gray-900 text-lg leading-none text-white shadow-md"
-              aria-label="Закрыть превью"
+              aria-label={copy.closePreviewAria}
             >
               ×
             </button>
             <img
               src={previewUrl}
-              alt="Превью загруженного изображения"
+              alt={copy.uploadedImagePreviewAlt}
               className="max-h-[82vh] max-w-[90vw] rounded-xl object-contain"
             />
           </div>

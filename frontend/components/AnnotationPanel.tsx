@@ -2,12 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
+import { getLocalizedText, type UiLanguageCode } from "../lib/uiLanguage";
 
 interface AnnotationPanelProps {
   onOpenJobsMonitor: () => void;
   onOpenStorage: () => void;
   showSyntheticMethod?: boolean;
   showOpenAIBatchBlock?: boolean;
+  language?: UiLanguageCode;
 }
 
 type ResponseType = "short_text" | "text" | "yes_no" | "number" | "category";
@@ -100,17 +102,6 @@ interface LocalUploadFormState {
   objectKey: string;
 }
 
-const RESPONSE_TYPE_OPTIONS: Array<{
-  value: ResponseType;
-  label: string;
-}> = [
-  { value: "yes_no", label: "Yes / No" },
-  { value: "number", label: "Number" },
-  { value: "category", label: "Category" },
-  { value: "short_text", label: "Short text" },
-  { value: "text", label: "Detailed text" },
-];
-
 function createFieldDraft(): FieldDraft {
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -158,7 +149,20 @@ export default function AnnotationPanel({
   onOpenStorage,
   showSyntheticMethod = true,
   showOpenAIBatchBlock = false,
+  language = "ru",
 }: AnnotationPanelProps) {
+  const tr = (ru: string, en: string) =>
+    getLocalizedText(language, { ru, en }, en);
+  const responseTypeOptions = useMemo(
+    () => [
+      { value: "yes_no" as ResponseType, label: tr("Да / Нет", "Yes / No") },
+      { value: "number" as ResponseType, label: tr("Число", "Number") },
+      { value: "category" as ResponseType, label: tr("Категория", "Category") },
+      { value: "short_text" as ResponseType, label: tr("Короткий текст", "Short text") },
+      { value: "text" as ResponseType, label: tr("Подробный текст", "Detailed text") },
+    ],
+    [language]
+  );
   const localUploadFileInputRef = useRef<HTMLInputElement | null>(null);
   const [limitInput, setLimitInput] = useState("1000");
   const [batchSizeInput, setBatchSizeInput] = useState("50");
@@ -282,7 +286,7 @@ export default function AnnotationPanel({
             ? error.response.data.detail
             : error instanceof Error
               ? error.message
-              : "Failed to load VLM schema";
+              : tr("Не удалось загрузить VLM schema", "Failed to load VLM schema");
         setVlmErrorMessage(message);
       }
     };
@@ -385,10 +389,16 @@ export default function AnnotationPanel({
           : axios.isAxiosError(lastError) && lastError.response?.data?.error
             ? String(lastError.response.data.error)
             : isTransientFetchFailure(lastError)
-              ? "Storage server is starting up. Retry in a few seconds."
+              ? tr(
+                  "Storage server запускается. Повторите через несколько секунд.",
+                  "Storage server is starting up. Retry in a few seconds."
+                )
               : lastError instanceof Error
                 ? lastError.message
-                : "Failed to load preprocessor methods from storage API. Check storage-server logs for YAML/config parse errors.";
+                : tr(
+                    "Не удалось загрузить preprocessor methods из storage API. Проверьте логи storage-server на ошибки YAML/config.",
+                    "Failed to load preprocessor methods from storage API. Check storage-server logs for YAML/config parse errors."
+                  );
       setPreprocessorMethods([]);
       setInstallDatasets({});
       setDatasetConfigText({});
@@ -409,7 +419,10 @@ export default function AnnotationPanel({
         if (response.data?.source_table_exists === false) {
           setSourceWarning(
             response.data?.warning ??
-              "Исходные данные еще не скачаны. Таблица кадров отсутствует."
+              tr(
+                "Исходные данные еще не скачаны. Таблица кадров отсутствует.",
+                "Source data has not been downloaded yet. Frames table is missing."
+              )
           );
         } else {
           setSourceWarning(null);
@@ -456,7 +469,10 @@ export default function AnnotationPanel({
             message:
               queryDim > 0 && storedDim > 0
                 ? `Размерность нового embedder (${queryDim}) не совпадает с текущей разметкой storage (${storedDim}).`
-                : "Размерность нового embedder не совпадает с текущей разметкой storage.",
+                : tr(
+                    "Размерность нового embedder не совпадает с текущей разметкой storage.",
+                    "The new embedder dimension does not match the current storage mapping."
+                  ),
           });
           return;
         }
@@ -473,7 +489,10 @@ export default function AnnotationPanel({
       const pendingRows = Number(statsResponse.data?.embeddings?.pending_rows ?? 0);
       if (pendingRows <= 0) {
         setWarningMessage(
-          "Все сцены уже размечены векторными эмбеддингами. Новая backfill-джоба не требуется."
+          tr(
+            "Все сцены уже размечены векторными эмбеддингами. Новая backfill-джоба не требуется.",
+            "All scenes already have vector embeddings. A new backfill job is not required."
+          )
         );
         return;
       }
@@ -485,7 +504,10 @@ export default function AnnotationPanel({
         dataset: embeddingDataset === "all" ? null : embeddingDataset,
       });
       setStatusMessage(
-        `Embedding backfill started. Job ID: ${response.data.job_id}.`
+        tr(
+          `Запущен embedding backfill. Job ID: ${response.data.job_id}.`,
+          `Embedding backfill started. Job ID: ${response.data.job_id}.`
+        )
       );
       setShowJobsLink(true);
     } catch (error: unknown) {
@@ -494,7 +516,7 @@ export default function AnnotationPanel({
           ? error.response.data.detail
           : error instanceof Error
             ? error.message
-            : "Failed to start embedding backfill";
+            : tr("Не удалось запустить embedding backfill", "Failed to start embedding backfill");
       setErrorMessage(message);
     } finally {
       setIsStartingJob(false);
@@ -533,7 +555,10 @@ export default function AnnotationPanel({
 
       setEmbeddingMismatchDialog(null);
       setStatusMessage(
-        `Embeddings reset: ${resetEmbeddings}. Embedding backfill started. Job ID: ${response.data.job_id}.`
+        tr(
+          `Embeddings reset: ${resetEmbeddings}. Запущен embedding backfill. Job ID: ${response.data.job_id}.`,
+          `Embeddings reset: ${resetEmbeddings}. Embedding backfill started. Job ID: ${response.data.job_id}.`
+        )
       );
       setShowJobsLink(true);
     } catch (error: unknown) {
@@ -544,7 +569,7 @@ export default function AnnotationPanel({
             ? error.response.data.error
             : error instanceof Error
               ? error.message
-              : "Failed to rebuild embeddings";
+              : tr("Не удалось пересоздать embeddings", "Failed to rebuild embeddings");
       setErrorMessage(message);
     } finally {
       setIsRebuildingEmbeddings(false);
@@ -588,7 +613,12 @@ export default function AnnotationPanel({
       setVlmStatusMessage(null);
       setVlmWarningMessage(null);
       setShowVlmJobsLink(false);
-      setVlmErrorMessage("Add at least one field with a prompt.");
+      setVlmErrorMessage(
+        tr(
+          "Добавьте хотя бы одно поле с prompt.",
+          "Add at least one field with a prompt."
+        )
+      );
       return;
     }
 
@@ -637,14 +667,14 @@ export default function AnnotationPanel({
           response_type: field.response_type,
         }))
       );
-      setVlmSchemaStatusMessage("VLM schema saved.");
+      setVlmSchemaStatusMessage(tr("VLM schema сохранена.", "VLM schema saved."));
     } catch (error: unknown) {
       const message =
         axios.isAxiosError(error) && error.response?.data?.detail
           ? error.response.data.detail
           : error instanceof Error
             ? error.message
-            : "Failed to save VLM schema";
+            : tr("Не удалось сохранить VLM schema", "Failed to save VLM schema");
       setVlmErrorMessage(message);
     } finally {
       setIsSavingVlmSchema(false);
@@ -656,7 +686,12 @@ export default function AnnotationPanel({
       setVlmStatusMessage(null);
       setVlmWarningMessage(null);
       setShowVlmJobsLink(false);
-      setVlmErrorMessage("Save VLM fields before starting analysis.");
+      setVlmErrorMessage(
+        tr(
+          "Сохраните VLM-поля перед запуском анализа.",
+          "Save VLM fields before starting analysis."
+        )
+      );
       return;
     }
 
@@ -687,7 +722,10 @@ export default function AnnotationPanel({
       const pendingRows = Number(statsResponse.data?.vlm?.pending_rows ?? 0);
       if (pendingRows <= 0) {
         setVlmWarningMessage(
-          "Все сцены уже размечены для VLM. Новая backfill-джоба не требуется."
+          tr(
+            "Все сцены уже размечены для VLM. Новая backfill-джоба не требуется.",
+            "All scenes already have VLM annotations. A new backfill job is not required."
+          )
         );
         return;
       }
@@ -700,7 +738,12 @@ export default function AnnotationPanel({
         max_new_tokens: vlmMaxNewTokens,
         dataset: vlmDataset === "all" ? null : vlmDataset,
       });
-      setVlmStatusMessage(`VLM backfill started. Job ID: ${response.data.job_id}.`);
+      setVlmStatusMessage(
+        tr(
+          `Запущен VLM backfill. Job ID: ${response.data.job_id}.`,
+          `VLM backfill started. Job ID: ${response.data.job_id}.`
+        )
+      );
       setShowVlmJobsLink(true);
     } catch (error: unknown) {
       const message =
@@ -708,7 +751,7 @@ export default function AnnotationPanel({
           ? error.response.data.detail
           : error instanceof Error
             ? error.message
-            : "Failed to start VLM backfill";
+            : tr("Не удалось запустить VLM backfill", "Failed to start VLM backfill");
       setVlmErrorMessage(message);
     } finally {
       setIsStartingVlmJob(false);
@@ -915,13 +958,21 @@ export default function AnnotationPanel({
       const sessionId = String(payload.session_id || "").trim();
       const authUrl = String(payload.auth_url || "").trim();
       if (!sessionId) {
-        throw new Error("Не удалось создать сессию авторизации Waymo.");
+        throw new Error(
+          tr(
+            "Не удалось создать сессию авторизации Waymo.",
+            "Failed to create a Waymo auth session."
+          )
+        );
       }
       setWaymoAuthSessionId(sessionId);
       setWaymoAuthUrl(authUrl || null);
       if (!authUrl) {
         setWaymoAuthError(
-          "Ссылка авторизации пока не получена. Нажмите «Обновить ссылку» через несколько секунд."
+          tr(
+            "Ссылка авторизации пока не получена. Нажмите «Обновить ссылку» через несколько секунд.",
+            "The auth link is not ready yet. Click Refresh link in a few seconds."
+          )
         );
       }
     } catch (error: unknown) {
@@ -932,7 +983,7 @@ export default function AnnotationPanel({
             ? String(error.response.data.error)
             : error instanceof Error
               ? error.message
-              : "Не удалось запустить авторизацию Waymo.";
+              : tr("Не удалось запустить авторизацию Waymo.", "Failed to start Waymo auth.");
       setWaymoAuthError(message);
     } finally {
       setWaymoAuthBusy(false);
@@ -941,12 +992,12 @@ export default function AnnotationPanel({
 
   const submitWaymoAuthCode = async () => {
     if (!waymoAuthSessionId) {
-      setWaymoAuthError("Сначала получите ссылку авторизации.");
+      setWaymoAuthError(tr("Сначала получите ссылку авторизации.", "Get the auth link first."));
       return;
     }
     const code = waymoAuthCode.trim();
     if (!code) {
-      setWaymoAuthError("Введите код авторизации.");
+      setWaymoAuthError(tr("Введите код авторизации.", "Enter the auth code."));
       return;
     }
     try {
@@ -957,7 +1008,9 @@ export default function AnnotationPanel({
         code,
       });
       const message = String(response.data?.message || "").trim();
-      setWaymoAuthSuccess(message || "Авторизация Google ADC выполнена.");
+      setWaymoAuthSuccess(
+        message || tr("Авторизация Google ADC выполнена.", "Google ADC authorization completed.")
+      );
       setWaymoAuthModalOpen(false);
       setWaymoAuthCode("");
       if (pendingWaymoInstall) {
@@ -972,13 +1025,15 @@ export default function AnnotationPanel({
       if (detail && typeof detail === "object" && Array.isArray((detail as { logs_tail?: string[] }).logs_tail)) {
         const payload = detail as { message?: string; logs_tail?: string[] };
         setWaymoAuthError(
-          `${String(payload.message || "Ошибка авторизации")}\n\n${(payload.logs_tail || []).join("\n")}`
+          `${String(payload.message || tr("Ошибка авторизации", "Authorization error"))}\n\n${(payload.logs_tail || []).join("\n")}`
         );
       } else if (typeof detail === "string") {
         setWaymoAuthError(detail);
       } else {
         const message =
-          error instanceof Error ? error.message : "Не удалось завершить авторизацию.";
+          error instanceof Error
+            ? error.message
+            : tr("Не удалось завершить авторизацию.", "Failed to complete authorization.");
         setWaymoAuthError(message);
       }
     } finally {
@@ -1009,8 +1064,11 @@ export default function AnnotationPanel({
         .join(", ");
       setInstallStatusMessage(
         jobs.length > 0
-          ? `Installation jobs started: ${jobsInfo}.`
-          : "Installation request sent."
+          ? tr(
+              `Джобы установки запущены: ${jobsInfo}.`,
+              `Installation jobs started: ${jobsInfo}.`
+            )
+          : tr("Запрос на установку отправлен.", "Installation request sent.")
       );
       setShowInstallJobsLink(true);
       if (options?.clearPending) {
@@ -1024,7 +1082,7 @@ export default function AnnotationPanel({
             ? error.response.data.error
             : error instanceof Error
               ? error.message
-              : "Failed to start dataset installation";
+              : tr("Не удалось запустить установку датасетов", "Failed to start dataset installation");
       setInstallErrorMessage(message);
     } finally {
       setIsStartingInstall(false);
@@ -1039,7 +1097,12 @@ export default function AnnotationPanel({
     if (selectedDatasets.length === 0) {
       setInstallStatusMessage(null);
       setShowInstallJobsLink(false);
-      setInstallErrorMessage("Select at least one dataset for installation.");
+      setInstallErrorMessage(
+        tr(
+          "Выберите хотя бы один датасет для установки.",
+          "Select at least one dataset for installation."
+        )
+      );
       return;
     }
 
@@ -1050,15 +1113,20 @@ export default function AnnotationPanel({
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
           configs[dataset] = parsed as Record<string, unknown>;
         } else {
-          throw new Error("Config must be a JSON object.");
+          throw new Error(tr("Config должен быть JSON-объектом.", "Config must be a JSON object."));
         }
       } catch (error) {
         setInstallStatusMessage(null);
         setShowInstallJobsLink(false);
         setInstallErrorMessage(
-          `Invalid JSON config for ${dataset}: ${
-            error instanceof Error ? error.message : "Parse error"
-          }`
+          tr(
+            `Некорректный JSON config для ${dataset}: ${
+              error instanceof Error ? error.message : "Ошибка парсинга"
+            }`,
+            `Invalid JSON config for ${dataset}: ${
+              error instanceof Error ? error.message : "Parse error"
+            }`
+          )
         );
         return;
       }
@@ -1073,7 +1141,10 @@ export default function AnnotationPanel({
           setShowInstallJobsLink(false);
           setInstallErrorMessage(null);
           setInstallStatusMessage(
-            "Для установки Waymo нужна авторизация Google ADC. Завершите авторизацию в окне ниже, установка запустится автоматически."
+            tr(
+              "Для установки Waymo нужна авторизация Google ADC. Завершите авторизацию в окне ниже, установка запустится автоматически.",
+              "Waymo installation requires Google ADC authorization. Complete authorization below and installation will start automatically."
+            )
           );
           setPendingWaymoInstall({
             datasets: selectedDatasets,
@@ -1094,7 +1165,7 @@ export default function AnnotationPanel({
               ? String(error.response.data.error)
               : error instanceof Error
                 ? error.message
-                : "Не удалось проверить авторизацию Waymo.";
+                : tr("Не удалось проверить авторизацию Waymo.", "Failed to check Waymo authorization.");
         setInstallStatusMessage(null);
         setShowInstallJobsLink(false);
         setInstallErrorMessage(message);
@@ -1146,12 +1217,12 @@ export default function AnnotationPanel({
 
   const submitLocalImageUpload = async () => {
     if (!localUploadFile) {
-      setLocalUploadError("Choose an image file first.");
+      setLocalUploadError(tr("Сначала выберите изображение.", "Choose an image file first."));
       return;
     }
     const bucket = localUploadForm.bucket.trim();
     if (!bucket) {
-      setLocalUploadError("Bucket is required.");
+      setLocalUploadError(tr("Поле bucket обязательно.", "Bucket is required."));
       return;
     }
 
@@ -1184,7 +1255,7 @@ export default function AnnotationPanel({
       const payload = response.data || {};
       const objectId = String(payload.object_id || "").trim();
       const storagePath = String(payload.storage_path || "").trim();
-      const summary = `Local image uploaded: ${objectId || "n/a"}${
+      const summary = `${tr("Изображение загружено", "Local image uploaded")}: ${objectId || "n/a"}${
         storagePath ? ` (${storagePath})` : ""
       }`;
       setLocalUploadSuccess(summary);
@@ -1200,7 +1271,7 @@ export default function AnnotationPanel({
             ? String(error.response.data.detail)
             : error instanceof Error
               ? error.message
-              : "Failed to upload local image";
+              : tr("Не удалось загрузить локальное изображение", "Failed to upload local image");
       setLocalUploadError(message);
     } finally {
       setIsUploadingLocalImage(false);
@@ -1213,12 +1284,13 @@ export default function AnnotationPanel({
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5">
             <h2 className="text-2xl font-semibold text-slate-900">
-              Dataset Installation
+              {tr("Установка датасетов", "Dataset Installation")}
             </h2>
             <p className="mt-2 text-sm text-slate-600">
-              Select available preprocessors from storage API, edit config JSON,
-              and start installation jobs.
-              Each dataset runs as a separate job in Job Monitor.
+              {tr(
+                "Выберите доступные preprocessors из storage API, отредактируйте config JSON и запустите джобы установки. Каждый датасет запускается отдельной джобой в Job Monitor.",
+                "Select available preprocessors from storage API, edit config JSON, and start installation jobs. Each dataset runs as a separate job in Job Monitor."
+              )}
             </p>
           </div>
 
@@ -1230,7 +1302,10 @@ export default function AnnotationPanel({
 
           {!preprocessorMethodsError && visiblePreprocessorMethods.length === 0 && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
-              No preprocessor methods were returned by storage API.
+              {tr(
+                "Storage API не вернул preprocessor methods.",
+                "No preprocessor methods were returned by storage API."
+              )}
             </div>
           )}
 
@@ -1258,7 +1333,9 @@ export default function AnnotationPanel({
                   />
                   <span>{option.label}</span>
                 </label>
-                <div className="mb-2 text-sm font-semibold text-slate-800">Config (JSON)</div>
+                <div className="mb-2 text-sm font-semibold text-slate-800">
+                  {tr("Config (JSON)", "Config (JSON)")}
+                </div>
                 {option.description && (
                   <div className="mb-2 text-xs text-slate-500">{option.description}</div>
                 )}
@@ -1295,20 +1372,22 @@ export default function AnnotationPanel({
               disabled={isStartingInstall}
               className="rounded-full bg-blue-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isStartingInstall ? "Starting..." : "Start dataset installation"}
+              {isStartingInstall
+                ? tr("Запуск...", "Starting...")
+                : tr("Запустить установку датасетов", "Start dataset installation")}
             </button>
             <button
               type="button"
               onClick={onOpenJobsMonitor}
               className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              Open Job Monitor
+              {tr("Открыть Job Monitor", "Open Job Monitor")}
             </button>
             <button
               type="button"
               onClick={openLocalUploadDialog}
               className="inline-flex items-center gap-2 rounded-full border border-slate-300 px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
-              title="Upload local image"
+              title={tr("Загрузить локальное изображение", "Upload local image")}
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -1362,7 +1441,7 @@ export default function AnnotationPanel({
                     }}
                     className="font-bold text-indigo-700 underline decoration-indigo-600 underline-offset-2 transition hover:text-indigo-800"
                   >
-                    Открыть авторизацию Waymo
+                    {tr("Открыть авторизацию Waymo", "Open Waymo authorization")}
                   </button>
                 </>
               )}
@@ -1371,7 +1450,11 @@ export default function AnnotationPanel({
 
           {waymoAuthSuccess && (
             <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
-              {waymoAuthSuccess}. Теперь снова нажмите Start dataset installation.
+              {waymoAuthSuccess}.{" "}
+              {tr(
+                "Теперь снова нажмите «Запустить установку датасетов».",
+                "Now click Start dataset installation again."
+              )}
             </div>
           )}
         </div>
@@ -1380,16 +1463,18 @@ export default function AnnotationPanel({
           <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/45 px-4">
             <div className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
               <div className="mb-4">
-                <h3 className="text-lg font-semibold text-slate-900">Upload Local Image</h3>
+                <h3 className="text-lg font-semibold text-slate-900">
+                  {tr("Загрузка локального изображения", "Upload Local Image")}
+                </h3>
                 <p className="mt-1 text-sm text-slate-600">
-                  Set storage parameters for selected file:{" "}
-                  <span className="font-semibold">{localUploadFile?.name || "unknown"}</span>
+                  {tr("Задайте параметры storage для выбранного файла:", "Set storage parameters for selected file:")}{" "}
+                  <span className="font-semibold">{localUploadFile?.name || tr("неизвестно", "unknown")}</span>
                 </p>
               </div>
 
               <div className="grid gap-3 md:grid-cols-2">
                 <label className="flex flex-col gap-1 text-sm text-slate-600">
-                  Bucket
+                  {tr("Bucket", "Bucket")}
                   <input
                     value={localUploadForm.bucket}
                     onChange={(event) =>
@@ -1402,7 +1487,7 @@ export default function AnnotationPanel({
                   />
                 </label>
                 <label className="flex flex-col gap-1 text-sm text-slate-600">
-                  Camera
+                  {tr("Камера", "Camera")}
                   <select
                     value={localUploadForm.cameraName}
                     onChange={(event) =>
@@ -1422,7 +1507,7 @@ export default function AnnotationPanel({
                   </select>
                 </label>
                 <label className="flex flex-col gap-1 text-sm text-slate-600">
-                  Dataset type
+                  {tr("Тип датасета", "Dataset type")}
                   <input
                     value={localUploadForm.datasetType}
                     onChange={(event) =>
@@ -1435,7 +1520,7 @@ export default function AnnotationPanel({
                   />
                 </label>
                 <label className="flex flex-col gap-1 text-sm text-slate-600">
-                  Timestamp (optional)
+                  {tr("Timestamp (опционально)", "Timestamp (optional)")}
                   <input
                     value={localUploadForm.timestamp}
                     onChange={(event) =>
@@ -1444,7 +1529,7 @@ export default function AnnotationPanel({
                         timestamp: event.target.value,
                       }))
                     }
-                    placeholder="e.g. 1714637835123"
+                    placeholder={tr("например: 1714637835123", "e.g. 1714637835123")}
                     className="rounded-xl border border-slate-300 px-3 py-2 text-slate-900 outline-none focus:border-sky-500"
                   />
                 </label>
@@ -1452,7 +1537,7 @@ export default function AnnotationPanel({
 
               <div className="mt-3 grid gap-3">
                 <label className="flex flex-col gap-1 text-sm text-slate-600">
-                  Storage key (optional override)
+                  {tr("Storage key (опциональное переопределение)", "Storage key (optional override)")}
                   <input
                     value={localUploadForm.objectKey}
                     onChange={(event) =>
@@ -1466,7 +1551,7 @@ export default function AnnotationPanel({
                   />
                 </label>
                 <label className="flex flex-col gap-1 text-sm text-slate-600">
-                  Source link (optional)
+                  {tr("Source link (опционально)", "Source link (optional)")}
                   <input
                     value={localUploadForm.sourceLink}
                     onChange={(event) =>
@@ -1501,7 +1586,7 @@ export default function AnnotationPanel({
                   }}
                   className="rounded-full border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
                 >
-                  Cancel
+                  {tr("Отмена", "Cancel")}
                 </button>
                 <button
                   type="button"
@@ -1509,7 +1594,7 @@ export default function AnnotationPanel({
                   disabled={isUploadingLocalImage}
                   className="rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {isUploadingLocalImage ? "Uploading..." : "Upload"}
+                  {isUploadingLocalImage ? tr("Загрузка...", "Uploading...") : tr("Загрузить", "Upload")}
                 </button>
               </div>
             </div>
@@ -1528,19 +1613,22 @@ export default function AnnotationPanel({
             <div className="w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
               <div className="border-b border-slate-200 px-5 py-4">
                 <div className="text-base font-semibold text-slate-900">
-                  Несовместимая размерность embeddings
+                  {tr("Несовместимая размерность embeddings", "Incompatible embeddings dimension")}
                 </div>
                 <div className="mt-1 text-sm text-slate-600">{embeddingMismatchDialog.message}</div>
               </div>
               <div className="space-y-3 px-5 py-4 text-sm text-slate-700">
                 <div>
-                  Текущий embedder: <span className="font-semibold">{embeddingMismatchDialog.queryDim || "—"}</span>
+                  {tr("Текущий embedder", "Current embedder")}: <span className="font-semibold">{embeddingMismatchDialog.queryDim || "—"}</span>
                 </div>
                 <div>
-                  Разметка в storage: <span className="font-semibold">{embeddingMismatchDialog.storedDim || "—"}</span>
+                  {tr("Разметка в storage", "Storage mapping")}: <span className="font-semibold">{embeddingMismatchDialog.storedDim || "—"}</span>
                 </div>
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-800">
-                  Возможно стоит пересоздать embedding storage под новую размерность и запустить разметку заново либо вернуть прежнюю модель.
+                  {tr(
+                    "Возможно стоит пересоздать embedding storage под новую размерность и запустить разметку заново либо вернуть прежнюю модель.",
+                    "Consider rebuilding embedding storage for the new dimension and restarting annotation, or switching back to the previous model."
+                  )}
                 </div>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 px-5 py-4">
@@ -1550,7 +1638,7 @@ export default function AnnotationPanel({
                   className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
                   disabled={isRebuildingEmbeddings}
                 >
-                  Отмена
+                  {tr("Отмена", "Cancel")}
                 </button>
                 <button
                   type="button"
@@ -1560,7 +1648,9 @@ export default function AnnotationPanel({
                   }`}
                   disabled={isRebuildingEmbeddings}
                 >
-                  {isRebuildingEmbeddings ? "Пересоздаю embeddings..." : "Пересоздать и разметить заново"}
+                  {isRebuildingEmbeddings
+                    ? tr("Пересоздаю embeddings...", "Rebuilding embeddings...")
+                    : tr("Пересоздать и разметить заново", "Rebuild and re-annotate")}
                 </button>
               </div>
             </div>
@@ -1575,17 +1665,19 @@ export default function AnnotationPanel({
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5">
             <h2 className="text-2xl font-semibold text-slate-900">
-              Embedding Annotation
+              {tr("Embedding Annotation", "Embedding Annotation")}
             </h2>
             <p className="mt-2 text-sm text-slate-600">
-              Start a background job that computes and saves image embeddings for
-              scenes into the annotation storage.
+              {tr(
+                "Запустите фоновую джобу, которая вычисляет и сохраняет image embeddings для сцен в annotation storage.",
+                "Start a background job that computes and saves image embeddings for scenes into the annotation storage."
+              )}
             </p>
           </div>
 
           <div className="mb-6 flex flex-wrap items-end gap-3">
             <label className="flex flex-col gap-1 text-sm text-slate-600">
-              Limit
+              {tr("Лимит", "Limit")}
               <input
                 type="number"
                 min={1}
@@ -1596,7 +1688,7 @@ export default function AnnotationPanel({
             </label>
 
             <label className="flex flex-col gap-1 text-sm text-slate-600">
-              Batch size
+              {tr("Размер батча", "Batch size")}
               <input
                 type="number"
                 min={1}
@@ -1607,13 +1699,13 @@ export default function AnnotationPanel({
             </label>
 
             <label className="flex flex-col gap-1 text-sm text-slate-600">
-              Dataset
+              {tr("Датасет", "Dataset")}
               <select
                 value={embeddingDataset}
                 onChange={(event) => setEmbeddingDataset(event.target.value)}
                 className="w-44 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
               >
-                <option value="all">All datasets</option>
+                <option value="all">{tr("Все датасеты", "All datasets")}</option>
                 {availableDatasets.map((dataset) => (
                   <option key={`embed-${dataset}`} value={dataset}>
                     {dataset}
@@ -1630,21 +1722,23 @@ export default function AnnotationPanel({
               disabled={isStartingJob}
               className="rounded-full bg-emerald-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isStartingJob ? "Starting..." : "Start embedding backfill"}
+              {isStartingJob
+                ? tr("Запуск...", "Starting...")
+                : tr("Запустить embedding backfill", "Start embedding backfill")}
             </button>
             <button
               type="button"
               onClick={onOpenJobsMonitor}
               className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              Open Job Monitor
+              {tr("Открыть Job Monitor", "Open Job Monitor")}
             </button>
             <button
               type="button"
               onClick={onOpenStorage}
               className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              Go to Storage
+              {tr("Открыть Storage", "Go to Storage")}
             </button>
           </div>
 
@@ -1659,7 +1753,7 @@ export default function AnnotationPanel({
                     onClick={onOpenJobsMonitor}
                     className="font-bold text-teal-600 underline decoration-teal-500 underline-offset-2 transition hover:text-teal-700"
                   >
-                    Go to Job Monitor
+                    {tr("Перейти в Job Monitor", "Go to Job Monitor")}
                   </button>
                 </>
               )}
@@ -1682,16 +1776,18 @@ export default function AnnotationPanel({
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5">
             <h2 className="text-2xl font-semibold text-slate-900">
-              VLM Annotation
+              {tr("VLM Annotation", "VLM Annotation")}
             </h2>
             <p className="mt-2 text-sm text-slate-600">
-              Start a background job that computes and saves VLM annotations for
-              scenes in the annotation storage.
+              {tr(
+                "Запустите фоновую джобу, которая вычисляет и сохраняет VLM-аннотации для сцен в annotation storage.",
+                "Start a background job that computes and saves VLM annotations for scenes in the annotation storage."
+              )}
             </p>
           </div>
           <div className="mb-6 flex flex-wrap items-end gap-3">
               <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Limit
+                {tr("Лимит", "Limit")}
                 <input
                   type="number"
                   min={1}
@@ -1701,7 +1797,7 @@ export default function AnnotationPanel({
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Max tokens
+                {tr("Макс. токенов", "Max tokens")}
                 <input
                   type="number"
                   min={1}
@@ -1712,7 +1808,7 @@ export default function AnnotationPanel({
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Batch size
+                {tr("Размер батча", "Batch size")}
                 <input
                   type="number"
                   min={1}
@@ -1722,13 +1818,13 @@ export default function AnnotationPanel({
                 />
               </label>
               <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Dataset
+                {tr("Датасет", "Dataset")}
                 <select
                   value={vlmDataset}
                   onChange={(event) => setVlmDataset(event.target.value)}
                   className="w-44 rounded-xl border border-slate-300 px-4 py-3 text-slate-900 outline-none focus:border-sky-500"
                 >
-                  <option value="all">All datasets</option>
+                  <option value="all">{tr("Все датасеты", "All datasets")}</option>
                   {availableDatasets.map((dataset) => (
                     <option key={`vlm-${dataset}`} value={dataset}>
                       {dataset}
@@ -1744,21 +1840,23 @@ export default function AnnotationPanel({
               disabled={isStartingVlmJob || vlmSavedFields.length === 0}
               className="rounded-full bg-emerald-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isStartingVlmJob ? "Starting..." : "Start VLM backfill"}
+              {isStartingVlmJob
+                ? tr("Запуск...", "Starting...")
+                : tr("Запустить VLM backfill", "Start VLM backfill")}
             </button>
             <button
               type="button"
               onClick={onOpenJobsMonitor}
               className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              Go to Job Monitor
+              {tr("Перейти в Job Monitor", "Go to Job Monitor")}
             </button>
             <button
               type="button"
               onClick={onOpenStorage}
               className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              Go to Storage
+              {tr("Перейти в Storage", "Go to Storage")}
             </button>
           </div>
 
@@ -1773,7 +1871,7 @@ export default function AnnotationPanel({
                     onClick={onOpenJobsMonitor}
                     className="font-bold text-teal-600 underline decoration-teal-500 underline-offset-2 transition hover:text-teal-700"
                   >
-                    Go to Job Monitor
+                    {tr("Перейти в Job Monitor", "Go to Job Monitor")}
                   </button>
                 </>
               )}
@@ -2017,9 +2115,14 @@ export default function AnnotationPanel({
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5 flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-2xl font-semibold text-slate-900">VLM Schema</h2>
+              <h2 className="text-2xl font-semibold text-slate-900">
+                {tr("VLM Schema", "VLM Schema")}
+              </h2>
               <p className="mt-2 text-sm text-slate-600">
-                Configure VLM fields directly from this tab and run analysis jobs.
+                {tr(
+                  "Настройте VLM-поля прямо в этой вкладке и запускайте джобы анализа.",
+                  "Configure VLM fields directly from this tab and run analysis jobs."
+                )}
               </p>
             </div>
             <button
@@ -2027,7 +2130,7 @@ export default function AnnotationPanel({
               onClick={() => setIsVlmSchemaCollapsed((current) => !current)}
               className="rounded-full border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              {isVlmSchemaCollapsed ? "Expand" : "Collapse"}
+              {isVlmSchemaCollapsed ? tr("Развернуть", "Expand") : tr("Свернуть", "Collapse")}
             </button>
           </div>
 
@@ -2052,7 +2155,10 @@ export default function AnnotationPanel({
                       onChange={(event) =>
                         updateVlmDraftField(field.id, "prompt", event.target.value)
                       }
-                      placeholder="Example: Is there a pedestrian crossing in front of the ego vehicle?"
+                      placeholder={tr(
+                        "Пример: Есть ли пешеходный переход перед эго-автомобилем?",
+                        "Example: Is there a pedestrian crossing in front of the ego vehicle?"
+                      )}
                       rows={3}
                       className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                     />
@@ -2067,7 +2173,7 @@ export default function AnnotationPanel({
                       }
                       className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                     >
-                      {RESPONSE_TYPE_OPTIONS.map((option) => (
+                      {responseTypeOptions.map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
                         </option>
@@ -2078,7 +2184,7 @@ export default function AnnotationPanel({
                       onClick={() => removeVlmFieldRow(field.id)}
                       className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 transition hover:bg-slate-100"
                     >
-                      Remove
+                      {tr("Удалить", "Remove")}
                     </button>
                   </div>
                 ))}
@@ -2090,7 +2196,7 @@ export default function AnnotationPanel({
                   onClick={addVlmFieldRow}
                   className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
                 >
-                  Add field
+                  {tr("Добавить поле", "Add field")}
                 </button>
                 <button
                   type="button"
@@ -2098,7 +2204,9 @@ export default function AnnotationPanel({
                   disabled={isSavingVlmSchema}
                   className="rounded-full bg-sky-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {isSavingVlmSchema ? "Saving..." : "Save schema"}
+                  {isSavingVlmSchema
+                    ? tr("Сохраняем...", "Saving...")
+                    : tr("Сохранить schema", "Save schema")}
                 </button>
               </div>
               {vlmSchemaStatusMessage && (
@@ -2124,24 +2232,27 @@ export default function AnnotationPanel({
             >
               <div className="border-b border-slate-200 px-5 py-4">
                 <div className="text-base font-semibold text-slate-900">
-                  Авторизация доступа к Waymo
+                  {tr("Авторизация доступа к Waymo", "Waymo Access Authorization")}
                 </div>
                 <div className="mt-1 text-xs text-slate-500">
-                  Требуется `gcloud auth application-default login` для чтения датасета.
+                  {tr(
+                    "Требуется `gcloud auth application-default login` для чтения датасета.",
+                    "`gcloud auth application-default login` is required to read this dataset."
+                  )}
                 </div>
               </div>
               <div className="space-y-4 px-5 py-4">
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                  1. Откройте ссылку ниже и войдите в Google-аккаунт.
+                  {tr("1. Откройте ссылку ниже и войдите в Google-аккаунт.", "1. Open the link below and sign in to your Google account.")}
                   <br />
-                  2. Скопируйте код подтверждения.
+                  {tr("2. Скопируйте код подтверждения.", "2. Copy the verification code.")}
                   <br />
-                  3. Вставьте код и нажмите `Подтвердить код`.
+                  {tr("3. Вставьте код и нажмите `Подтвердить код`.", "3. Paste the code and click `Confirm code`.")}
                 </div>
 
                 <div>
                   <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Ссылка авторизации
+                    {tr("Ссылка авторизации", "Authorization link")}
                   </div>
                   {waymoAuthUrl ? (
                     <a
@@ -2154,20 +2265,23 @@ export default function AnnotationPanel({
                     </a>
                   ) : (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                      Ссылка пока не получена. Нажмите «Обновить ссылку».
+                      {tr(
+                        "Ссылка пока не получена. Нажмите «Обновить ссылку».",
+                        "Link is not available yet. Click Refresh link."
+                      )}
                     </div>
                   )}
                 </div>
 
                 <div>
                   <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Код подтверждения
+                    {tr("Код подтверждения", "Verification code")}
                   </label>
                   <input
                     type="text"
                     value={waymoAuthCode}
                     onChange={(event) => setWaymoAuthCode(event.target.value)}
-                    placeholder="Вставьте код из Google"
+                    placeholder={tr("Вставьте код из Google", "Paste code from Google")}
                     className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm text-slate-900 outline-none ring-0 transition focus:border-indigo-500"
                   />
                 </div>
@@ -2187,7 +2301,7 @@ export default function AnnotationPanel({
                   }}
                   className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
                 >
-                  Закрыть
+                  {tr("Закрыть", "Close")}
                 </button>
                 <button
                   type="button"
@@ -2195,7 +2309,7 @@ export default function AnnotationPanel({
                   disabled={waymoAuthBusy}
                   className="rounded-lg border border-indigo-300 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-60"
                 >
-                  {waymoAuthBusy ? "Загрузка..." : "Обновить ссылку"}
+                  {waymoAuthBusy ? tr("Загрузка...", "Loading...") : tr("Обновить ссылку", "Refresh link")}
                 </button>
                 <button
                   type="button"
@@ -2203,7 +2317,7 @@ export default function AnnotationPanel({
                   disabled={waymoAuthBusy}
                   className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
                 >
-                  {waymoAuthBusy ? "Проверка..." : "Подтвердить код"}
+                  {waymoAuthBusy ? tr("Проверка...", "Checking...") : tr("Подтвердить код", "Confirm code")}
                 </button>
               </div>
             </div>
@@ -2215,12 +2329,15 @@ export default function AnnotationPanel({
             <div className="w-full max-w-xl rounded-xl bg-white shadow-2xl">
               <div className="border-b border-slate-200 px-5 py-4">
                 <div className="text-base font-semibold text-slate-900">
-                  Удалить поле из VLM Schema?
+                  {tr("Удалить поле из VLM Schema?", "Delete a field from VLM Schema?")}
                 </div>
               </div>
               <div className="px-5 py-4 text-sm text-slate-700">
                 <div>
-                  Будут удалены столбцы и сохраненные значения в аннотациях:
+                  {tr(
+                    "Будут удалены столбцы и сохраненные значения в аннотациях:",
+                    "Columns and saved annotation values will be removed:"
+                  )}
                 </div>
                 <div className="mt-2 rounded-lg bg-slate-100 px-3 py-2 font-mono text-xs text-slate-800">
                   {schemaDeleteDialog.removedFieldNames.join(", ")}
@@ -2232,7 +2349,7 @@ export default function AnnotationPanel({
                   onClick={() => setSchemaDeleteDialog(null)}
                   className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
                 >
-                  Отмена
+                  {tr("Отмена", "Cancel")}
                 </button>
                 <button
                   type="button"
@@ -2240,7 +2357,7 @@ export default function AnnotationPanel({
                   disabled={isSavingVlmSchema}
                   className="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
                 >
-                  Подтвердить удаление
+                  {tr("Подтвердить удаление", "Confirm deletion")}
                 </button>
               </div>
             </div>

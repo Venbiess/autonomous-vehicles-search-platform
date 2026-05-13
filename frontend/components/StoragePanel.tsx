@@ -2,6 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
+import {
+  getLocalizedText,
+  getUiLanguageLocale,
+  type UiLanguageCode,
+} from "../lib/uiLanguage";
 
 interface SourceStats {
   total_rows: number;
@@ -372,8 +377,8 @@ function isTransientFetchFailure(error: unknown): boolean {
   );
 }
 
-function formatNumber(value: number): string {
-  return value.toLocaleString("ru-RU");
+function formatNumber(value: number, locale = "en-US"): string {
+  return value.toLocaleString(locale);
 }
 
 function formatBytes(value: number): string {
@@ -388,8 +393,9 @@ function formatBytes(value: number): string {
   return `${size.toFixed(unit === 0 ? 0 : 2)} ${units[unit]}`;
 }
 
-function pct(value: number): string {
-  return `${value.toFixed(2)}%`;
+function pct(value: number, digits = 2): string {
+  const safeDigits = Math.max(0, digits);
+  return `${value.toFixed(safeDigits)}%`;
 }
 
 function fileNameFromDisposition(disposition: string | null): string {
@@ -406,9 +412,14 @@ function fileNameFromDisposition(disposition: string | null): string {
   return match?.[1]?.trim() || "";
 }
 
-function buildImportSummary(result: unknown): string {
+function buildImportSummary(
+  result: unknown,
+  options: { language: unknown; formatNumberFn: (value: number) => string }
+): string {
+  const { language, formatNumberFn } = options;
+  const t = (ru: string, en: string) => getLocalizedText(language, { ru, en }, en);
   if (!result || typeof result !== "object") {
-    return "Импорт завершен.";
+    return t("Импорт завершен.", "Import completed.");
   }
   const payload = result as Record<string, unknown>;
   const format = String(payload.format || "").trim();
@@ -430,13 +441,19 @@ function buildImportSummary(result: unknown): string {
     const mode = String(payload.mode || "").trim();
     const objectsPart =
       skippedExisting > 0
-        ? `объектов ${formatNumber(Number(objects.uploaded || 0))} (пропущено существующих ${formatNumber(skippedExisting)})`
-        : `объектов ${formatNumber(Number(objects.uploaded || 0))}`;
-    const modePart = mode === "append" ? " (append)" : "";
+        ? t(
+            `объектов ${formatNumberFn(Number(objects.uploaded || 0))} (пропущено существующих ${formatNumberFn(skippedExisting)})`,
+            `${formatNumberFn(Number(objects.uploaded || 0))} objects (skipped existing: ${formatNumberFn(skippedExisting)})`
+          )
+        : t(
+            `объектов ${formatNumberFn(Number(objects.uploaded || 0))}`,
+            `${formatNumberFn(Number(objects.uploaded || 0))} objects`
+          );
+    const modePart = mode === "append" ? t(" (добавление)", " (append)") : "";
     return (
-      `Импорт полного снапшота${modePart}: ${objectsPart}` +
-      `, embeddings ${formatNumber(Number(embeddings.upserted || 0))}` +
-      `, VLM аннотаций ${formatNumber(Number(vlm.upserted_annotations || 0))}.`
+      `${t("Импорт полного снапшота", "Full snapshot import")}${modePart}: ${objectsPart}, ` +
+      `${t("embeddings", "embeddings")} ${formatNumberFn(Number(embeddings.upserted || 0))}, ` +
+      `${t("VLM аннотаций", "VLM annotations")} ${formatNumberFn(Number(vlm.upserted_annotations || 0))}.`
     );
   }
 
@@ -445,7 +462,10 @@ function buildImportSummary(result: unknown): string {
       payload.embeddings && typeof payload.embeddings === "object"
         ? (payload.embeddings as Record<string, unknown>)
         : {};
-    return `Импорт embeddings: upsert ${formatNumber(Number(embeddings.upserted || 0))}.`;
+    return t(
+      `Импорт embeddings: upsert ${formatNumberFn(Number(embeddings.upserted || 0))}.`,
+      `Embeddings import: upsert ${formatNumberFn(Number(embeddings.upserted || 0))}.`
+    );
   }
 
   if (format === "avsp.vlm.annotations.v1") {
@@ -454,15 +474,17 @@ function buildImportSummary(result: unknown): string {
         ? (payload.vlm as Record<string, unknown>)
         : {};
     return (
-      `Импорт VLM: полей ${formatNumber(Number(vlm.saved_fields || 0))}` +
-      `, аннотаций ${formatNumber(Number(vlm.upserted_annotations || 0))}.`
+      `${t("Импорт VLM", "VLM import")}: ` +
+      `${t("полей", "fields")} ${formatNumberFn(Number(vlm.saved_fields || 0))}, ` +
+      `${t("аннотаций", "annotations")} ${formatNumberFn(Number(vlm.upserted_annotations || 0))}.`
     );
   }
 
-  return "Импорт завершен.";
+  return t("Импорт завершен.", "Import completed.");
 }
 
-function buildImportWarnings(result: unknown): string[] {
+function buildImportWarnings(result: unknown, language: unknown): string[] {
+  const t = (ru: string, en: string) => getLocalizedText(language, { ru, en }, en);
   if (!result || typeof result !== "object") {
     return [];
   }
@@ -495,15 +517,35 @@ function buildImportWarnings(result: unknown): string[] {
     if (missingInSnapshot.length > 0 || missingInExisting.length > 0 || changed.length > 0) {
       const parts: string[] = [];
       if (missingInSnapshot.length > 0) {
-        parts.push(`в текущей схеме есть лишние поля: ${missingInSnapshot.join(", ")}`);
+        parts.push(
+          t(
+            `в текущей схеме есть лишние поля: ${missingInSnapshot.join(", ")}`,
+            `extra fields in current schema: ${missingInSnapshot.join(", ")}`
+          )
+        );
       }
       if (missingInExisting.length > 0) {
-        parts.push(`в снапшоте есть новые поля: ${missingInExisting.join(", ")}`);
+        parts.push(
+          t(
+            `в снапшоте есть новые поля: ${missingInExisting.join(", ")}`,
+            `new fields in snapshot: ${missingInExisting.join(", ")}`
+          )
+        );
       }
       if (changed.length > 0) {
-        parts.push(`совпадающие поля с отличиями prompt/type: ${changed.join(", ")}`);
+        parts.push(
+          t(
+            `совпадающие поля с отличиями prompt/type: ${changed.join(", ")}`,
+            `matching fields with prompt/type differences: ${changed.join(", ")}`
+          )
+        );
       }
-      warnings.push(`Append VLM: различия полей (${parts.join("; ")}).`);
+      warnings.push(
+        t(
+          `Append VLM: различия полей (${parts.join("; ")}).`,
+          `Append VLM: field differences (${parts.join("; ")}).`
+        )
+      );
     }
   }
   return warnings;
@@ -549,10 +591,14 @@ function PieChart({
   title,
   subtitle,
   slices,
+  hoverHintLabel,
+  hoverHintValue,
 }: {
   title: string;
   subtitle: string;
   slices: PieSlice[];
+  hoverHintLabel: string;
+  hoverHintValue: string;
 }) {
   const [hoveredLabel, setHoveredLabel] = useState<string | null>(null);
   const normalizedSlices = slices.filter((slice) => slice.percent > 0);
@@ -654,7 +700,7 @@ function PieChart({
               textAnchor="middle"
               className="fill-slate-700 text-[12px] font-semibold"
             >
-              {hasHover ? hoveredLabel : "Hover class"}
+              {hasHover ? hoveredLabel : hoverHintLabel}
             </text>
             <text
               x={center}
@@ -666,7 +712,7 @@ function PieChart({
                 ? pct(
                     slices.find((slice) => slice.label === hoveredLabel)?.percent ?? 0
                   )
-                : "Dataset share"}
+                : hoverHintValue}
             </text>
           </svg>
         </div>
@@ -885,12 +931,19 @@ function VlmFieldCoverageChart({
 }
 
 export default function StoragePanel({
+  language = "ru",
   showSnapshotSection = true,
   showVlmFieldBreakdown = false,
 }: {
+  language?: UiLanguageCode;
   showSnapshotSection?: boolean;
   showVlmFieldBreakdown?: boolean;
 }) {
+  const tr = (ru: string, en: string) =>
+    getLocalizedText(language, { ru, en }, en);
+  const numberLocale = getUiLanguageLocale(language);
+  const formatNum = (value: number) => formatNumber(value, numberLocale);
+  const pctText = (value: number, digits = 2) => pct(value, digits);
   const [stats, setStats] = useState<StorageStatsResponse>(EMPTY_STORAGE_STATS);
   const [hasLoadedStats, setHasLoadedStats] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -1402,12 +1455,15 @@ export default function StoragePanel({
             if (phase === "preparing") {
               hint =
                 preparedObjects > 0
-                  ? `Preparing: ${formatNumber(preparedObjects)} objects`
-                  : "Preparing snapshot...";
+                  ? tr(
+                      `Подготовка: ${formatNum(preparedObjects)} объектов`,
+                      `Preparing: ${formatNum(preparedObjects)} objects`
+                    )
+                  : tr("Подготовка snapshot...", "Preparing snapshot...");
             } else if (phase === "archiving") {
-              hint = "Archiving snapshot...";
+              hint = tr("Архивация snapshot...", "Archiving snapshot...");
             } else if (phase === "streaming") {
-              hint = "Streaming snapshot...";
+              hint = tr("Передача snapshot...", "Streaming snapshot...");
             }
           }
           updateSnapshotProgressMeta(actionId, { phase, status, hint });
@@ -1418,12 +1474,16 @@ export default function StoragePanel({
           }
 
           if (status === "error" || phase === "error") {
-            setSnapshotExportInlineMessage("Ошибка при создании архива выгрузки.");
+            setSnapshotExportInlineMessage(
+              tr("Ошибка при создании архива выгрузки.", "Failed to create export archive.")
+            );
             setActionInProgress((current) => (current === actionId ? null : current));
             return;
           }
           if (status === "cancelled" || phase === "cancelled") {
-            setSnapshotExportInlineMessage("Выгрузка и создание архива отменены.");
+            setSnapshotExportInlineMessage(
+              tr("Выгрузка и создание архива отменены.", "Export and archive creation were cancelled.")
+            );
             setActionInProgress((current) => (current === actionId ? null : current));
             return;
           }
@@ -1506,23 +1566,37 @@ export default function StoragePanel({
           updateSnapshotProgressMeta(actionId, {
             phase,
             status,
-            hint: phase === "uploading" ? "Uploading snapshot..." : "Extracting and applying snapshot...",
+            hint:
+              phase === "uploading"
+                ? tr("Загрузка snapshot...", "Uploading snapshot...")
+                : tr("Распаковка и применение snapshot...", "Extracting and applying snapshot..."),
           });
           if (status === "running") {
             if (phase === "processing") {
-              setSnapshotImportInlineMessage("Разархивация и импорт снапшота продолжаются...");
+              setSnapshotImportInlineMessage(
+                tr(
+                  "Разархивация и импорт снапшота продолжаются...",
+                  "Extracting and importing snapshot..."
+                )
+              );
             } else if (phase === "uploading") {
-              setSnapshotImportInlineMessage("Загрузка снапшота продолжается...");
+              setSnapshotImportInlineMessage(
+                tr("Загрузка снапшота продолжается...", "Uploading snapshot...")
+              );
             }
           }
 
           if (status === "error") {
-            setSnapshotImportInlineMessage("Ошибка при импорте снапшота.");
+            setSnapshotImportInlineMessage(
+              tr("Ошибка при импорте снапшота.", "Snapshot import failed.")
+            );
             setActionInProgress((current) => (current === actionId ? null : current));
             return;
           }
           if (status === "cancelled") {
-            setSnapshotImportInlineMessage("Импорт и распаковка архива отменены.");
+            setSnapshotImportInlineMessage(
+              tr("Импорт и распаковка архива отменены.", "Import and archive extraction were cancelled.")
+            );
             setActionInProgress((current) => (current === actionId ? null : current));
             return;
           }
@@ -1567,27 +1641,33 @@ export default function StoragePanel({
     }
     updateSnapshotProgressMeta(actionId, {
       status: "cancelled",
-      hint: "Cancelling...",
+      hint: tr("Отмена...", "Cancelling..."),
     });
     if (actionId === "import-snapshot") {
       stopSnapshotImportProgressPoll();
-      setSnapshotImportInlineMessage("Импорт и распаковка архива отменены.");
+      setSnapshotImportInlineMessage(
+        tr("Импорт и распаковка архива отменены.", "Import and archive extraction were cancelled.")
+      );
       return;
     }
-    setSnapshotExportInlineMessage("Выгрузка и создание архива отменены.");
+    setSnapshotExportInlineMessage(
+      tr("Выгрузка и создание архива отменены.", "Export and archive creation were cancelled.")
+    );
   };
 
   const askCancelSnapshotAction = (actionId: SnapshotActionId) => {
     const title =
-      actionId === "import-snapshot" ? "Cancel snapshot import" : "Cancel snapshot export";
+      actionId === "import-snapshot"
+        ? tr("Отменить импорт snapshot", "Cancel snapshot import")
+        : tr("Отменить экспорт snapshot", "Cancel snapshot export");
     const description =
       actionId === "import-snapshot"
-        ? "Остановить импорт и распаковку snapshot?"
-        : "Остановить создание и выгрузку snapshot?";
+        ? tr("Остановить импорт и распаковку snapshot?", "Stop snapshot import and extraction?")
+        : tr("Остановить создание и выгрузку snapshot?", "Stop snapshot export and archive creation?");
     openConfirmDialog({
       title,
       description,
-      confirmLabel: "Остановить",
+      confirmLabel: tr("Остановить", "Stop"),
       onConfirm: async () => {
         await cancelSnapshotAction(actionId);
       },
@@ -1690,8 +1770,14 @@ export default function StoragePanel({
         }
       }
       const message = isTransientFetchFailure(lastError)
-        ? "Storage server is starting up. Retry in a few seconds."
-        : extractAxiosErrorMessage(lastError, "Failed to load storage stats");
+        ? tr(
+            "Storage server запускается. Повторите через несколько секунд.",
+            "Storage server is starting up. Retry in a few seconds."
+          )
+        : extractAxiosErrorMessage(
+            lastError,
+            tr("Не удалось загрузить статистику storage", "Failed to load storage stats")
+          );
       setErrorMessage(message);
     } finally {
       setIsLoading(false);
@@ -1780,8 +1866,8 @@ export default function StoragePanel({
             .toLowerCase();
           setSnapshotImportInlineMessage(
             restoredPhase === "processing"
-              ? "Разархивация и импорт снапшота продолжаются..."
-              : "Загрузка снапшота продолжается..."
+              ? tr("Разархивация и импорт снапшота продолжаются...", "Extracting and importing snapshot...")
+              : tr("Загрузка снапшота продолжается...", "Uploading snapshot...")
           );
           const jobConfig =
             runningJob.job_config && typeof runningJob.job_config === "object"
@@ -1791,7 +1877,7 @@ export default function StoragePanel({
           updateSnapshotProgressMeta(actionId, {
             phase: restoredPhase || "processing",
             status: "running",
-            hint: "Extracting and applying snapshot...",
+            hint: tr("Распаковка и применение snapshot...", "Extracting and applying snapshot..."),
           });
           if (importId) {
             startSnapshotImportProgressPoll(importId, actionId);
@@ -1799,7 +1885,9 @@ export default function StoragePanel({
           return;
         }
 
-        setSnapshotExportInlineMessage("Выгрузка снапшота продолжается...");
+        setSnapshotExportInlineMessage(
+          tr("Выгрузка снапшота продолжается...", "Snapshot export is in progress...")
+        );
         const jobConfig =
           runningJob.job_config && typeof runningJob.job_config === "object"
             ? (runningJob.job_config as Record<string, unknown>)
@@ -1840,7 +1928,10 @@ export default function StoragePanel({
       setObjectsNextCursor(response.data.next_cursor ?? "");
       setObjectsPage(page);
     } catch (error) {
-      const message = extractAxiosErrorMessage(error, "Failed to load objects");
+      const message = extractAxiosErrorMessage(
+        error,
+        tr("Не удалось загрузить объекты", "Failed to load objects")
+      );
       setErrorMessage(message);
     } finally {
       setObjectsLoading(false);
@@ -1944,25 +2035,29 @@ export default function StoragePanel({
         if (isSnapshotActionId(actionId)) {
           updateSnapshotProgressMeta(actionId, {
             status: "cancelled",
-            hint: "Operation cancelled",
+            hint: tr("Операция отменена", "Operation cancelled"),
           });
           if (actionId === "import-snapshot") {
-            setSnapshotImportInlineMessage("Импорт и распаковка архива отменены.");
+            setSnapshotImportInlineMessage(
+              tr("Импорт и распаковка архива отменены.", "Import and archive extraction were cancelled.")
+            );
           } else {
-            setSnapshotExportInlineMessage("Выгрузка и создание архива отменены.");
+            setSnapshotExportInlineMessage(
+              tr("Выгрузка и создание архива отменены.", "Export and archive creation were cancelled.")
+            );
           }
           return;
         }
         if (scope === "storage") {
-          setStorageWarningMessage("Operation cancelled.");
+          setStorageWarningMessage(tr("Операция отменена.", "Operation cancelled."));
         } else if (scope === "snapshot") {
-          setSnapshotWarningMessage("Operation cancelled.");
+          setSnapshotWarningMessage(tr("Операция отменена.", "Operation cancelled."));
         } else {
-          setCleanupWarningMessage("Operation cancelled.");
+          setCleanupWarningMessage(tr("Операция отменена.", "Operation cancelled."));
         }
         return;
       }
-      const message = extractAxiosErrorMessage(error, "Operation failed");
+      const message = extractAxiosErrorMessage(error, tr("Операция завершилась ошибкой", "Operation failed"));
       if (scope === "snapshot") {
         if (actionId === "import-snapshot") {
           setSnapshotImportInlineMessage(null);
@@ -2054,13 +2149,18 @@ export default function StoragePanel({
 
   const deleteObject = async (objectId: string) => {
     openConfirmDialog({
-      title: "Delete object",
-      description: `Удалить объект ${objectId} из storage, векторов и связанных аннотаций?`,
-      confirmLabel: "Удалить объект",
+      title: tr("Удалить объект", "Delete object"),
+      description: tr(
+        `Удалить объект ${objectId} из storage, векторов и связанных аннотаций?`,
+        `Delete object ${objectId} from storage, vectors, and linked annotations?`
+      ),
+      confirmLabel: tr("Удалить объект", "Delete object"),
       onConfirm: async () => {
         await runStorageAction(`delete-object-${objectId}`, async () => {
           await axios.delete(`/api/storage/objects/${encodeURIComponent(objectId)}`);
-          setStorageStatusMessage(`Объект ${objectId} удален.`);
+          setStorageStatusMessage(
+            tr(`Объект ${objectId} удален.`, `Object ${objectId} was deleted.`)
+          );
           const shouldGoPrev = objects.length === 1 && objectsPrevCursors.length > 0;
           const cursor = shouldGoPrev
             ? objectsPrevCursors[objectsPrevCursors.length - 1] ?? ""
@@ -2098,9 +2198,12 @@ export default function StoragePanel({
     const count = Math.max(1, Number(randomEmbeddingsCount || 1));
     const dataset = cleanupDatasetFilter === "all" ? "" : cleanupDatasetFilter;
     openConfirmDialog({
-      title: "Delete random embeddings",
-      description: `Delete embeddings for ${count} random scenes${dataset ? ` in dataset '${dataset}'` : ""}?`,
-      confirmLabel: "Удалить embeddings",
+      title: tr("Удалить случайные embeddings", "Delete random embeddings"),
+      description: tr(
+        `Удалить embeddings для ${count} случайных сцен${dataset ? ` в датасете '${dataset}'` : ""}?`,
+        `Delete embeddings for ${count} random scenes${dataset ? ` in dataset '${dataset}'` : ""}?`
+      ),
+      confirmLabel: tr("Удалить embeddings", "Delete embeddings"),
       onConfirm: async () => {
         await runStorageAction("delete-random-embeddings", async () => {
           const response = await axios.post("/api/storage/delete-random-embeddings", {
@@ -2115,14 +2218,23 @@ export default function StoragePanel({
           const orphanRemoved = Number(response.data?.orphan_embeddings_removed || 0);
           const shortageNote =
             selected < requested
-              ? ` (доступно embeddings: ${available}, запрошено: ${requested})`
+              ? tr(
+                  ` (доступно embeddings: ${formatNum(available)}, запрошено: ${formatNum(requested)})`,
+                  ` (available embeddings: ${formatNum(available)}, requested: ${formatNum(requested)})`
+                )
               : "";
           const orphanNote =
             orphanRemoved > 0
-              ? `; удалено orphan embeddings: ${orphanRemoved}`
+              ? tr(
+                  `; удалено orphan embeddings: ${formatNum(orphanRemoved)}`,
+                  `; orphan embeddings removed: ${formatNum(orphanRemoved)}`
+                )
               : "";
           setCleanupStatusMessage(
-            `Сброшены embeddings: ${reset} из ${requested} выбранных сцен${shortageNote}${orphanNote}.`
+            tr(
+              `Сброшены embeddings: ${formatNum(reset)} из ${formatNum(requested)} выбранных сцен${shortageNote}${orphanNote}.`,
+              `Embeddings reset: ${formatNum(reset)} of ${formatNum(requested)} selected scenes${shortageNote}${orphanNote}.`
+            )
           );
           await loadStats(false, true, true);
         });
@@ -2134,9 +2246,12 @@ export default function StoragePanel({
     const count = Math.max(1, Number(randomVlmCount || 1));
     const dataset = cleanupDatasetFilter === "all" ? "" : cleanupDatasetFilter;
     openConfirmDialog({
-      title: "Delete random VLM",
-      description: `Delete VLM annotations for ${count} random scenes${dataset ? ` in dataset '${dataset}'` : ""}?`,
-      confirmLabel: "Удалить VLM",
+      title: tr("Удалить случайные VLM", "Delete random VLM"),
+      description: tr(
+        `Удалить VLM-аннотации для ${count} случайных сцен${dataset ? ` в датасете '${dataset}'` : ""}?`,
+        `Delete VLM annotations for ${count} random scenes${dataset ? ` in dataset '${dataset}'` : ""}?`
+      ),
+      confirmLabel: tr("Удалить VLM", "Delete VLM"),
       onConfirm: async () => {
         await runStorageAction("delete-random-vlm", async () => {
           const response = await axios.post("/api/storage/delete-random-vlm", {
@@ -2150,10 +2265,16 @@ export default function StoragePanel({
           const reset = Number(response.data?.reset_vlm_annotations || 0);
           const shortageNote =
             selected < requested
-              ? ` (доступно VLM-аннотаций: ${available}, запрошено: ${requested})`
+              ? tr(
+                  ` (доступно VLM-аннотаций: ${formatNum(available)}, запрошено: ${formatNum(requested)})`,
+                  ` (available VLM annotations: ${formatNum(available)}, requested: ${formatNum(requested)})`
+                )
               : "";
           setCleanupStatusMessage(
-            `Сброшены VLM-аннотации: ${reset} из ${requested} выбранных сцен${shortageNote}.`
+            tr(
+              `Сброшены VLM-аннотации: ${formatNum(reset)} из ${formatNum(selected)} выбранных сцен${shortageNote}.`,
+              `VLM annotations reset: ${formatNum(reset)} of ${formatNum(selected)} selected scenes${shortageNote}.`
+            )
           );
           await loadStats(false, true, true);
         });
@@ -2164,10 +2285,12 @@ export default function StoragePanel({
   const deleteDuplicates = async () => {
     const dataset = cleanupDatasetFilter === "all" ? "" : cleanupDatasetFilter;
     openConfirmDialog({
-      title: "Delete duplicates",
-      description:
-        `Delete duplicate scenes by identical storage_path${dataset ? ` in dataset '${dataset}'` : ""}, keeping one row each?`,
-      confirmLabel: "Удалить дубли",
+      title: tr("Удалить дубли", "Delete duplicates"),
+      description: tr(
+        `Удалить сцены-дубли по одинаковому storage_path${dataset ? ` в датасете '${dataset}'` : ""}, оставляя по одной строке?`,
+        `Delete duplicate scenes by identical storage_path${dataset ? ` in dataset '${dataset}'` : ""}, keeping one row each?`
+      ),
+      confirmLabel: tr("Удалить дубли", "Delete duplicates"),
       onConfirm: async () => {
         await runStorageAction("delete-duplicates", async () => {
           const response = await axios.post("/api/storage/delete-duplicates", {
@@ -2178,7 +2301,10 @@ export default function StoragePanel({
           const deleted = Number(response.data?.deleted_duplicates || 0);
           const failed = Number(response.data?.failed_duplicates || 0);
           setCleanupStatusMessage(
-            `Дубликаты обработаны: кандидатов ${candidates}, удалено ${deleted}, ошибок ${failed}.`
+            tr(
+              `Дубликаты обработаны: кандидатов ${formatNum(candidates)}, удалено ${formatNum(deleted)}, ошибок ${formatNum(failed)}.`,
+              `Duplicates processed: candidates ${formatNum(candidates)}, deleted ${formatNum(deleted)}, failed ${formatNum(failed)}.`
+            )
           );
           await Promise.all([
             loadStats(false, true, true),
@@ -2193,9 +2319,12 @@ export default function StoragePanel({
     const count = Math.max(1, Number(randomHardDeleteCount || 1));
     const dataset = cleanupDatasetFilter === "all" ? "" : cleanupDatasetFilter;
     openConfirmDialog({
-      title: "Hard delete random scenes",
-      description: `Hard delete ${count} random scenes${dataset ? ` in dataset '${dataset}'` : ""} (image, vectors, VLM annotations)?`,
-      confirmLabel: "Удалить сцены",
+      title: tr("Полное удаление случайных сцен", "Hard delete random scenes"),
+      description: tr(
+        `Полностью удалить ${count} случайных сцен${dataset ? ` в датасете '${dataset}'` : ""} (изображение, векторы, VLM-аннотации)?`,
+        `Hard delete ${count} random scenes${dataset ? ` in dataset '${dataset}'` : ""} (image, vectors, VLM annotations)?`
+      ),
+      confirmLabel: tr("Удалить сцены", "Delete scenes"),
       onConfirm: async () => {
         await runStorageAction("delete-random-images", async () => {
           const response = await axios.post("/api/storage/delete-random-images", {
@@ -2210,17 +2339,28 @@ export default function StoragePanel({
           const failed = Number(response.data?.failed_images || 0);
           const shortageNote =
             selected < requested
-              ? ` (доступно сцен: ${available}, запрошено: ${requested})`
+              ? tr(
+                  ` (доступно сцен: ${formatNum(available)}, запрошено: ${formatNum(requested)})`,
+                  ` (available scenes: ${formatNum(available)}, requested: ${formatNum(requested)})`
+                )
               : "";
           setCleanupStatusMessage(
-            `Полное удаление сцен: выбрано ${selected} из ${requested}, удалено ${deleted}, ошибок ${failed}${shortageNote}.`
+            tr(
+              `Полное удаление сцен: выбрано ${formatNum(selected)} из ${formatNum(requested)}, удалено ${formatNum(deleted)}, ошибок ${formatNum(failed)}${shortageNote}.`,
+              `Hard delete result: selected ${formatNum(selected)} of ${formatNum(requested)}, deleted ${formatNum(deleted)}, failed ${formatNum(failed)}${shortageNote}.`
+            )
           );
           await Promise.all([
             loadStats(false, true, true),
             reloadCurrentObjectsView(),
           ]);
           if (failed > 0) {
-            setCleanupWarningMessage("Часть сцен не удалена. Проверьте детали в ответе API/логах.");
+            setCleanupWarningMessage(
+              tr(
+                "Часть сцен не удалена. Проверьте детали в ответе API/логах.",
+                "Some scenes were not deleted. Check API response/logs for details."
+              )
+            );
           }
         });
       },
@@ -2229,9 +2369,12 @@ export default function StoragePanel({
 
   const deleteDataset = async (dataset: string) => {
     openConfirmDialog({
-      title: "Delete dataset",
-      description: `Полностью удалить датасет '${dataset}' (все сцены, векторы и VLM-аннотации)?`,
-      confirmLabel: "Удалить датасет",
+      title: tr("Удалить датасет", "Delete dataset"),
+      description: tr(
+        `Полностью удалить датасет '${dataset}' (все сцены, векторы и VLM-аннотации)?`,
+        `Delete dataset '${dataset}' entirely (all scenes, vectors, and VLM annotations)?`
+      ),
+      confirmLabel: tr("Удалить датасет", "Delete dataset"),
       onConfirm: async () => {
         await runStorageAction(`delete-dataset-${dataset}`, async () => {
           const datasetDeleteJobID = `${Date.now().toString(16)}${Math.random()
@@ -2287,7 +2430,10 @@ export default function StoragePanel({
 
           const selected = Math.max(initialSelected, deletedTotal + remaining);
           setStorageStatusMessage(
-            `Датасет '${dataset}' обработан: выбрано ${selected}, удалено ${deletedTotal}, осталось ${remaining}, ошибок ${failedTotal}.`
+            tr(
+              `Датасет '${dataset}' обработан: выбрано ${formatNum(selected)}, удалено ${formatNum(deletedTotal)}, осталось ${formatNum(remaining)}, ошибок ${formatNum(failedTotal)}.`,
+              `Dataset '${dataset}' processed: selected ${formatNum(selected)}, deleted ${formatNum(deletedTotal)}, remaining ${formatNum(remaining)}, failed ${formatNum(failedTotal)}.`
+            )
           );
           if (hasObjectsFilter) {
             await Promise.all([loadStats(false, true, true), reloadCurrentObjectsView()]);
@@ -2296,7 +2442,10 @@ export default function StoragePanel({
           }
           if (failedTotal > 0 || remaining > 0) {
             setStorageWarningMessage(
-              `При удалении датасета '${dataset}' остались проблемы: осталось ${remaining}, ошибок ${failedTotal}.`
+              tr(
+                `При удалении датасета '${dataset}' остались проблемы: осталось ${formatNum(remaining)}, ошибок ${formatNum(failedTotal)}.`,
+                `Dataset '${dataset}' delete completed with issues: remaining ${formatNum(remaining)}, failed ${formatNum(failedTotal)}.`
+              )
             );
           }
         }, "storage");
@@ -2313,7 +2462,7 @@ export default function StoragePanel({
     updateSnapshotProgressMeta(actionId, {
       phase: "preparing",
       status: "running",
-      hint: "Preparing snapshot...",
+      hint: tr("Подготовка snapshot...", "Preparing snapshot..."),
     });
     updateSnapshotTransferSize(actionId, 0, null);
     updateSnapshotProgress(actionId, 0);
@@ -2364,7 +2513,9 @@ export default function StoragePanel({
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(href);
-      setSnapshotExportInlineMessage(`Файл '${filename}' выгружен.`);
+      setSnapshotExportInlineMessage(
+        tr(`Файл '${filename}' выгружен.`, `File '${filename}' was downloaded.`)
+      );
     }, "snapshot");
 
     stopSnapshotExportProgressPoll();
@@ -2374,19 +2525,24 @@ export default function StoragePanel({
 
   const startSnapshotImport = async (mode: SnapshotImportMode) => {
     if (!transferFile) {
-      setSnapshotWarningMessage("Выберите файл снапшота перед импортом.");
+      setSnapshotWarningMessage(
+        tr("Выберите файл снапшота перед импортом.", "Choose a snapshot file before import.")
+      );
       return;
     }
     const snapshotFile = transferFile;
     const modeQuery = mode === "append" ? "append" : "replace";
     const uploadMessage =
       mode === "append"
-        ? "Загрузка снапшота (append) продолжается..."
-        : "Загрузка снапшота продолжается...";
+        ? tr("Загрузка снапшота (append) продолжается...", "Uploading snapshot (append)...")
+        : tr("Загрузка снапшота продолжается...", "Uploading snapshot...");
     const processingMessage =
       mode === "append"
-        ? "Разархивация и append-импорт снапшота продолжаются..."
-        : "Разархивация и импорт снапшота продолжаются...";
+        ? tr(
+            "Разархивация и append-импорт снапшота продолжаются...",
+            "Extracting and append-importing snapshot..."
+          )
+        : tr("Разархивация и импорт снапшота продолжаются...", "Extracting and importing snapshot...");
     const actionId: SnapshotActionId = "import-snapshot";
     const importId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     setSnapshotImportInlineMessage(uploadMessage);
@@ -2395,7 +2551,7 @@ export default function StoragePanel({
     updateSnapshotProgressMeta(actionId, {
       phase: "uploading",
       status: "running",
-      hint: "Uploading snapshot...",
+      hint: tr("Загрузка snapshot...", "Uploading snapshot..."),
     });
     updateSnapshotTransferSize(actionId, 0, Number(snapshotFile.size || 0));
     startSnapshotImportProgressPoll(importId, actionId);
@@ -2445,7 +2601,7 @@ export default function StoragePanel({
               updateSnapshotProgressMeta(actionId, {
                 phase: "processing",
                 status: "running",
-                hint: "Extracting and applying snapshot...",
+                hint: tr("Распаковка и применение snapshot...", "Extracting and applying snapshot..."),
               });
               setSnapshotImportInlineMessage(processingMessage);
             }
@@ -2472,8 +2628,13 @@ export default function StoragePanel({
         payload && typeof payload === "object"
           ? (payload as Record<string, unknown>)
           : {};
-      setSnapshotImportInlineMessage(buildImportSummary(responsePayload.result));
-      const importWarnings = buildImportWarnings(responsePayload.result);
+      setSnapshotImportInlineMessage(
+        buildImportSummary(responsePayload.result, {
+          language,
+          formatNumberFn: formatNum,
+        })
+      );
+      const importWarnings = buildImportWarnings(responsePayload.result, language);
       if (importWarnings.length > 0) {
         setSnapshotWarningMessage(importWarnings.join(" "));
       }
@@ -2493,18 +2654,22 @@ export default function StoragePanel({
 
   const askImportSnapshot = async () => {
     if (!transferFile) {
-      setSnapshotWarningMessage("Выберите файл снапшота перед импортом.");
+      setSnapshotWarningMessage(
+        tr("Выберите файл снапшота перед импортом.", "Choose a snapshot file before import.")
+      );
       return;
     }
     openConfirmDialog({
-      title: "Import snapshot",
-      description:
+      title: tr("Импорт snapshot", "Import snapshot"),
+      description: tr(
         "Импорт с перезаписью заменяет VLM-схему/аннотации данными из файла (для VLM snapshot) и может перезаписать embeddings/добавить объекты для других форматов. Продолжить?",
-      confirmLabel: "Импортировать с перезаписью",
+        "Replace import overwrites VLM schema/annotations from file (for VLM snapshot) and may overwrite embeddings/add objects for other formats. Continue?"
+      ),
+      confirmLabel: tr("Импортировать с перезаписью", "Import with replace"),
       onConfirm: async () => startSnapshotImport("replace"),
       extraActions: [
         {
-          label: "Добавить",
+          label: tr("Добавить", "Append"),
           onAction: async () => startSnapshotImport("append"),
         },
       ],
@@ -2555,7 +2720,7 @@ export default function StoragePanel({
       label: item.dataset,
       percent: item.percent_rows,
       color: rowPalette[index % rowPalette.length],
-      valueText: `${formatNumber(item.rows)} строк`,
+      valueText: tr(`${formatNum(item.rows)} строк`, `${formatNum(item.rows)} rows`),
     })
   );
 
@@ -2575,9 +2740,9 @@ export default function StoragePanel({
       return {
         label:
           segment.label === "free"
-            ? "free"
+            ? tr("Свободно", "Free")
             : segment.label === "other_used"
-              ? "other_used"
+              ? tr("Прочее занято", "Other used")
               : segment.label,
         percent: segment.percent_total_disk,
         color,
@@ -2710,11 +2875,11 @@ export default function StoragePanel({
     if (actionId === "import-snapshot") {
       const phase = String(transferMeta?.phase || "").trim().toLowerCase();
       if (phase === "uploading") {
-        displayActiveLabel = "Загрузка...";
+        displayActiveLabel = tr("Загрузка...", "Uploading...");
       } else if (phase === "processing") {
-        displayActiveLabel = "Разархивация...";
+        displayActiveLabel = tr("Распаковка...", "Extracting...");
       } else if (phase === "done") {
-        displayActiveLabel = "Импорт...";
+        displayActiveLabel = tr("Импорт...", "Importing...");
       }
     }
 
@@ -2744,7 +2909,7 @@ export default function StoragePanel({
         type="button"
         onClick={handleClick}
         disabled={disabled}
-        title={isActive ? "Click to cancel" : undefined}
+        title={isActive ? tr("Нажмите для отмены", "Click to cancel") : undefined}
         className={`relative self-start overflow-hidden rounded-full border px-4 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
           fixedWidthClass || (longProgress ? "min-w-40" : "w-fit")
         } ${
@@ -2793,16 +2958,24 @@ export default function StoragePanel({
       id="transfer-snapshot-section"
       className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
     >
-      <h3 className="text-lg font-semibold text-slate-900">Transfer Snapshot</h3>
+      <h3 className="text-lg font-semibold text-slate-900">
+        {tr("Transfer Snapshot", "Transfer Snapshot")}
+      </h3>
       <p className="mt-1 text-sm text-slate-600">
-        Экспорт/импорт полного storage и отдельной разметки (VLM/Embedder) через файл.
+        {tr(
+          "Экспорт/импорт полного storage и отдельной разметки (VLM/Embedder) через файл.",
+          "Export/import full storage and separate annotation snapshots (VLM/Embedder) as files."
+        )}
       </p>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <div className="text-sm font-medium text-slate-800">Выгрузка</div>
+          <div className="text-sm font-medium text-slate-800">{tr("Выгрузка", "Export")}</div>
           <p className="mt-1 text-xs text-slate-500">
-            Файл можно перенести на другую VM и загрузить обратно после разметки.
+            {tr(
+              "Файл можно перенести на другую VM и загрузить обратно после разметки.",
+              "You can move this file to another VM and import it after annotation."
+            )}
           </p>
           {snapshotExportInlineMessage && (
             <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
@@ -2812,8 +2985,8 @@ export default function StoragePanel({
           <div className="mt-3 flex flex-col items-start gap-2">
             {renderSnapshotProgressButton({
               actionId: "download-full",
-              idleLabel: "Скачать полный storage",
-              activeLabel: "Archiving full snapshot...",
+              idleLabel: tr("Скачать полный storage", "Download full storage"),
+              activeLabel: tr("Архивация полного snapshot...", "Archiving full snapshot..."),
               onClick: () => downloadSnapshot("full"),
               disabled:
                 actionInProgress !== null && actionInProgress !== "download-full",
@@ -2823,8 +2996,8 @@ export default function StoragePanel({
             })}
             {renderSnapshotProgressButton({
               actionId: "download-embeddings",
-              idleLabel: "Скачать Embedder",
-              activeLabel: "Archiving embeddings...",
+              idleLabel: tr("Скачать Embedder", "Download Embedder"),
+              activeLabel: tr("Архивация embeddings...", "Archiving embeddings..."),
               onClick: () => downloadSnapshot("embeddings"),
               disabled:
                 actionInProgress !== null &&
@@ -2835,8 +3008,8 @@ export default function StoragePanel({
             })}
             {renderSnapshotProgressButton({
               actionId: "download-vlm",
-              idleLabel: "Скачать VLM",
-              activeLabel: "Archiving VLM...",
+              idleLabel: tr("Скачать VLM", "Download VLM"),
+              activeLabel: tr("Архивация VLM...", "Archiving VLM..."),
               onClick: () => downloadSnapshot("vlm"),
               disabled:
                 actionInProgress !== null && actionInProgress !== "download-vlm",
@@ -2848,9 +3021,12 @@ export default function StoragePanel({
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <div className="text-sm font-medium text-slate-800">Загрузка файла</div>
+          <div className="text-sm font-medium text-slate-800">{tr("Загрузка файла", "File upload")}</div>
           <p className="mt-1 text-xs text-slate-500">
-            Поддерживаются снапшоты: full storage, embeddings-only, VLM-only.
+            {tr(
+              "Поддерживаются снапшоты: full storage, embeddings-only, VLM-only.",
+              "Supported snapshot types: full storage, embeddings-only, VLM-only."
+            )}
           </p>
           <div className="mt-3 flex flex-col items-start gap-2">
             <input
@@ -2867,12 +3043,15 @@ export default function StoragePanel({
               htmlFor={transferFileInputId}
               className="inline-flex w-full max-w-[30rem] cursor-pointer items-center justify-center rounded-full border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-100"
             >
-              Choose file
+              {tr("Выбрать файл", "Choose file")}
             </label>
             <div className="w-full max-w-[30rem] break-all px-1 text-xs text-slate-500">
               {transferFile
-                ? `Selected: ${transferFile.name} (${formatBytes(transferFile.size)})`
-                : "No file selected"}
+                ? tr(
+                    `Выбрано: ${transferFile.name} (${formatBytes(transferFile.size)})`,
+                    `Selected: ${transferFile.name} (${formatBytes(transferFile.size)})`
+                  )
+                : tr("Файл не выбран", "No file selected")}
             </div>
             {snapshotImportInlineMessage && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
@@ -2886,8 +3065,8 @@ export default function StoragePanel({
             )}
             {renderSnapshotProgressButton({
               actionId: "import-snapshot",
-              idleLabel: "Upload",
-              activeLabel: "Import...",
+              idleLabel: tr("Загрузить", "Upload"),
+              activeLabel: tr("Импорт...", "Import..."),
               onClick: askImportSnapshot,
               disabled:
                 (actionInProgress !== null && actionInProgress !== "import-snapshot") ||
@@ -2909,12 +3088,17 @@ export default function StoragePanel({
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-center gap-4">
             <div>
-              <h2 className="text-2xl font-semibold text-slate-900">Storage</h2>
+              <h2 className="text-2xl font-semibold text-slate-900">
+                {tr("Хранилище", "Storage")}
+              </h2>
               <p className="mt-2 text-sm text-slate-600">
-                Сводка по разметке, очистке и объёму данных.
+                {tr(
+                  "Сводка по разметке, очистке и объёму данных.",
+                  "Summary of annotations, cleanup operations, and data volume."
+                )}
               </p>
               <p className="mt-1 text-xs text-slate-500">
-                Последнее обновление: {stats.timestamp}
+                {tr("Последнее обновление", "Last update")}: {stats.timestamp}
               </p>
               {isLoading && !hasLoadedStats && (
                 <p className="mt-1 text-xs text-slate-500">
@@ -2928,14 +3112,17 @@ export default function StoragePanel({
               disabled={isRefreshing}
               className="ml-auto rounded-full bg-sky-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isRefreshing ? "Обновляем..." : "Обновить"}
+              {isRefreshing ? tr("Обновляем...", "Refreshing...") : tr("Обновить", "Refresh")}
             </button>
           </div>
 
           {sourceTableMissing && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
               {stats.warning ??
-                "Данные еще не скачаны: исходная таблица с кадрами отсутствует. Пока отображается пустая статистика."}
+                tr(
+                  "Данные еще не скачаны: исходная таблица с кадрами отсутствует. Пока отображается пустая статистика.",
+                  "Data is not downloaded yet: the source frames table is missing, so stats are currently empty."
+                )}
             </div>
           )}
           {errorMessage && (
@@ -2948,13 +3135,21 @@ export default function StoragePanel({
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-center gap-3">
             <div>
-              <h3 className="text-lg font-semibold text-slate-900">Object Browser</h3>
+              <h3 className="text-lg font-semibold text-slate-900">
+                {tr("Браузер объектов", "Object Browser")}
+              </h3>
               <p className="mt-1 text-sm text-slate-600">
-                Листинг объектов с постраничным просмотром, превью и удалением конкретного объекта.
+                {tr(
+                  "Листинг объектов с постраничным просмотром, превью и удалением конкретного объекта.",
+                  "Object listing with pagination, preview, and per-object deletion."
+                )}
               </p>
               {hasObjectsFilter && (
                 <p className="mt-1 text-xs text-slate-500">
-                  Поиск выполняется с поэтапным сканированием и постраничной выдачей.
+                  {tr(
+                    "Поиск выполняется с поэтапным сканированием и постраничной выдачей.",
+                    "Search uses incremental scanning with paginated results."
+                  )}
                 </p>
               )}
             </div>
@@ -2963,7 +3158,7 @@ export default function StoragePanel({
                 type="text"
                 value={objectsSearchQuery}
                 onChange={(event) => setObjectsSearchQuery(event.target.value)}
-                placeholder="Поиск: object_id / key / path..."
+                placeholder={tr("Поиск: object_id / key / path...", "Search: object_id / key / path...")}
                 className="w-72 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
               />
               <select
@@ -2971,7 +3166,7 @@ export default function StoragePanel({
                 onChange={(event) => setObjectsDatasetFilter(event.target.value)}
                 className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
               >
-                <option value="">Все датасеты</option>
+                <option value="">{tr("Все датасеты", "All datasets")}</option>
                 {(stats.storage.all_bucket_stats || stats.storage.bucket_stats).map((bucket) => (
                   <option key={bucket.bucket} value={bucket.bucket}>
                     {bucket.bucket}
@@ -2980,7 +3175,7 @@ export default function StoragePanel({
               </select>
             </div>
             <div className="flex items-center gap-2 text-sm text-slate-700">
-              <span>На странице:</span>
+              <span>{tr("На странице:", "Per page:")}</span>
               <select
                 value={objectsPageSize}
                 onChange={(event) => setObjectsPageSize(Number(event.target.value))}
@@ -2999,25 +3194,37 @@ export default function StoragePanel({
             <table className="min-w-full w-full table-fixed divide-y divide-slate-200">
               <thead className="bg-slate-50">
                 <tr>
-                  <th className="w-[16rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Object ID</th>
-                  <th className="w-[45%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Bucket / Key</th>
-                  <th className="w-[8rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Size</th>
-                  <th className="w-[13rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Created</th>
-                  <th className="w-[16rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">Actions</th>
+                  <th className="w-[16rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    {tr("Object ID", "Object ID")}
+                  </th>
+                  <th className="w-[45%] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    {tr("Bucket / Key", "Bucket / Key")}
+                  </th>
+                  <th className="w-[8rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    {tr("Размер", "Size")}
+                  </th>
+                  <th className="w-[13rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    {tr("Создан", "Created")}
+                  </th>
+                  <th className="w-[16rem] px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    {tr("Действия", "Actions")}
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
                 {objectsToRender.length === 0 && !objectsLoading && !filteredObjectsLoading && (
                   <tr>
                     <td colSpan={5} className="px-4 py-6 text-center text-sm text-slate-500">
-                      {hasObjectsFilter ? "По заданному фильтру объектов нет." : "Объекты не найдены."}
+                      {hasObjectsFilter
+                        ? tr("По заданному фильтру объектов нет.", "No objects for the selected filter.")
+                        : tr("Объекты не найдены.", "Objects were not found.")}
                     </td>
                   </tr>
                 )}
                 {filteredObjectsLoading && (
                   <tr>
                     <td colSpan={5} className="px-4 py-6 text-center text-sm text-slate-500">
-                      Поиск по объектам...
+                      {tr("Поиск по объектам...", "Searching objects...")}
                     </td>
                   </tr>
                 )}
@@ -3043,7 +3250,7 @@ export default function StoragePanel({
                     </td>
                     <td className="px-4 py-2 text-sm text-slate-700 align-middle">{formatBytes(item.size_bytes)}</td>
                     <td className="px-4 py-2 text-sm text-slate-700 align-middle">
-                      {item.created_at ? new Date(item.created_at).toLocaleString("ru-RU") : "-"}
+                      {item.created_at ? new Date(item.created_at).toLocaleString(numberLocale) : "-"}
                     </td>
                     <td className="px-4 py-2 align-middle">
                       <div className="flex items-center gap-2 whitespace-nowrap">
@@ -3052,7 +3259,7 @@ export default function StoragePanel({
                           onClick={() => setPreviewObjectId(item.object_id)}
                           className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
                         >
-                          Preview
+                          {tr("Превью", "Preview")}
                         </button>
                         <a
                           href={`/api/objects/${encodeURIComponent(item.object_id)}`}
@@ -3060,7 +3267,7 @@ export default function StoragePanel({
                           rel="noreferrer"
                           className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
                         >
-                          Open
+                          {tr("Открыть", "Open")}
                         </a>
                         <button
                           type="button"
@@ -3068,7 +3275,9 @@ export default function StoragePanel({
                           disabled={actionInProgress !== null}
                           className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {actionInProgress === `delete-object-${item.object_id}` ? "Deleting..." : "Delete"}
+                          {actionInProgress === `delete-object-${item.object_id}`
+                            ? tr("Удаляем...", "Deleting...")
+                            : tr("Удалить", "Delete")}
                         </button>
                       </div>
                     </td>
@@ -3086,8 +3295,14 @@ export default function StoragePanel({
           <div className="mt-4 flex items-center justify-between">
             <div className="text-sm text-slate-600">
               {hasObjectsFilter
-                ? `Фильтр: страница ${filteredObjectsPage} ${filteredObjectsLoading ? "• loading..." : ""}`
-                : `Страница ${objectsPage} ${objectsLoading ? "• loading..." : ""}`}
+                ? tr(
+                    `Фильтр: страница ${filteredObjectsPage} ${filteredObjectsLoading ? "• загрузка..." : ""}`,
+                    `Filtered: page ${filteredObjectsPage} ${filteredObjectsLoading ? "• loading..." : ""}`
+                  )
+                : tr(
+                    `Страница ${objectsPage} ${objectsLoading ? "• загрузка..." : ""}`,
+                    `Page ${objectsPage} ${objectsLoading ? "• loading..." : ""}`
+                  )}
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -3106,7 +3321,7 @@ export default function StoragePanel({
                 }
                 className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                ← Назад
+                {tr("← Назад", "← Previous")}
               </button>
               <button
                 type="button"
@@ -3124,7 +3339,7 @@ export default function StoragePanel({
                 }
                 className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Вперёд →
+                {tr("Вперёд →", "Next →")}
               </button>
             </div>
           </div>
@@ -3132,21 +3347,25 @@ export default function StoragePanel({
 
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900">Dataset Coverage</h3>
+            <h3 className="text-lg font-semibold text-slate-900">
+              {tr("Покрытие датасетов", "Dataset Coverage")}
+            </h3>
             <div className="mt-4 space-y-2 text-sm text-slate-700">
-              <div>Строк в источнике: {formatNumber(stats.source.total_rows)}</div>
-              <div>Строк с `storage_path`: {formatNumber(stats.source.rows_with_storage_path)}</div>
-              <div>Уникальных сцен: {formatNumber(stats.source.distinct_storage_paths)}</div>
-              <div>Дубликатов: {formatNumber(stats.source.duplicate_storage_rows)}</div>
+              <div>{tr("Строк в источнике", "Rows in source")}: {formatNum(stats.source.total_rows)}</div>
+              <div>{tr("Строк с `storage_path`", "Rows with `storage_path`")}: {formatNum(stats.source.rows_with_storage_path)}</div>
+              <div>{tr("Уникальных сцен", "Unique scenes")}: {formatNum(stats.source.distinct_storage_paths)}</div>
+              <div>{tr("Дубликатов", "Duplicates")}: {formatNum(stats.source.duplicate_storage_rows)}</div>
             </div>
           </div>
 
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900">Vector Annotation</h3>
+            <h3 className="text-lg font-semibold text-slate-900">
+              {tr("Векторная разметка", "Vector Annotation")}
+            </h3>
             <div className="mt-4 text-sm text-slate-700">
               <div className="mb-2 flex justify-between">
-                <span>Размечено</span>
-                <span className="font-semibold">{pct(stats.embeddings.annotated_percent)}</span>
+                <span>{tr("Размечено", "Annotated")}</span>
+                <span className="font-semibold">{pctText(stats.embeddings.annotated_percent)}</span>
               </div>
               <div className="h-2 w-full rounded-full bg-slate-200">
                 <div
@@ -3154,31 +3373,36 @@ export default function StoragePanel({
                   style={{ width: `${Math.min(stats.embeddings.annotated_percent, 100)}%` }}
                 />
               </div>
-              <div className="mt-3">Осталось: {formatNumber(stats.embeddings.pending_rows)}</div>
-              <div>Размечено: {formatNumber(stats.embeddings.annotated_rows)}</div>
-              <div>Не размечено: {pct(stats.embeddings.pending_percent)}</div>
+              <div className="mt-3">{tr("Осталось", "Remaining")}: {formatNum(stats.embeddings.pending_rows)}</div>
+              <div>{tr("Размечено", "Annotated")}: {formatNum(stats.embeddings.annotated_rows)}</div>
+              <div>{tr("Не размечено", "Not annotated")}: {pctText(stats.embeddings.pending_percent)}</div>
               <div>
-                Размерность: query{" "}
+                {tr("Размерность", "Dimension")}: query{" "}
                 {stats.embeddings.dimensions?.query_dim ?? "?"} / stored{" "}
                 {stats.embeddings.dimensions?.stored_dim ?? "?"}
               </div>
               {stats.embeddings.dimensions?.mismatch ? (
                 <div className="text-xs text-amber-700">
-                  Внимание: mismatch размерности эмбеддингов.
+                  {tr(
+                    "Внимание: mismatch размерности эмбеддингов.",
+                    "Warning: embedding dimensions mismatch."
+                  )}
                 </div>
               ) : null}
               <div className="mt-2 text-xs text-slate-500">
-                Оценка оставшегося объёма: {formatBytes(embeddingsRemainingBytes)}
+                {tr("Оценка оставшегося объёма", "Estimated remaining size")}: {formatBytes(embeddingsRemainingBytes)}
               </div>
             </div>
           </div>
 
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900">VLM Annotation</h3>
+            <h3 className="text-lg font-semibold text-slate-900">
+              {tr("VLM разметка", "VLM Annotation")}
+            </h3>
             <div className="mt-4 text-sm text-slate-700">
               <div className="mb-2 flex justify-between">
-                <span>Полностью размечено</span>
-                <span className="font-semibold">{pct(stats.vlm.annotated_percent)}</span>
+                <span>{tr("Размечено", "Annotated")}</span>
+                <span className="font-semibold">{pctText(stats.vlm.annotated_percent)}</span>
               </div>
               <div className="h-2 w-full rounded-full bg-slate-200">
                 <div
@@ -3186,21 +3410,22 @@ export default function StoragePanel({
                   style={{ width: `${Math.min(stats.vlm.annotated_percent, 100)}%` }}
                 />
               </div>
-              <div className="mt-3">Осталось: {formatNumber(stats.vlm.pending_rows)}</div>
-              <div>Полностью размечено: {formatNumber(stats.vlm.annotated_rows)}</div>
+              <div className="mt-3">{tr("Осталось", "Remaining")}: {formatNum(stats.vlm.pending_rows)}</div>
+              <div>{tr("Размечено", "Annotated")}: {formatNum(stats.vlm.annotated_rows)}</div>
               <div>
-                Есть любая VLM разметка:{" "}
-                {formatNumber(Number(stats.vlm.partial_annotated_rows || 0))} (
-                {pct(Number(stats.vlm.partial_annotated_percent || 0))})
+                {tr("Есть любая VLM разметка", "Any VLM annotation")}:{" "}
+                {formatNum(Number(stats.vlm.partial_annotated_rows || 0))} (
+                {pctText(Number(stats.vlm.partial_annotated_percent || 0))})
               </div>
               <div>
-                Частично размечено: {formatNumber(Number(stats.vlm.partial_only_rows || 0))} (
-                {pct(Number(stats.vlm.partial_only_percent || 0))})
+                {tr("Частично размечено", "Partially annotated")}:{" "}
+                {formatNum(Number(stats.vlm.partial_only_rows || 0))} (
+                {pctText(Number(stats.vlm.partial_only_percent || 0))})
               </div>
-              <div>Не размечено: {pct(stats.vlm.pending_percent)}</div>
-              <div>Поля VLM: {formatNumber(stats.vlm.configured_fields)}</div>
+              <div>{tr("Не размечено", "Not annotated")}: {pctText(stats.vlm.pending_percent)}</div>
+              <div>{tr("Поля VLM", "VLM fields")}: {formatNum(stats.vlm.configured_fields)}</div>
               <div className="mt-2 text-xs text-slate-500">
-                Оценка оставшегося объёма: {formatBytes(vlmRemainingBytes)}
+                {tr("Оценка оставшегося объёма", "Estimated remaining size")}: {formatBytes(vlmRemainingBytes)}
               </div>
             </div>
           </div>
@@ -3215,21 +3440,33 @@ export default function StoragePanel({
 
         <div className="grid gap-6 xl:grid-cols-2">
           <PieChart
-            title="Dataset Share by Rows"
-            subtitle="Доля датасетов от общего числа строк"
+            title={tr("Доля датасетов по строкам", "Dataset Share by Rows")}
+            subtitle={tr("Доля датасетов от общего числа строк", "Dataset share of all source rows")}
             slices={rowsPieSlices}
+            hoverHintLabel={tr("Наведите курсор", "Hover")}
+            hoverHintValue={tr("Доля датасета", "Dataset share")}
           />
           <PieChart
-            title="Dataset Share by Memory + Free"
-            subtitle="Доля датасетов от всего диска, включая свободное место"
+            title={tr("Доля по памяти + свободное", "Dataset Share by Memory + Free")}
+            subtitle={tr(
+              "Доля датасетов от всего диска, включая свободное место",
+              "Dataset share of total disk including free space"
+            )}
             slices={memoryPieSlices}
+            hoverHintLabel={tr("Наведите курсор", "Hover")}
+            hoverHintValue={tr("Доля датасета", "Dataset share")}
           />
         </div>
 
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h3 className="text-lg font-semibold text-slate-900">Cleanup & Re-Annotation</h3>
+          <h3 className="text-lg font-semibold text-slate-900">
+            {tr("Очистка и переразметка", "Cleanup & Re-Annotation")}
+          </h3>
           <p className="mt-1 text-sm text-slate-600">
-            Partial annotation reset, duplicate cleanup, and full random scene deletion.
+            {tr(
+              "Частичный сброс разметки, очистка дублей и полное удаление случайных сцен.",
+              "Partial annotation reset, duplicate cleanup, and full random scene deletion."
+            )}
           </p>
           {cleanupStatusMessage && (
             <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
@@ -3243,7 +3480,7 @@ export default function StoragePanel({
           )}
           <div className="mt-3">
             <label className="text-sm font-medium text-slate-700">
-              Dataset scope
+              {tr("Область датасетов", "Dataset scope")}
             </label>
             <div className="mt-2">
               <select
@@ -3251,7 +3488,7 @@ export default function StoragePanel({
                 onChange={(event) => setCleanupDatasetFilter(event.target.value)}
                 className="w-56 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
               >
-                <option value="all">All datasets</option>
+                <option value="all">{tr("Все датасеты", "All datasets")}</option>
                 {(stats.storage.all_bucket_stats || stats.storage.bucket_stats)
                   .filter((bucket) => Boolean(stats.dataset_visibility?.[bucket.bucket] ?? true))
                   .map((bucket) => (
@@ -3266,7 +3503,7 @@ export default function StoragePanel({
           <div className="mt-4 grid gap-4 xl:grid-cols-2">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <label className="text-sm font-medium text-slate-700">
-                Random N for vector reset
+                {tr("Случайные N для сброса векторов", "Random N for vector reset")}
               </label>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <input
@@ -3285,15 +3522,15 @@ export default function StoragePanel({
                   className="rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {actionInProgress === "delete-random-embeddings"
-                    ? "Deleting..."
-                    : "Delete random embeddings"}
+                    ? tr("Удаление...", "Deleting...")
+                    : tr("Удалить случайные embeddings", "Delete random embeddings")}
                 </button>
               </div>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
               <label className="text-sm font-medium text-slate-700">
-                Random N for VLM reset
+                {tr("Случайные N для сброса VLM", "Random N for VLM reset")}
               </label>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <input
@@ -3312,19 +3549,22 @@ export default function StoragePanel({
                   className="rounded-full bg-violet-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {actionInProgress === "delete-random-vlm"
-                    ? "Deleting..."
-                    : "Delete random VLM"}
+                    ? tr("Удаление...", "Deleting...")
+                    : tr("Удалить случайные VLM", "Delete random VLM")}
                 </button>
               </div>
             </div>
 
             <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
               <label className="text-sm font-medium text-amber-800">
-                Duplicate rows cleanup
+                {tr("Очистка дублей строк", "Duplicate rows cleanup")}
               </label>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <span className="text-sm text-amber-800">
-                  Drop duplicate rows by identical `storage_path`
+                  {tr(
+                    "Удалить строки-дубли с одинаковым `storage_path`",
+                    "Drop duplicate rows by identical `storage_path`"
+                  )}
                 </span>
                 <button
                   type="button"
@@ -3332,14 +3572,16 @@ export default function StoragePanel({
                   disabled={actionInProgress !== null}
                   className="rounded-full bg-amber-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {actionInProgress === "delete-duplicates" ? "Deleting..." : "Drop duplicates"}
+                  {actionInProgress === "delete-duplicates"
+                    ? tr("Удаление...", "Deleting...")
+                    : tr("Удалить дубли", "Drop duplicates")}
                 </button>
               </div>
             </div>
 
             <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
               <label className="text-sm font-medium text-rose-700">
-                Random N images hard delete
+                {tr("Случайные N для полного удаления", "Random N images hard delete")}
               </label>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <input
@@ -3358,8 +3600,8 @@ export default function StoragePanel({
                   className="rounded-full bg-rose-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {actionInProgress === "delete-random-images"
-                    ? "Deleting..."
-                    : "Delete images + metadata"}
+                    ? tr("Удаление...", "Deleting...")
+                    : tr("Удалить сцены + метаданные", "Delete images + metadata")}
                 </button>
               </div>
             </div>
@@ -3367,7 +3609,9 @@ export default function StoragePanel({
         </div>
 
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h3 className="text-lg font-semibold text-slate-900">Image Storage</h3>
+          <h3 className="text-lg font-semibold text-slate-900">
+            {tr("Хранилище изображений", "Image Storage")}
+          </h3>
           {storageStatusMessage && (
             <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
               {storageStatusMessage}
@@ -3380,16 +3624,16 @@ export default function StoragePanel({
           )}
           <div className="mt-4 grid gap-4 md:grid-cols-4">
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-              Объектов: <span className="font-semibold">{formatNumber(stats.storage.total_objects)}</span>
+              {tr("Объектов", "Objects")}: <span className="font-semibold">{formatNum(stats.storage.total_objects)}</span>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-              Данные изображений: <span className="font-semibold">{formatBytes(stats.storage.total_bytes)}</span>
+              {tr("Данные изображений", "Image data")}: <span className="font-semibold">{formatBytes(stats.storage.total_bytes)}</span>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-              Диск свободно: <span className="font-semibold">{formatBytes(stats.disk.free_bytes)}</span>
+              {tr("Диск свободно", "Disk free")}: <span className="font-semibold">{formatBytes(stats.disk.free_bytes)}</span>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-              Диск занято: <span className="font-semibold">{pct(stats.disk.used_percent)}</span>
+              {tr("Диск занято", "Disk used")}: <span className="font-semibold">{pctText(stats.disk.used_percent)}</span>
             </div>
           </div>
 
@@ -3398,34 +3642,44 @@ export default function StoragePanel({
               <thead className="bg-slate-50">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Bucket
+                    {tr("Бакет", "Bucket")}
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Objects
+                    {tr("Объекты", "Objects")}
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Size
+                    {tr("Размер", "Size")}
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Status
+                    {tr("Статус", "Status")}
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Actions
+                    {tr("Действия", "Actions")}
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
                     <div className="flex items-center gap-2">
-                      <span>Visibility</span>
+                      <span>{tr("Видимость", "Visibility")}</span>
                       <button
                         type="button"
                         onClick={() => {
                           if (allDatasetBuckets.length === 0) return;
                           const nextVisible = !allDatasetsVisible;
                           openConfirmDialog({
-                            title: nextVisible ? "Show all datasets" : "Hide all datasets",
+                            title: nextVisible
+                              ? tr("Показать все датасеты", "Show all datasets")
+                              : tr("Скрыть все датасеты", "Hide all datasets"),
                             description: nextVisible
-                              ? "Show all datasets across Browser, VLM, annotation, cleanup/deletion and Storage analytics?"
-                              : "Hide all datasets from Browser, VLM, annotation, cleanup/deletion and Storage analytics?",
-                            confirmLabel: nextVisible ? "Show all" : "Hide all",
+                              ? tr(
+                                  "Показать все датасеты во вкладках Browser, VLM, Annotation, Cleanup/Deletion и в аналитике Storage?",
+                                  "Show all datasets across Browser, VLM, Annotation, Cleanup/Deletion, and Storage analytics?"
+                                )
+                              : tr(
+                                  "Скрыть все датасеты из вкладок Browser, VLM, Annotation, Cleanup/Deletion и из аналитики Storage?",
+                                  "Hide all datasets from Browser, VLM, Annotation, Cleanup/Deletion, and Storage analytics?"
+                                ),
+                            confirmLabel: nextVisible
+                              ? tr("Показать все", "Show all")
+                              : tr("Скрыть все", "Hide all"),
                             onConfirm: async () => {
                               await runStorageAction(allVisibilityActionId, async () => {
                                 await Promise.all(
@@ -3447,7 +3701,9 @@ export default function StoragePanel({
                         disabled={isTogglingAllVisibility || actionInProgress !== null}
                         className="rounded-md border border-slate-300 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {allDatasetsVisible ? "Hide all" : "Show all"}
+                        {allDatasetsVisible
+                          ? tr("Скрыть все", "Hide all")
+                          : tr("Показать все", "Show all")}
                       </button>
                     </div>
                   </th>
@@ -3469,12 +3725,12 @@ export default function StoragePanel({
                   return (
                     <tr key={bucket.bucket}>
                       <td className="px-4 py-3 text-sm text-slate-800">{bucket.bucket}</td>
-                      <td className="px-4 py-3 text-sm text-slate-700">{formatNumber(bucket.objects)}</td>
+                      <td className="px-4 py-3 text-sm text-slate-700">{formatNum(bucket.objects)}</td>
                       <td className="px-4 py-3 text-sm text-slate-700">{formatBytes(bucket.bytes)}</td>
                       <td className="px-4 py-3 text-sm">
                         {bucket.error ? (
                           <span className="font-semibold text-amber-700">
-                            Warning: {bucket.error}
+                            {tr("Предупреждение", "Warning")}: {bucket.error}
                           </span>
                         ) : (
                           <span className="font-semibold text-emerald-700">OK</span>
@@ -3502,35 +3758,47 @@ export default function StoragePanel({
                             <>
                               <span className="relative z-10 inline-block whitespace-nowrap text-rose-700">
                                 <span aria-hidden="true" className="opacity-0">
-                                  Deleting
+                                  {tr("Удаление", "Deleting")}
                                 </span>
                               </span>
                               <span className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center whitespace-nowrap text-rose-700">
-                                Deleting
+                                {tr("Удаление", "Deleting")}
                               </span>
                               <span
                                 className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center whitespace-nowrap text-white transition-[clip-path] duration-300 ease-out"
                                 style={{ clipPath: `inset(0 ${100 - progress}% 0 0)` }}
                               >
-                                Deleting
+                                {tr("Удаление", "Deleting")}
                               </span>
                             </>
                           ) : (
-                            <span className="relative z-10">Delete dataset</span>
+                            <span className="relative z-10">
+                              {tr("Удалить датасет", "Delete dataset")}
+                            </span>
                           )}
                         </button>
                       </td>
                       <td className="px-4 py-3 text-sm">
                         <button
                           type="button"
-                          title={isVisible ? "Dataset is visible" : "Dataset is hidden"}
+                          title={isVisible ? tr("Датасет видим", "Dataset is visible") : tr("Датасет скрыт", "Dataset is hidden")}
                           onClick={() => {
                             openConfirmDialog({
-                              title: isVisible ? "Hide dataset" : "Show dataset",
+                              title: isVisible
+                                ? tr("Скрыть датасет", "Hide dataset")
+                                : tr("Показать датасет", "Show dataset"),
                               description: isVisible
-                                ? `Hide dataset '${bucket.bucket}' from Browser, VLM, annotation, cleanup/deletion and Storage analytics?`
-                                : `Show dataset '${bucket.bucket}' again across Browser, VLM, annotation, cleanup/deletion and Storage analytics?`,
-                              confirmLabel: isVisible ? "Hide dataset" : "Show dataset",
+                                ? tr(
+                                    `Скрыть датасет '${bucket.bucket}' из Browser, VLM, Annotation, Cleanup/Deletion и аналитики Storage?`,
+                                    `Hide dataset '${bucket.bucket}' from Browser, VLM, Annotation, Cleanup/Deletion, and Storage analytics?`
+                                  )
+                                : tr(
+                                    `Снова показать датасет '${bucket.bucket}' в Browser, VLM, Annotation, Cleanup/Deletion и аналитике Storage?`,
+                                    `Show dataset '${bucket.bucket}' again across Browser, VLM, Annotation, Cleanup/Deletion, and Storage analytics?`
+                                  ),
+                              confirmLabel: isVisible
+                                ? tr("Скрыть датасет", "Hide dataset")
+                                : tr("Показать датасет", "Show dataset"),
                               onConfirm: async () => {
                                 await runStorageAction(visibilityActionId, async () => {
                                   await axios.post("/api/storage/dataset-visibility", {
@@ -3616,7 +3884,7 @@ export default function StoragePanel({
                 disabled={confirmDialogBusy}
                 className="inline-flex h-10 items-center justify-center rounded-lg border border-slate-300 px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Отмена
+                {tr("Отмена", "Cancel")}
               </button>
               {(confirmDialog.extraActions || []).map((action) => (
                 <button
@@ -3654,7 +3922,7 @@ export default function StoragePanel({
             <div className="mb-3 flex items-center justify-between gap-4">
               <div>
                 <div className="text-xs uppercase tracking-wide text-slate-500">
-                  Object Preview
+                  {tr("Превью объекта", "Object Preview")}
                 </div>
                 <div className="break-all text-sm font-semibold text-slate-900">
                   {previewObjectId}
@@ -3665,7 +3933,7 @@ export default function StoragePanel({
                 onClick={() => setPreviewObjectId(null)}
                 className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
               >
-                Close
+                {tr("Закрыть", "Close")}
               </button>
             </div>
             <img

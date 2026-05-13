@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { getLocalizedText, type UiLanguageCode } from "../lib/uiLanguage";
 
 import ImageGallery from "./ImageGallery";
 
@@ -49,16 +50,6 @@ interface MatchModeOption {
   label: string;
 }
 
-const RESPONSE_TYPE_OPTIONS: Array<{
-  value: ResponseType;
-  label: string;
-}> = [
-  { value: "yes_no", label: "Yes / No" },
-  { value: "number", label: "Number" },
-  { value: "category", label: "Category" },
-  { value: "short_text", label: "Short text" },
-  { value: "text", label: "Detailed text" },
-];
 const IMAGES_PER_PAGE_OPTIONS = [6, 9, 12, 18, 24];
 const DEFAULT_MATCH_MODE: MatchMode = "contains";
 const BASIC_MATCH_MODE_OPTIONS: MatchModeOption[] = [
@@ -74,7 +65,6 @@ const NUMBER_MATCH_MODE_OPTIONS: MatchModeOption[] = [
   { value: "less", label: "Less than" },
   { value: "less_or_equal", label: "Less or equal than" },
 ];
-const ANY_MATCH_MODE_OPTION: MatchModeOption = { value: "any", label: "Any" };
 const YES_NO_VALUE_OPTIONS = [
   { value: "yes", label: "Yes" },
   { value: "no", label: "No" },
@@ -192,7 +182,64 @@ function normalizeFieldName(name: string): string {
   return /^[0-9]/.test(normalized) ? `field_${normalized}` : normalized;
 }
 
-export default function VlmPanel() {
+export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCode }) {
+  const tr = (ru: string, en: string) =>
+    getLocalizedText(language, { ru, en }, en);
+
+  const responseTypeOptions = useMemo(
+    () => [
+      { value: "yes_no" as ResponseType, label: tr("Да / Нет", "Yes / No") },
+      { value: "number" as ResponseType, label: tr("Число", "Number") },
+      { value: "category" as ResponseType, label: tr("Категория", "Category") },
+      { value: "short_text" as ResponseType, label: tr("Короткий текст", "Short text") },
+      { value: "text" as ResponseType, label: tr("Подробный текст", "Detailed text") },
+    ],
+    [language]
+  );
+  const anyMatchModeOption = useMemo(
+    () => ({ value: "any" as MatchModeSelectValue, label: tr("Любой", "Any") }),
+    [language]
+  );
+  const basicMatchModeOptions = useMemo(
+    () => [
+      { value: "contains" as MatchModeSelectValue, label: tr("Содержит", "Contains") },
+      { value: "exact" as MatchModeSelectValue, label: tr("Точное", "Exact") },
+    ],
+    [language]
+  );
+  const numberMatchModeOptions = useMemo(
+    () => [
+      { value: "contains" as MatchModeSelectValue, label: tr("Содержит", "Contains") },
+      { value: "equal" as MatchModeSelectValue, label: tr("Равно", "Equal") },
+      { value: "not_equal" as MatchModeSelectValue, label: tr("Не равно", "Not equal") },
+      { value: "greater" as MatchModeSelectValue, label: tr("Больше", "Greater than") },
+      {
+        value: "greater_or_equal" as MatchModeSelectValue,
+        label: tr("Больше или равно", "Greater or equal than"),
+      },
+      { value: "less" as MatchModeSelectValue, label: tr("Меньше", "Less than") },
+      {
+        value: "less_or_equal" as MatchModeSelectValue,
+        label: tr("Меньше или равно", "Less or equal than"),
+      },
+    ],
+    [language]
+  );
+  const yesNoValueOptions = useMemo(
+    () => [
+      { value: "yes", label: tr("Да", "Yes") },
+      { value: "no", label: tr("Нет", "No") },
+    ],
+    [language]
+  );
+  const getLocalizedMatchModeOptions = (responseType: ResponseType): MatchModeOption[] => {
+    if (responseType === "yes_no") {
+      return [{ value: "exact", label: tr("Точное", "Exact") }];
+    }
+    return responseType === "number"
+      ? numberMatchModeOptions
+      : basicMatchModeOptions;
+  };
   const [draftFields, setDraftFields] = useState<FieldDraft[]>([createFieldDraft()]);
   const [savedFields, setSavedFields] = useState<SavedField[]>([]);
   const [filters, setFilters] = useState<Record<string, FilterState>>({});
@@ -249,7 +296,9 @@ export default function VlmPanel() {
         );
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : "Failed to load VLM schema";
+          error instanceof Error
+            ? error.message
+            : tr("Не удалось загрузить VLM schema", "Failed to load VLM schema");
         setErrorMessage(message);
       }
     };
@@ -265,7 +314,10 @@ export default function VlmPanel() {
         if (response.data?.source_table_exists === false) {
           setSourceWarning(
             response.data?.warning ??
-              "Исходные данные еще не скачаны. Таблица кадров отсутствует."
+              tr(
+                "Исходные данные еще не скачаны. Таблица кадров отсутствует.",
+                "Source data has not been downloaded yet. Frames table is missing."
+              )
           );
         } else {
           setSourceWarning(null);
@@ -317,7 +369,12 @@ export default function VlmPanel() {
 
     if (fields.length === 0) {
       setSchemaStatusMessage(null);
-      setErrorMessage("Add at least one field with a prompt.");
+      setErrorMessage(
+        tr(
+          "Добавьте хотя бы одно поле с prompt.",
+          "Add at least one field with a prompt."
+        )
+      );
       return;
     }
 
@@ -371,14 +428,17 @@ export default function VlmPanel() {
           ])
         )
       );
-      setSchemaStatusMessage("VLM schema saved.");
+      setSchemaStatusMessage(tr("VLM schema сохранена.", "VLM schema saved."));
     } catch (error: unknown) {
       const message = axios.isAxiosError(error)
         ? toErrorMessage(
             error.response?.data?.detail ?? error.response?.data?.error ?? error.message,
-            "Failed to save VLM schema"
+            tr("Не удалось сохранить VLM schema", "Failed to save VLM schema")
           )
-        : toErrorMessage(error, "Failed to save VLM schema");
+        : toErrorMessage(
+            error,
+            tr("Не удалось сохранить VLM schema", "Failed to save VLM schema")
+          );
       setErrorMessage(message);
     } finally {
       setIsSaving(false);
@@ -437,15 +497,23 @@ export default function VlmPanel() {
       setImages(normalizedResults);
       setCurrentPage(1);
       if (normalizedResults.length === 0) {
-        setStatusMessage("No scenes matched the current VLM filters.");
+        setStatusMessage(
+          tr(
+            "По текущим VLM-фильтрам сцены не найдены.",
+            "No scenes matched the current VLM filters."
+          )
+        );
       }
     } catch (error: unknown) {
       const message = axios.isAxiosError(error)
         ? toErrorMessage(
             error.response?.data?.detail ?? error.response?.data?.error ?? error.message,
-            "Failed to run VLM search"
+            tr("Не удалось выполнить VLM-поиск", "Failed to run VLM search")
           )
-        : toErrorMessage(error, "Failed to run VLM search");
+        : toErrorMessage(
+            error,
+            tr("Не удалось выполнить VLM-поиск", "Failed to run VLM search")
+          );
       setErrorMessage(message);
       setImages([]);
       setCurrentPage(1);
@@ -478,10 +546,14 @@ export default function VlmPanel() {
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5 flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-2xl font-semibold text-slate-900">VLM Schema</h2>
+              <h2 className="text-2xl font-semibold text-slate-900">
+                {tr("VLM Schema", "VLM Schema")}
+              </h2>
               <p className="mt-2 text-sm text-slate-600">
-                Each row becomes a field stored for every scene. The system appends
-                response-format instructions automatically based on the selected type.
+                {tr(
+                  "Каждая строка превращается в поле, которое сохраняется для каждой сцены. Формат ответа дополняется автоматически в зависимости от выбранного типа.",
+                  "Each row becomes a field stored for every scene. The system appends response-format instructions automatically based on the selected type."
+                )}
               </p>
             </div>
             <button
@@ -489,7 +561,7 @@ export default function VlmPanel() {
               onClick={() => setIsSchemaCollapsed((current) => !current)}
               className="rounded-full border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
             >
-              {isSchemaCollapsed ? "Expand" : "Collapse"}
+              {isSchemaCollapsed ? tr("Развернуть", "Expand") : tr("Свернуть", "Collapse")}
             </button>
           </div>
 
@@ -514,7 +586,10 @@ export default function VlmPanel() {
                       onChange={(event) =>
                         updateDraftField(field.id, "prompt", event.target.value)
                       }
-                      placeholder="Example: Is there a pedestrian crossing in front of the ego vehicle?"
+                      placeholder={tr(
+                        "Пример: Есть ли пешеходный переход перед эго-автомобилем?",
+                        "Example: Is there a pedestrian crossing in front of the ego vehicle?"
+                      )}
                       rows={3}
                       className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                     />
@@ -529,7 +604,7 @@ export default function VlmPanel() {
                       }
                       className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                     >
-                      {RESPONSE_TYPE_OPTIONS.map((option) => (
+                      {responseTypeOptions.map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
                         </option>
@@ -540,7 +615,7 @@ export default function VlmPanel() {
                       onClick={() => removeFieldRow(field.id)}
                       className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 transition hover:bg-slate-100"
                     >
-                      Remove
+                      {tr("Удалить", "Remove")}
                     </button>
                   </div>
                 ))}
@@ -552,7 +627,7 @@ export default function VlmPanel() {
                   onClick={addFieldRow}
                   className="rounded-full border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
                 >
-                  Add field
+                  {tr("Добавить поле", "Add field")}
                 </button>
                 <button
                   type="button"
@@ -560,7 +635,9 @@ export default function VlmPanel() {
                   disabled={isSaving}
                   className="rounded-full bg-sky-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {isSaving ? "Saving..." : "Save schema"}
+                  {isSaving
+                    ? tr("Сохраняем...", "Saving...")
+                    : tr("Сохранить schema", "Save schema")}
                 </button>
               </div>
               {schemaStatusMessage && (
@@ -575,10 +652,14 @@ export default function VlmPanel() {
         <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-5 flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-2xl font-semibold text-slate-900">Filter Scenes</h2>
+              <h2 className="text-2xl font-semibold text-slate-900">
+                {tr("Фильтр сцен", "Filter Scenes")}
+              </h2>
               <p className="mt-2 text-sm text-slate-600">
-                Search by saved VLM fields after the analysis job has populated the
-                annotations table.
+                {tr(
+                  "Поиск по сохранённым VLM-полям после того, как джоба анализа заполнила таблицу аннотаций.",
+                  "Search by saved VLM fields after the analysis job has populated the annotations table."
+                )}
               </p>
             </div>
             <div className="flex gap-2">
@@ -587,22 +668,25 @@ export default function VlmPanel() {
                 onClick={resetFilters}
                 className="rounded-full border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
               >
-                Reset Filters
+                {tr("Сбросить фильтры", "Reset Filters")}
               </button>
               <button
                 type="button"
                 onClick={() => setIsFilterScenesCollapsed((current) => !current)}
                 className="rounded-full border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
               >
-                {isFilterScenesCollapsed ? "Expand" : "Collapse"}
+                {isFilterScenesCollapsed ? tr("Развернуть", "Expand") : tr("Свернуть", "Collapse")}
               </button>
             </div>
           </div>
 
           {savedFields.length === 0 ? (
-            <div className="text-sm text-slate-500">
-              Save at least one VLM field to enable filtering.
-            </div>
+              <div className="text-sm text-slate-500">
+                {tr(
+                  "Сохраните хотя бы одно VLM-поле, чтобы включить фильтрацию.",
+                  "Save at least one VLM field to enable filtering."
+                )}
+              </div>
           ) : (
             <>
               {!isFilterScenesCollapsed && (
@@ -650,9 +734,9 @@ export default function VlmPanel() {
                             }
                             className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                           >
-                            <option value="">None</option>
-                            <option value="any">Any</option>
-                            {YES_NO_VALUE_OPTIONS.map((option) => (
+                            <option value="">{tr("Нет", "None")}</option>
+                            <option value="any">{tr("Любой", "Any")}</option>
+                            {yesNoValueOptions.map((option) => (
                               <option key={option.value} value={option.value}>
                                 {option.label}
                               </option>
@@ -706,13 +790,13 @@ export default function VlmPanel() {
                                         disabled={fieldState?.isAny ?? true}
                                         className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                                       >
-                                        <option value="">Select value</option>
+                                        <option value="">{tr("Выберите значение", "Select value")}</option>
                                         {categoryOptions.map((label) => (
                                           <option key={label} value={label}>
                                             {label}
                                           </option>
                                         ))}
-                                        <option value="__custom__">Custom value</option>
+                                        <option value="__custom__">{tr("Свое значение", "Custom value")}</option>
                                       </select>
                                       {selectValue === "__custom__" && (
                                         <input
@@ -731,7 +815,7 @@ export default function VlmPanel() {
                                             }))
                                           }
                                           disabled={fieldState?.isAny ?? true}
-                                          placeholder="Type exact value"
+                                          placeholder={tr("Введите точное значение", "Type exact value")}
                                           className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                                         />
                                       )}
@@ -753,7 +837,7 @@ export default function VlmPanel() {
                                         }))
                                       }
                                       disabled={fieldState?.isAny ?? true}
-                                      placeholder="Filter value"
+                                      placeholder={tr("Значение фильтра", "Filter value")}
                                       className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                                     />
                                   )}
@@ -780,8 +864,8 @@ export default function VlmPanel() {
                             disabled={filters[field.field_name]?.isAny ?? true}
                             placeholder={
                               field.response_type === "number"
-                                ? "Number value"
-                                : "Filter value"
+                                ? tr("Числовое значение", "Number value")
+                                : tr("Значение фильтра", "Filter value")
                             }
                             className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                           />
@@ -808,6 +892,7 @@ export default function VlmPanel() {
                                       }
                                     : {
                                         ...createFilterState(field.response_type, {
+                                          isAny: false,
                                           value: current[field.field_name]?.value ?? "",
                                           match_mode: event.target.value as MatchMode,
                                         }),
@@ -817,7 +902,7 @@ export default function VlmPanel() {
                             }
                             className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                           >
-                            {[ANY_MATCH_MODE_OPTION, ...getMatchModeOptions(field.response_type)].map((option) => (
+                            {[anyMatchModeOption, ...getLocalizedMatchModeOptions(field.response_type)].map((option) => (
                               <option key={option.value} value={option.value}>
                                 {option.label}
                               </option>
@@ -837,7 +922,9 @@ export default function VlmPanel() {
                   disabled={isSearching}
                   className="rounded-full bg-indigo-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {isSearching ? "Searching..." : "Search by VLM filters"}
+                  {isSearching
+                    ? tr("Ищем...", "Searching...")
+                    : tr("Поиск по VLM-фильтрам", "Search by VLM filters")}
                 </button>
               </div>
 
@@ -862,12 +949,15 @@ export default function VlmPanel() {
             <div className="w-full max-w-xl rounded-xl bg-white shadow-2xl">
               <div className="border-b border-slate-200 px-5 py-4">
                 <div className="text-base font-semibold text-slate-900">
-                  Удалить поле из VLM Schema?
+                  {tr("Удалить поле из VLM Schema?", "Delete a field from VLM Schema?")}
                 </div>
               </div>
               <div className="px-5 py-4 text-sm text-slate-700">
                 <div>
-                  Будут удалены столбцы и сохраненные значения в аннотациях:
+                  {tr(
+                    "Будут удалены столбцы и сохраненные значения в аннотациях:",
+                    "Columns and saved annotation values will be removed:"
+                  )}
                 </div>
                 <div className="mt-2 rounded-lg bg-slate-100 px-3 py-2 font-mono text-xs text-slate-800">
                   {schemaDeleteDialog.removedFieldNames.join(", ")}
@@ -879,7 +969,7 @@ export default function VlmPanel() {
                   onClick={() => setSchemaDeleteDialog(null)}
                   className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
                 >
-                  Отмена
+                  {tr("Отмена", "Cancel")}
                 </button>
                 <button
                   type="button"
@@ -887,7 +977,7 @@ export default function VlmPanel() {
                   disabled={isSaving}
                   className="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
                 >
-                  Подтвердить удаление
+                  {tr("Подтвердить удаление", "Confirm deletion")}
                 </button>
               </div>
             </div>
@@ -898,11 +988,12 @@ export default function VlmPanel() {
           <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-col gap-4 rounded-2xl border border-gray-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="text-sm text-gray-600">
-                Показаны {pageStart + 1}-{Math.min(pageStart + imagesPerPage, images.length)} из {images.length}
+                {tr("Показаны", "Showing")} {pageStart + 1}-
+                {Math.min(pageStart + imagesPerPage, images.length)} {tr("из", "of")} {images.length}
               </div>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                 <label className="flex items-center gap-2 text-sm text-gray-600">
-                  Картинок на странице
+                  {tr("Картинок на странице", "Images per page")}
                   <select
                     value={imagesPerPage}
                     onChange={(event) => {
@@ -925,7 +1016,7 @@ export default function VlmPanel() {
                     disabled={currentPage === 1}
                     className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    ← Назад
+                    {tr("← Назад", "← Previous")}
                   </button>
                   <div className="min-w-24 text-center text-sm font-medium text-gray-700">
                     {currentPage} / {totalPages}
@@ -938,7 +1029,7 @@ export default function VlmPanel() {
                     disabled={currentPage === totalPages}
                     className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    Вперёд →
+                    {tr("Вперёд →", "Next →")}
                   </button>
                 </div>
               </div>
