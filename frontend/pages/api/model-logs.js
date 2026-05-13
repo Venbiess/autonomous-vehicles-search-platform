@@ -45,15 +45,15 @@ export default async function handler(req, res) {
   try {
     let logPath = "";
     let stat = null;
+    let lastFsError = null;
     for (const candidate of candidatePaths) {
       try {
         stat = await fs.stat(candidate);
         logPath = candidate;
         break;
       } catch (error) {
-        if (error?.code !== "ENOENT") {
-          throw error;
-        }
+        lastFsError = error;
+        continue;
       }
     }
     if (!stat || !logPath) {
@@ -64,6 +64,10 @@ export default async function handler(req, res) {
         size_bytes: 0,
         updated_at: null,
         content: "No startup logs yet.",
+        warning:
+          lastFsError && lastFsError.code && lastFsError.code !== "ENOENT"
+            ? String(lastFsError.message || lastFsError.code)
+            : undefined,
       });
     }
 
@@ -77,7 +81,22 @@ export default async function handler(req, res) {
       });
     }
 
-    const raw = await fs.readFile(logPath, "utf-8");
+    let raw = "";
+    try {
+      raw = await fs.readFile(logPath, "utf-8");
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        return res.status(200).json({
+          service,
+          exists: false,
+          path: logPath,
+          size_bytes: 0,
+          updated_at: null,
+          content: "No startup logs yet.",
+        });
+      }
+      throw error;
+    }
     const normalized = raw.replace(/\r/g, "\n");
     const lines = normalized.split("\n");
     const content = lines.slice(-tail).join("\n").trim();
@@ -90,6 +109,14 @@ export default async function handler(req, res) {
       content: content || "No startup logs yet.",
     });
   } catch (error) {
-    return res.status(500).json({ error: error.message || "Unknown error" });
+    return res.status(200).json({
+      service,
+      exists: false,
+      path: primaryLogPath,
+      size_bytes: 0,
+      updated_at: null,
+      content: "No startup logs yet.",
+      warning: error?.message || "Unknown error",
+    });
   }
 }

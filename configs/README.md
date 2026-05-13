@@ -24,7 +24,7 @@ This directory contains runtime and dataset configuration used by AVSP backend s
 - `DATASETS` in `common.py` is the active dataset list used by backend flows.
 
 4. Model hardware behavior is controlled in `hw_settings.py`.
-- `EMBEDDER_CONFIG` and `VLM_CONFIG` define default backend (`ALIGN`/`QWEN`, `SMOLVLM`/`QWEN`/`OPENAI`), device (`CPU`/`CUDA`/`MPS`), and dtype policy.
+- `EMBEDDER_CONFIG` and `VLM_CONFIG` define default backend (`ALIGN`/`CLIP`/`BLIP`/`SIGLIP`/`QWEN`, `SMOLVLM`/`QWEN`/`OPENAI`), device (`CPU`/`CUDA`/`MPS`), and dtype policy.
 - `TORCH_CONFIG` holds PyTorch/CUDA compatibility knobs and Hugging Face cache/progress behavior.
 
 ## Practical Notes

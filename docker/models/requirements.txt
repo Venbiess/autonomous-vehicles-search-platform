@@ -4,6 +4,7 @@ huggingface_hub
 safetensors
 accelerate
 sentencepiece
+protobuf
 torchvision
 qwen-vl-utils
 num2words

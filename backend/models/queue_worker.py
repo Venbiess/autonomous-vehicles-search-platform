@@ -128,6 +128,10 @@ def _start_http_server(worker_type: str) -> threading.Thread | None:
         from backend.models.embedder.embedder import app as model_app
 
         port = int(os.getenv("EMBEDDER_PORT", "8000"))
+    elif worker_type == "vlm":
+        from backend.models.vlm.vlm import app as model_app
+
+        port = int(os.getenv("VLM_PORT", "8001"))
     else:
         return None
 

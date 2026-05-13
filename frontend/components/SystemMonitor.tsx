@@ -227,7 +227,7 @@ export default function SystemMonitor({
 
   const fetchModelLogMeta = async () => {
     try {
-      const [embedderResponse, vlmResponse] = await Promise.all([
+      const [embedderResponse, vlmResponse] = await Promise.allSettled([
         axios.get("/api/model-logs", {
           params: { service: "embedder", meta_only: "1" },
         }),
@@ -235,22 +235,32 @@ export default function SystemMonitor({
           params: { service: "vlm", meta_only: "1" },
         }),
       ]);
+      const embedderData =
+        embedderResponse.status === "fulfilled" ? embedderResponse.value.data : null;
+      const vlmData = vlmResponse.status === "fulfilled" ? vlmResponse.value.data : null;
       setModelLogMeta({
         embedder: {
-          exists: Boolean(embedderResponse.data?.exists),
+          exists: Boolean(embedderData?.exists),
           updated_at:
-            typeof embedderResponse.data?.updated_at === "string"
-              ? embedderResponse.data.updated_at
+            typeof embedderData?.updated_at === "string"
+              ? embedderData.updated_at
               : null,
         },
         vlm: {
-          exists: Boolean(vlmResponse.data?.exists),
+          exists: Boolean(vlmData?.exists),
           updated_at:
-            typeof vlmResponse.data?.updated_at === "string"
-              ? vlmResponse.data.updated_at
+            typeof vlmData?.updated_at === "string"
+              ? vlmData.updated_at
               : null,
         },
       });
+      if (embedderResponse.status === "rejected" || vlmResponse.status === "rejected") {
+        console.warn("Model log metadata partially unavailable", {
+          embedder:
+            embedderResponse.status === "rejected" ? String(embedderResponse.reason || "") : "ok",
+          vlm: vlmResponse.status === "rejected" ? String(vlmResponse.reason || "") : "ok",
+        });
+      }
     } catch (err) {
       console.error("Failed to fetch model log metadata:", err);
     }

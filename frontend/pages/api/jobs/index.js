@@ -11,22 +11,46 @@ function normalizeJobsPayload(payload) {
   return { ...payload, jobs };
 }
 
+async function readPayloadSafe(response) {
+  const text = await response.text();
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    return { error: text };
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
+    const localSnapshotJobs = listSnapshotTransferJobs();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), masterTimeoutMs);
     const response = await fetch(`${masterEndpoint}/jobs`, { signal: controller.signal }).finally(
       () => clearTimeout(timeout)
     );
-    const payload = normalizeJobsPayload(await response.json());
-    const localSnapshotJobs = listSnapshotTransferJobs();
+    const rawPayload = await readPayloadSafe(response);
+    const payload = normalizeJobsPayload(rawPayload);
     const merged = [...localSnapshotJobs, ...payload.jobs];
     merged.sort((left, right) => Number(right?.created_at || 0) - Number(left?.created_at || 0));
-    return res.status(response.status).json({ ...payload, jobs: merged });
+    if (!response.ok) {
+      const upstreamError =
+        typeof payload?.error === "string" && payload.error.trim()
+          ? payload.error
+          : `Master service responded with status=${response.status}`;
+      return res.status(response.status).json({
+        ...payload,
+        error: upstreamError,
+        jobs: merged,
+      });
+    }
+    return res.status(200).json({ ...payload, jobs: merged });
   } catch (error) {
     const localSnapshotJobs = listSnapshotTransferJobs();
     if (error?.name === "AbortError") {
