@@ -332,6 +332,7 @@ def get_system_info():
             vlm_endpoint=VLM_ENDPOINT,
             embedder_config=EMBEDDER_CONFIG,
             vlm_config=VLM_CONFIG,
+            model_gateway=model_gateway,
         )
     except Exception as exc:
         logger.error("Error getting system info: %s", exc)
