@@ -345,7 +345,17 @@ function isSnapshotActionId(value: string): value is SnapshotActionId {
 
 function toErrorMessage(value: unknown): string {
   if (typeof value === "string" && value.trim()) {
-    return value;
+    const text = value.trim();
+    const lowered = text.toLowerCase();
+    if (
+      lowered.startsWith("<!doctype html") ||
+      lowered.startsWith("<html") ||
+      lowered.includes("\"page\":\"/_error\"") ||
+      lowered.includes("unexpected end of json input")
+    ) {
+      return "";
+    }
+    return text;
   }
   if (value && typeof value === "object") {
     const obj = value as Record<string, unknown>;
@@ -365,15 +375,27 @@ function toErrorMessage(value: unknown): string {
 
 function isTransientFetchFailure(error: unknown): boolean {
   if (!axios.isAxiosError(error)) return false;
+  const status = Number(error.response?.status || 0);
   const message = String(error.message || "").toLowerCase();
   const detail = String(error.response?.data?.detail || error.response?.data?.error || "").toLowerCase();
+  const rawPayload = String(
+    typeof error.response?.data === "string"
+      ? error.response?.data
+      : JSON.stringify(error.response?.data || {})
+  ).toLowerCase();
   return (
+    (status >= 500 && status < 600) ||
     message.includes("fetch failed") ||
     message.includes("network error") ||
     message.includes("timeout") ||
+    message.includes("request failed with status code 500") ||
     detail.includes("fetch failed") ||
     detail.includes("connection refused") ||
-    detail.includes("bad gateway")
+    detail.includes("bad gateway") ||
+    detail.includes("unexpected end of json input") ||
+    rawPayload.includes("unexpected end of json input") ||
+    rawPayload.includes("load-manifest.external.js") ||
+    rawPayload.includes("pages-api.runtime.dev.js")
   );
 }
 
