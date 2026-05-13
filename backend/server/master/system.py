@@ -174,26 +174,6 @@ def fetch_model_runtime(
         return result
 
 
-def _vlm_queue_runtime_online_from_gateway(
-    *,
-    model_gateway: Any,
-    vlm_queue_name: str,
-) -> bool:
-    try:
-        model_health = model_gateway.health()
-        rabbitmq = model_health.get("rabbitmq", {}) if isinstance(model_health, dict) else {}
-        queues = rabbitmq.get("queues", {}) if isinstance(rabbitmq, dict) else {}
-        queue_stats = queues.get(vlm_queue_name, {}) if isinstance(queues, dict) else {}
-        consumers = int(queue_stats.get("consumers", 0))
-        if consumers <= 0:
-            return False
-        missing = model_health.get("missing_consumers", []) if isinstance(model_health, dict) else []
-        missing_set = {str(item).strip() for item in missing if str(item).strip()}
-        return vlm_queue_name not in missing_set
-    except Exception:
-        return False
-
-
 def sample_existing_embedding_dim(storage_api: Any, max_objects_scan: int = 512) -> Optional[int]:
     cursor = ""
     scanned = 0
@@ -266,7 +246,6 @@ def build_system_info(
     vlm_endpoint: str,
     embedder_config: Any,
     vlm_config: Any,
-    model_gateway: Any = None,
 ) -> Dict[str, Any]:
     cpu_percent = psutil.cpu_percent(interval=None)
     cpu_count = psutil.cpu_count()
@@ -313,31 +292,6 @@ def build_system_info(
             str(getattr(vlm_config, "ATTN_IMPLEMENTATION", "") or ""),
         ),
     )
-    vlm_backend = str(
-        os.getenv(
-            "VLM_BACKEND",
-            str(getattr(vlm_config, "BACKEND", "") or ""),
-        )
-    ).strip().upper()
-    if (
-        vlm_backend == "OPENAI"
-        and not bool(vlm_runtime.get("reachable", False))
-        and str(vlm_runtime.get("status", "")).strip().lower() == "starting"
-        and model_gateway is not None
-    ):
-        vlm_queue_name = os.getenv("RABBITMQ_VLM_QUEUE", "avsp.vlm.tasks").strip() or "avsp.vlm.tasks"
-        if _vlm_queue_runtime_online_from_gateway(
-            model_gateway=model_gateway,
-            vlm_queue_name=vlm_queue_name,
-        ):
-            vlm_runtime["reachable"] = True
-            vlm_runtime["status"] = "ok"
-            vlm_runtime["error"] = ""
-            runtime_payload = vlm_runtime.get("runtime", {})
-            if isinstance(runtime_payload, dict):
-                runtime_payload.setdefault("transport", "rabbitmq")
-                runtime_payload.setdefault("queue", vlm_queue_name)
-                vlm_runtime["runtime"] = runtime_payload
     gpu_info = collect_nvidia_info()
     return {
         "cpu": {
