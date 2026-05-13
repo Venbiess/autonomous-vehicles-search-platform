@@ -6,6 +6,54 @@ const GALLERY_VIRTUALIZE_MIN_ITEMS = 40;
 const GALLERY_ROW_HEIGHT_PX = 304;
 const GALLERY_ROW_GAP_PX = 16;
 const GALLERY_OVERSCAN_ROWS = 2;
+const IMAGE_RETRY_ATTEMPTS = 2;
+
+function appendRetryToken(url) {
+  const separator = String(url).includes("?") ? "&" : "?";
+  return `${url}${separator}retry=${Date.now()}`;
+}
+
+function ResilientImage({ src, alt, className }) {
+  const [resolvedSrc, setResolvedSrc] = useState(src);
+  const [retryCount, setRetryCount] = useState(0);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setResolvedSrc(src);
+    setRetryCount(0);
+    setFailed(false);
+  }, [src]);
+
+  if (failed) {
+    return (
+      <div
+        className={`${className} flex items-center justify-center bg-slate-100 text-xs text-slate-500`}
+      >
+        image unavailable
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={resolvedSrc}
+      alt={alt}
+      loading="lazy"
+      className={className}
+      onError={() => {
+        if (retryCount >= IMAGE_RETRY_ATTEMPTS) {
+          setFailed(true);
+          return;
+        }
+        const nextRetry = retryCount + 1;
+        setRetryCount(nextRetry);
+        window.setTimeout(() => {
+          setResolvedSrc(appendRetryToken(src));
+        }, 200 * nextRetry);
+      }}
+    />
+  );
+}
 
 function renderTitleLines(title, className = "") {
   const lines = String(title || "")
@@ -115,10 +163,9 @@ export default function ImageGallery({ images }) {
             onClick={() => setSelectedImage(img)}
             className="h-[300px] overflow-hidden rounded border bg-white text-left transition hover:-translate-y-0.5 hover:shadow-lg"
           >
-            <img
+            <ResilientImage
               src={img.url}
               alt={img.title}
-              loading="lazy"
               className="h-48 w-full object-cover"
             />
             <div className="p-2">
@@ -163,7 +210,7 @@ export default function ImageGallery({ images }) {
               Закрыть
             </button>
             <div className="overflow-auto pt-8">
-              <img
+              <ResilientImage
                 src={selectedImage.url}
                 alt={selectedImage.title}
                 className="max-h-[68vh] w-full rounded-2xl object-contain bg-slate-100"

@@ -1,5 +1,50 @@
 import { loadDatasetVisibility } from "../../lib/datasetVisibility";
 
+const MASTER_PROXY_TIMEOUT_MS = Number(process.env.MASTER_PROXY_TIMEOUT_MS || 15000);
+const MASTER_PROXY_RETRY_ATTEMPTS = Math.max(
+  1,
+  Number.parseInt(process.env.MASTER_PROXY_RETRY_ATTEMPTS || "2", 10) || 2
+);
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableStatus(status) {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+async function fetchMasterWithRetry(url, init = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= MASTER_PROXY_RETRY_ATTEMPTS; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), MASTER_PROXY_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      });
+      if (!response.ok && isRetryableStatus(response.status) && attempt < MASTER_PROXY_RETRY_ATTEMPTS) {
+        await sleep(Math.min(250 * attempt, 1000));
+        continue;
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= MASTER_PROXY_RETRY_ATTEMPTS) {
+        throw error;
+      }
+      await sleep(Math.min(250 * attempt, 1000));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  if (lastError) {
+    throw lastError;
+  }
+  throw new Error("master request failed");
+}
+
 function buildImageUrl(storagePath, defaultBucket) {
   if (!storagePath || typeof storagePath !== "string") return null;
   if (storagePath.startsWith("http://") || storagePath.startsWith("https://")) {
@@ -175,7 +220,7 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: "Image is required" });
       }
 
-      const response = await fetch(
+      const response = await fetchMasterWithRetry(
         `${masterEndpoint}/search/image_bytes?top_k=${topK}&max_rows=10000`,
         {
           method: "POST",
@@ -204,7 +249,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ items: [] });
     }
 
-    const response = await fetch(`${masterEndpoint}/search/text`, {
+    const response = await fetchMasterWithRetry(`${masterEndpoint}/search/text`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query, top_k: topK, max_rows: 10000 }),
