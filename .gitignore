@@ -17,6 +17,8 @@ data/
 .gocache
 .venv/
 venv/
+.tox/
+.nox/
 storage/tests/.venv/
 notebooks/.ipynb_checkpoints/
 /avsp/
@@ -36,8 +38,17 @@ storage/config/dataset_visibility.json
 storage/tests/.bencheros/
 storage/tests/.benchervs/
 storage/tests/.benchmarks/
+storage/tests/.bencheros-smoke/
 
 # Local tool caches and temp artifacts
 storage/tests/.tmp/
 storage/tests/.cache/
 storage/.tmp/
+
+# Frontend build/runtime artifacts
+frontend/.next/
+frontend/.runtime_logs/
+frontend/.turbo/
+frontend/.cache/
+frontend/.eslintcache
+frontend/*.tsbuildinfo

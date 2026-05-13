@@ -21,14 +21,14 @@ jobs:
       - name: Run golangci-lint (storage)
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64.8
+          version: v2.12.2
           working-directory: storage
           args: --timeout=10m ./...
 
       - name: Run golangci-lint (pics module)
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64.8
+          version: v2.12.2
           working-directory: storage/modules/pics
           args: --timeout=10m ./...
 

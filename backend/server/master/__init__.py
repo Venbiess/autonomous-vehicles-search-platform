@@ -96,6 +96,8 @@ _retry_job_from_failed = master_jobs.retry_job_from_failed
 _to_float = master_system.to_float
 _to_int = master_system.to_int
 _collect_nvidia_info = master_system.collect_nvidia_info
+# Keep module-level httpx for tests that monkeypatch master.httpx.Client.
+httpx = master_embedder.httpx
 
 def _embed_image(client: Any, image_bytes: bytes) -> List[float]:
     return model_gateway.embed_image(client, EMBEDDER_ENDPOINT, image_bytes)
