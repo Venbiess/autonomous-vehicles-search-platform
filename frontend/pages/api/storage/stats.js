@@ -42,6 +42,10 @@ const STORAGE_LIST_PAGE_LIMIT = Math.max(
   100,
   Math.min(2000, Number(process.env.STORAGE_STATS_LIST_PAGE_LIMIT || 1000))
 );
+const EMBEDDINGS_PENDING_VERIFY_WINDOW = Math.max(
+  1,
+  Number(process.env.STORAGE_PENDING_VERIFY_WINDOW || 5000)
+);
 const statsCache = new Map();
 
 function normalizeCategoryKey(value) {
@@ -189,6 +193,30 @@ async function countStorageObjectsWithTimeout() {
   return Math.floor(count);
 }
 
+async function countCompletedVectorsForObjectIds(objectIds, chunkSize = 500) {
+  if (!Array.isArray(objectIds) || objectIds.length === 0) {
+    return 0;
+  }
+  const normalizedChunkSize = Math.max(1, Math.min(2000, Number(chunkSize) || 500));
+  let completedCount = 0;
+  for (let index = 0; index < objectIds.length; index += normalizedChunkSize) {
+    const chunk = objectIds.slice(index, index + normalizedChunkSize).filter(Boolean);
+    if (chunk.length === 0) continue;
+    const payload = await readStorageJsonWithTimeout(
+      "/vectors/completed-object-ids",
+      STORAGE_TIMEOUT_MS,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ object_ids: chunk }),
+      }
+    );
+    const ids = Array.isArray(payload?.object_ids) ? payload.object_ids : [];
+    completedCount += ids.filter(Boolean).length;
+  }
+  return completedCount;
+}
+
 async function readAnalyticsJson(path, timeoutMs, init = {}) {
   let lastError = null;
   for (const endpoint of DEFAULT_ANALYTICS_ENDPOINTS) {
@@ -294,6 +322,13 @@ async function buildFullStats({ includeVlmFieldBreakdown = false } = {}) {
   const visibleObjects = filterVisibleObjects(allObjects);
   const stats = buildStorageStats(visibleObjects);
   const totalObjects = visibleObjects.length;
+  const uniqueVisibleObjectIds = Array.from(
+    new Set(
+      visibleObjects
+        .map((item) => String(item?.object_id || "").trim())
+        .filter(Boolean)
+    )
+  );
   const warnings = [];
   const allBuckets = Array.from(
     new Set(allObjects.map((item) => String(item?.bucket || "").trim()).filter(Boolean))
@@ -304,18 +339,39 @@ async function buildFullStats({ includeVlmFieldBreakdown = false } = {}) {
   try {
     const vectorPayload = await readStorageJsonWithTimeout("/vectors/count", STORAGE_TIMEOUT_MS);
     const vectorCount = Math.max(0, Number(vectorPayload?.count || 0));
-    const annotated = Math.max(0, Math.min(vectorCount, totalObjects));
-    const pending = Math.max(0, totalObjects - annotated);
-    stats.embeddings.annotated_rows = annotated;
-    stats.embeddings.pending_rows = pending;
-    stats.embeddings.annotated_percent =
-      totalObjects > 0 ? (annotated / totalObjects) * 100 : 0;
-    stats.embeddings.pending_percent = totalObjects > 0 ? (pending / totalObjects) * 100 : 0;
+    let annotated = Math.max(0, Math.min(vectorCount, totalObjects));
+    let pending = Math.max(0, totalObjects - annotated);
     if (vectorCount > totalObjects) {
       warnings.push(
         `vector stats are global (count=${vectorCount}) and exceed current objects (${totalObjects}); clamped to visible objects`
       );
     }
+
+    const shouldVerifyExactPending =
+      uniqueVisibleObjectIds.length > 0 &&
+      (vectorCount >= Math.max(0, totalObjects - EMBEDDINGS_PENDING_VERIFY_WINDOW) ||
+        vectorCount > totalObjects);
+    if (shouldVerifyExactPending) {
+      try {
+        const completedExact = await countCompletedVectorsForObjectIds(uniqueVisibleObjectIds);
+        const exactAnnotated = Math.max(0, Math.min(completedExact, totalObjects));
+        const exactPending = Math.max(0, totalObjects - exactAnnotated);
+        if (exactAnnotated !== annotated || exactPending !== pending) {
+          warnings.push(
+            `embedding stats reconciled by object_id completion scan: approx_annotated=${annotated}, exact_annotated=${exactAnnotated}`
+          );
+        }
+        annotated = exactAnnotated;
+        pending = exactPending;
+      } catch (verifyError) {
+        warnings.push(`exact embedding pending scan unavailable: ${verifyError.message}`);
+      }
+    }
+
+    stats.embeddings.annotated_rows = annotated;
+    stats.embeddings.pending_rows = pending;
+    stats.embeddings.annotated_percent = totalObjects > 0 ? (annotated / totalObjects) * 100 : 0;
+    stats.embeddings.pending_percent = totalObjects > 0 ? (pending / totalObjects) * 100 : 0;
   } catch (error) {
     warnings.push(`vector stats unavailable: ${error.message}`);
   }
