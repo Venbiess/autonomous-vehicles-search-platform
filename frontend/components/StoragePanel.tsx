@@ -1809,13 +1809,13 @@ export default function StoragePanel({
 
   useEffect(() => {
     let cancelled = false;
-    const boot = () => {
-      void loadStats(true, false);
-      if (!cancelled) {
-        void loadStats(false, true);
-      }
+    const boot = async () => {
+      if (cancelled) return;
+      await loadStats(true, false);
+      if (cancelled) return;
+      await loadStats(false, true);
     };
-    boot();
+    void boot();
     return () => {
       cancelled = true;
     };
