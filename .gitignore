@@ -52,3 +52,6 @@ frontend/.turbo/
 frontend/.cache/
 frontend/.eslintcache
 frontend/*.tsbuildinfo
+
+# Config file
+storage/config/dataset_visibility.json
