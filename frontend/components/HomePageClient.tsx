@@ -1166,7 +1166,7 @@ export default function HomePageClient({
                             setImagesPerPage(Number(event.target.value));
                             setCurrentPage(1);
                           }}
-                          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
+                          className="h-10 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900"
                         >
                           {IMAGES_PER_PAGE_OPTIONS.map((option) => (
                             <option key={option} value={option}>

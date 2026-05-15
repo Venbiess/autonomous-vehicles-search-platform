@@ -3204,12 +3204,12 @@ export default function StoragePanel({
                 value={objectsSearchQuery}
                 onChange={(event) => setObjectsSearchQuery(event.target.value)}
                 placeholder={tr("Поиск: object_id / key / path...", "Search: object_id / key / path...")}
-                className="w-72 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
+                className="h-10 w-72 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
               />
               <select
                 value={objectsDatasetFilter}
                 onChange={(event) => setObjectsDatasetFilter(event.target.value)}
-                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
+                className="h-10 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
               >
                 <option value="">{tr("Все датасеты", "All datasets")}</option>
                 {(stats.storage.all_bucket_stats || stats.storage.bucket_stats).map((bucket) => (
@@ -3224,7 +3224,7 @@ export default function StoragePanel({
               <select
                 value={objectsPageSize}
                 onChange={(event) => setObjectsPageSize(Number(event.target.value))}
-                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
+                className="h-10 rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900"
               >
                 {[5, 10, 20, 50, 100].map((size) => (
                   <option key={size} value={size}>
