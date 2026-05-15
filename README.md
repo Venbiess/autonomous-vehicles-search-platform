@@ -3,13 +3,6 @@
 AVSP is a multimodal retrieval platform for autonomous driving datasets.
 It ingests scene data, generates embeddings and vision-language metadata, and provides search APIs and a web UI for exploration, analytics, and curation workflows.
 
-## Architecture
-
-AVSP combines API services, model workers, and vector-aware storage into a single retrieval pipeline.
-This architecture supports multimodal indexing and fast scene-level search across large autonomous driving datasets.
-
-![AVSP Architecture](https://github.com/user-attachments/assets/023d4deb-0608-4212-b433-579c9333eeae)
-
 ## What You Can Do in the Platform
 
 ### BROWSER (Text Search)
@@ -56,6 +49,13 @@ Use Annotation tools to configure dataset workflows, launch enrichment tasks, an
 - Frontend (Next.js): operator UI for search, VLM fields, transfer, and dataset tools
 - Data services: PostgreSQL/pgvector, Qdrant, Milvus, MinIO, ClickHouse, RabbitMQ
 - Observability: Prometheus, Grafana, cAdvisor
+
+## Architecture
+
+AVSP combines API services, model workers, and vector-aware storage into a single retrieval pipeline.
+This architecture supports multimodal indexing and fast scene-level search across large autonomous driving datasets.
+
+![AVSP Architecture](https://github.com/user-attachments/assets/023d4deb-0608-4212-b433-579c9333eeae)
 
 ## Repository Guide
 
