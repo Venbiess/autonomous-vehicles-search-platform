@@ -583,7 +583,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                         updateDraftField(field.id, "name", event.target.value)
                       }
                       placeholder={`field_${index + 1}`}
-                      className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                      className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                     />
                     <textarea
                       value={field.prompt}
@@ -595,7 +595,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                         "Example: Is there a pedestrian crossing in front of the ego vehicle?"
                       )}
                       rows={3}
-                      className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                      className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                     />
                     <select
                       value={field.response_type}
@@ -606,7 +606,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                           event.target.value
                         )
                       }
-                      className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                      className="ui-select-rounded rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                     >
                       {responseTypeOptions.map((option) => (
                         <option key={option.value} value={option.value}>
@@ -736,7 +736,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                                 },
                               }))
                             }
-                            className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                            className="ui-select-rounded h-[52px] w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                           >
                             <option value="">{tr("Нет", "None")}</option>
                             <option value="any">{tr("Любой", "Any")}</option>
@@ -799,7 +799,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                                           })
                                         }
                                         disabled={fieldState?.isAny ?? true}
-                                        className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                                        className="ui-select-rounded h-[52px] w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                                       >
                                         <option value="">{tr("Выберите значение", "Select value")}</option>
                                         {categoryOptions.map((label) => (
@@ -828,7 +828,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                                           }
                                           disabled={fieldState?.isAny ?? true}
                                           placeholder={tr("Введите точное значение", "Type exact value")}
-                                          className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                                          className="h-[52px] w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                                         />
                                       )}
                                     </>
@@ -851,7 +851,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                                       }
                                       disabled={fieldState?.isAny ?? true}
                                       placeholder={tr("Значение фильтра", "Filter value")}
-                                      className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                                      className="h-[52px] w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                                     />
                                   )}
                                 </>
@@ -880,7 +880,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                                 ? tr("Числовое значение", "Number value")
                                 : tr("Значение фильтра", "Filter value")
                             }
-                            className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                            className="h-[52px] w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:bg-slate-100"
                           />
                         )}
                         {field.response_type !== "yes_no" && (
@@ -914,7 +914,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                                       },
                               }))
                             }
-                            className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                            className="ui-select-rounded h-[52px] w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                           >
                             {[anyMatchModeOption, ...getLocalizedMatchModeOptions(field.response_type)].map((option) => (
                               <option key={option.value} value={option.value}>

@@ -2297,7 +2297,7 @@ export default function AnnotationPanel({
                         updateVlmDraftField(field.id, "name", event.target.value)
                       }
                       placeholder={`field_${index + 1}`}
-                      className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                      className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                     />
                     <textarea
                       value={field.prompt}
@@ -2309,7 +2309,7 @@ export default function AnnotationPanel({
                         "Example: Is there a pedestrian crossing in front of the ego vehicle?"
                       )}
                       rows={3}
-                      className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                      className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                     />
                     <select
                       value={field.response_type}
@@ -2320,7 +2320,7 @@ export default function AnnotationPanel({
                           event.target.value
                         )
                       }
-                      className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
+                      className="ui-select-rounded rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none focus:border-sky-500"
                     >
                       {responseTypeOptions.map((option) => (
                         <option key={option.value} value={option.value}>

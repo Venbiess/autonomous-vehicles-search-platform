@@ -28,3 +28,19 @@
 .hide-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+.ui-select-rounded {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  border-radius: 1rem;
+  padding-right: 2.75rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M6 8l4 4 4-4' stroke='%23334155' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.9rem center;
+  background-size: 0.95rem 0.95rem;
+}
+
+.ui-select-rounded::-ms-expand {
+  display: none;
+}
