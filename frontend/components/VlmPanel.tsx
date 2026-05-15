@@ -747,7 +747,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                             ))}
                           </select>
                         ) : field.response_type === "category" ? (
-                          <>
+                          <div className="space-y-3 min-w-0">
                             {(() => {
                               const fieldState = filters[field.field_name];
                               const matchMode = fieldState?.match_mode ?? DEFAULT_MATCH_MODE;
@@ -857,7 +857,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
                                 </>
                               );
                             })()}
-                          </>
+                          </div>
                         ) : (
                           <input
                             value={filters[field.field_name]?.value ?? ""}
