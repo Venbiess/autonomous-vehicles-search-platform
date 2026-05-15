@@ -35,6 +35,10 @@ type VectorAdapter interface {
 	Health(ctx context.Context) error
 }
 
+type VectorSimilarityCounter interface {
+	CountAboveSimilarity(ctx context.Context, embedding []float64, minSimilarity float64) (int64, error)
+}
+
 type VectorExistingLookup interface {
 	ExistingObjectIDs(ctx context.Context, objectIDs []string) ([]string, error)
 }

@@ -306,6 +306,23 @@ func (p *PgVectorAdapter) QueryTopK(ctx context.Context, embedding []float64, to
 	return results, nil
 }
 
+func (p *PgVectorAdapter) CountAboveSimilarity(ctx context.Context, embedding []float64, minSimilarity float64) (int64, error) {
+	if len(embedding) == 0 {
+		return 0, errors.New("embedding is required")
+	}
+	query := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM %s
+		WHERE embedding_dim = $2
+		  AND (1 - (embedding <=> translate($1::text, '{}', '[]')::vector)) >= $3
+	`, p.qualifiedTable())
+	var count int64
+	if err := p.db.QueryRowContext(ctx, query, pq.Array(embedding), len(embedding), minSimilarity).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (p *PgVectorAdapter) Delete(ctx context.Context, objectIDs []string) error {
 	if len(objectIDs) == 0 {
 		return nil

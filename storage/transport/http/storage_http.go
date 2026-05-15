@@ -62,6 +62,7 @@ func (h *StorageHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/vectors/get", h.handleVectorGet)
 	mux.HandleFunc("/vectors/query", h.handleVectorQuery)
 	mux.HandleFunc("/vectors/count", h.handleVectorCount)
+	mux.HandleFunc("/vectors/count-above", h.handleVectorCountAbove)
 	mux.HandleFunc("/vectors/clear", h.handleVectorClear)
 	mux.HandleFunc("/vectors/cleanup-orphans", h.handleVectorCleanupOrphans)
 	mux.HandleFunc("/vectors/completed-object-ids", h.handleVectorsCompletedObjectIDs)
@@ -291,6 +292,15 @@ type storageQueryVectorsResponse struct {
 	Results []core.QueryResult `json:"results"`
 }
 
+type storageCountVectorsAboveRequest struct {
+	Embedding     []float64 `json:"embedding"`
+	MinSimilarity float64   `json:"min_similarity"`
+}
+
+type storageCountVectorsAboveResponse struct {
+	Count int64 `json:"count"`
+}
+
 type storageGetVectorsRequest struct {
 	ObjectIDs []string `json:"object_ids"`
 }
@@ -382,6 +392,25 @@ func (h *StorageHandler) handleVectorCount(w http.ResponseWriter, r *http.Reques
 		h.writeVectorCountCache(total)
 	}
 	writeJSON(w, http.StatusOK, map[string]int64{"count": total})
+}
+
+func (h *StorageHandler) handleVectorCountAbove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeTypedError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", errors.New("method not allowed"))
+		return
+	}
+	var req storageCountVectorsAboveRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeTypedError(w, r, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	total, err := h.svc.CountVectorsAboveSimilarity(r.Context(), req.Embedding, req.MinSimilarity)
+	if err != nil {
+		status, code := classifyError(err)
+		writeTypedError(w, r, status, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, storageCountVectorsAboveResponse{Count: total})
 }
 
 func (h *StorageHandler) handleVectorGet(w http.ResponseWriter, r *http.Request) {

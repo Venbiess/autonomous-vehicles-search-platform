@@ -361,6 +361,17 @@ func (s *StorageServer) CountVectors(ctx context.Context) (int64, error) {
 	return s.vectorAdapter.Count(ctx)
 }
 
+func (s *StorageServer) CountVectorsAboveSimilarity(ctx context.Context, embedding []float64, minSimilarity float64) (int64, error) {
+	if len(embedding) == 0 {
+		return 0, invalidArgument("embedding is required")
+	}
+	counter, ok := s.vectorAdapter.(infra.VectorSimilarityCounter)
+	if !ok {
+		return 0, invalidArgument("vector backend does not support similarity threshold count")
+	}
+	return counter.CountAboveSimilarity(ctx, embedding, minSimilarity)
+}
+
 func (s *StorageServer) CountObjects(ctx context.Context) (int64, error) {
 	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s.%s`, pqIdent(s.cfg.MetadataSchema), pqIdent(s.cfg.MetadataTable))
 	var total int64
