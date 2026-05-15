@@ -142,6 +142,15 @@ class StorageAPI:
         payload = response.json()
         return payload.get("results", [])
 
+    def count_vectors_above_similarity(self, embedding: List[float], min_similarity: float) -> int:
+        response = self._client.post(
+            f"{self.endpoint}/vectors/count-above",
+            json={"embedding": embedding, "min_similarity": min_similarity},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return int(payload.get("count", 0))
+
     def count_vectors(self) -> int:
         response = self._client.get(f"{self.endpoint}/vectors/count")
         response.raise_for_status()

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 
 const GALLERY_VIRTUALIZE_MIN_ITEMS = 40;
 const GALLERY_ROW_HEIGHT_PX = 304;
@@ -29,9 +30,12 @@ function ResilientImage({ src, alt, className }) {
   }
 
   return (
-    <img
+    <Image
       src={resolvedSrc}
       alt={alt}
+      unoptimized
+      width={1600}
+      height={900}
       loading="lazy"
       className={className}
       onError={() => {

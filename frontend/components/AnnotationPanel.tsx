@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { getLocalizedText, type UiLanguageCode } from "../lib/uiLanguage";
 
@@ -197,8 +197,10 @@ export default function AnnotationPanel({
   showOpenAIBatchBlock = false,
   language = "ru",
 }: AnnotationPanelProps) {
-  const tr = (ru: string, en: string) =>
-    getLocalizedText(language, { ru, en }, en);
+  const tr = useCallback(
+    (ru: string, en: string) => getLocalizedText(language, { ru, en }, en),
+    [language]
+  );
   const getDatasetLinkLabel = (url: string, index: number, total: number): string => {
     const value = String(url || "").toLowerCase();
     if (value.includes("huggingface.co")) {
@@ -221,7 +223,7 @@ export default function AnnotationPanel({
       { value: "short_text" as ResponseType, label: tr("Короткий текст", "Short text") },
       { value: "text" as ResponseType, label: tr("Подробный текст", "Detailed text") },
     ],
-    [language]
+    [tr]
   );
   const localUploadFileInputRef = useRef<HTMLInputElement | null>(null);
   const [limitInput, setLimitInput] = useState("1000");
@@ -351,7 +353,7 @@ export default function AnnotationPanel({
       }
     };
     loadSchema();
-  }, []);
+  }, [tr]);
 
   useEffect(() => {
     if (!openAiFieldNamesInput.trim() && vlmSavedFields.length > 0) {
@@ -380,7 +382,7 @@ export default function AnnotationPanel({
       }
     };
     loadDatasets();
-  }, []);
+  }, [tr]);
 
   useEffect(() => {
     let cancelled = false;
@@ -469,7 +471,7 @@ export default function AnnotationPanel({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [tr]);
 
   useEffect(() => {
     const loadSourceStatus = async () => {
@@ -493,7 +495,7 @@ export default function AnnotationPanel({
       }
     };
     loadSourceStatus();
-  }, []);
+  }, [tr]);
 
   useEffect(() => {
     if (!waymoAuthModalOpen) return;

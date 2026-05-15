@@ -46,6 +46,7 @@ class TextSearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
     top_k: int = Field(5, ge=1)
     max_rows: int = Field(10000, ge=1)
+    count_min_similarity: Optional[float] = None
 
 
 class VLMFieldDefinition(BaseModel):

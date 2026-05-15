@@ -266,6 +266,8 @@ def search_text(
     raise_upstream_http_error: Callable[[httpx.HTTPStatusError], None],
 ) -> Dict[str, Any]:
     warning = None
+    total_matching_count = None
+    total_matching_min_similarity = None
     try:
         ready, reason = search_dependencies_ready(
             require_embedder=True,
@@ -294,6 +296,14 @@ def search_text(
                 raise
             logger.warning("search_text storage unavailable; returning empty results: %s", str(exc))
             results = []
+        if payload.count_min_similarity is not None:
+            try:
+                total_matching_count = storage_api.count_vectors_above_similarity(
+                    query_embedding, float(payload.count_min_similarity)
+                )
+                total_matching_min_similarity = float(payload.count_min_similarity)
+            except Exception as exc:
+                logger.warning("search_text count_min_similarity failed; skipping total count: %s", str(exc))
         warning = build_embedding_dim_warning(query_embedding, source="text") if not results else None
         query_elapsed_ms = (time.perf_counter() - query_started_at) * 1000
         total_elapsed_ms = (time.perf_counter() - started_at) * 1000
@@ -315,6 +325,9 @@ def search_text(
     }
     if warning is not None:
         payload["warning"] = warning
+    if total_matching_count is not None and total_matching_min_similarity is not None:
+        payload["total_matching_count"] = int(total_matching_count)
+        payload["total_matching_min_similarity"] = float(total_matching_min_similarity)
     return payload
 
 
@@ -322,6 +335,7 @@ async def search_image_bytes(
     request: Request,
     *,
     top_k: int,
+    count_min_similarity: float | None = None,
     logger: Any,
     search_dependencies_ready: Callable[..., tuple[bool, str]],
     build_search_backend_unavailable_warning: Callable[[str, str], Dict[str, Any]],
@@ -333,6 +347,8 @@ async def search_image_bytes(
     raise_upstream_http_error: Callable[[httpx.HTTPStatusError], None],
 ) -> Dict[str, Any]:
     warning = None
+    total_matching_count = None
+    total_matching_min_similarity = None
     image_bytes = await request.body()
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Image bytes are required")
@@ -365,6 +381,14 @@ async def search_image_bytes(
                 raise
             logger.warning("search_image_bytes storage unavailable; returning empty results: %s", str(exc))
             results = []
+        if count_min_similarity is not None:
+            try:
+                total_matching_count = storage_api.count_vectors_above_similarity(
+                    query_embedding, float(count_min_similarity)
+                )
+                total_matching_min_similarity = float(count_min_similarity)
+            except Exception as exc:
+                logger.warning("search_image_bytes count_min_similarity failed; skipping total count: %s", str(exc))
         warning = build_embedding_dim_warning(query_embedding, source="image") if not results else None
         query_elapsed_ms = (time.perf_counter() - query_started_at) * 1000
         total_elapsed_ms = (time.perf_counter() - started_at) * 1000
@@ -386,6 +410,9 @@ async def search_image_bytes(
     }
     if warning is not None:
         payload["warning"] = warning
+    if total_matching_count is not None and total_matching_min_similarity is not None:
+        payload["total_matching_count"] = int(total_matching_count)
+        payload["total_matching_min_similarity"] = float(total_matching_min_similarity)
     return payload
 
 

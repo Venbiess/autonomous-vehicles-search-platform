@@ -51,6 +51,18 @@ interface SearchWarningPayload {
   message?: string;
 }
 
+interface SearchPaginationPayload {
+  has_more?: boolean;
+  requested_visible_limit?: number;
+}
+
+interface SearchResponsePayload {
+  items?: ImageResult[];
+  warning?: SearchWarningPayload;
+  pagination?: SearchPaginationPayload;
+  total_matching_count?: number | null;
+}
+
 interface EmbeddingMismatchDialogState {
   queryDim: number;
   storedDim: number;
@@ -58,6 +70,9 @@ interface EmbeddingMismatchDialogState {
 }
 
 const IMAGES_PER_PAGE_OPTIONS = [6, 9, 12, 18, 24];
+const INITIAL_BROWSER_VISIBLE_LIMIT = 100;
+const BROWSER_LOAD_STEP = 100;
+const MAX_BROWSER_VISIBLE_LIMIT = 5000;
 const SEARCH_MODE_COOKIE_KEY = SEARCH_MODE_STORAGE_KEY;
 const UI_SETTINGS_STORAGE_KEY = "avsp_ui_settings_v1";
 const SEARCH_MODE_TABS: SearchMode[] = [
@@ -174,8 +189,19 @@ export default function HomePageClient({
   const [imagesPerPage, setImagesPerPage] = useState(9);
   const [browserQueryDraft, setBrowserQueryDraft] = useState("");
   const [browserImageDraft, setBrowserImageDraft] = useState<File | null>(null);
+  const [activeBrowserSearch, setActiveBrowserSearch] = useState<{
+    query: string;
+    imageFile: File | null;
+  } | null>(null);
+  const [browserLoadedLimit, setBrowserLoadedLimit] = useState(INITIAL_BROWSER_VISIBLE_LIMIT);
+  const [browserHasMore, setBrowserHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [isScoreFilterUpdating, setIsScoreFilterUpdating] = useState(false);
+  const [scoreThresholdTotalCount, setScoreThresholdTotalCount] = useState<number | null>(null);
   const [minScoreInput, setMinScoreInput] = useState("0.1");
   const [maxScoreInput, setMaxScoreInput] = useState("");
+  const [appliedMinScore, setAppliedMinScore] = useState<number | null>(0.1);
+  const [appliedMaxScore, setAppliedMaxScore] = useState<number | null>(null);
   const [uiSettings, setUiSettings] = useState<UISettings>(DEFAULT_UI_SETTINGS);
   const [uiSettingsHydrated, setUiSettingsHydrated] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -185,12 +211,15 @@ export default function HomePageClient({
   const [isRebuildingEmbeddings, setIsRebuildingEmbeddings] = useState(false);
   const settingsPopoverRef = useRef<HTMLDivElement | null>(null);
   const languageMenuRef = useRef<HTMLDivElement | null>(null);
+  const searchRunSeqRef = useRef(0);
+  const scoreCountRunSeqRef = useRef(0);
+  const lastScoreCountKeyRef = useRef("");
 
   const minScore = minScoreInput.trim() === "" ? null : Number(minScoreInput);
   const maxScore = maxScoreInput.trim() === "" ? null : Number(maxScoreInput);
   const hasValidMinScore = minScore !== null && Number.isFinite(minScore);
   const hasValidMaxScore = maxScore !== null && Number.isFinite(maxScore);
-  const hasScoreFilter = hasValidMinScore || hasValidMaxScore;
+  const hasScoreFilter = appliedMinScore !== null || appliedMaxScore !== null;
   const copy = useMemo(() => getUiCopy(uiSettings.language), [uiSettings.language]);
   const selectedLanguage = useMemo(
     () =>
@@ -227,20 +256,18 @@ export default function HomePageClient({
       if (typeof item.score !== "number" || !Number.isFinite(item.score)) {
         return false;
       }
-      if (hasValidMinScore && item.score < (minScore as number)) {
+      if (appliedMinScore !== null && item.score < appliedMinScore) {
         return false;
       }
-      if (hasValidMaxScore && item.score > (maxScore as number)) {
+      if (appliedMaxScore !== null && item.score > appliedMaxScore) {
         return false;
       }
       return true;
     });
   }, [
     hasScoreFilter,
-    hasValidMaxScore,
-    hasValidMinScore,
-    maxScore,
-    minScore,
+    appliedMinScore,
+    appliedMaxScore,
     presentedImages,
   ]);
 
@@ -255,8 +282,115 @@ export default function HomePageClient({
   }, [currentPage, totalPages]);
 
   useEffect(() => {
-    setCurrentPage(1);
-  }, [minScoreInput, maxScoreInput]);
+    if (searchMode !== "Browser") return;
+    if (isLoading || isLoadingMore) return;
+    if (!activeBrowserSearch) return;
+    if (!browserHasMore) return;
+    if (filteredImages.length === 0) return;
+    if (currentPage < Math.max(1, totalPages - 1)) return;
+    const nextLimit = Math.min(
+      MAX_BROWSER_VISIBLE_LIMIT,
+      browserLoadedLimit + BROWSER_LOAD_STEP
+    );
+    if (nextLimit <= browserLoadedLimit) return;
+    void runSearch({
+      query: activeBrowserSearch.query,
+      imageFile: activeBrowserSearch.imageFile,
+      targetVisibleLimit: nextLimit,
+      isLoadMore: true,
+      includeScoreTotalCount: false,
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    searchMode,
+    isLoading,
+    isLoadingMore,
+    activeBrowserSearch,
+    browserHasMore,
+    filteredImages.length,
+    currentPage,
+    totalPages,
+    browserLoadedLimit,
+  ]);
+
+  useEffect(() => {
+    if (!activeBrowserSearch) {
+      setScoreThresholdTotalCount(null);
+      setIsScoreFilterUpdating(false);
+      lastScoreCountKeyRef.current = "";
+      return;
+    }
+    if (isLoading || isLoadingMore) {
+      return;
+    }
+    const nextAppliedMin = hasValidMinScore ? (minScore as number) : null;
+    const nextAppliedMax = hasValidMaxScore ? (maxScore as number) : null;
+    const countMinScore =
+      hasValidMinScore && !hasValidMaxScore && !activeBrowserSearch.imageFile
+        ? (minScore as number)
+        : null;
+
+    if (countMinScore === null) {
+      setAppliedMinScore(nextAppliedMin);
+      setAppliedMaxScore(nextAppliedMax);
+      setScoreThresholdTotalCount(null);
+      setIsScoreFilterUpdating(false);
+      lastScoreCountKeyRef.current = "";
+      return;
+    }
+
+    const countKey = `${activeBrowserSearch.query}::${nextAppliedMin ?? ""}::${nextAppliedMax ?? ""}::${
+      activeBrowserSearch.imageFile ? "image" : "text"
+    }`;
+    if (lastScoreCountKeyRef.current === countKey) {
+      return;
+    }
+
+    const runSeq = scoreCountRunSeqRef.current + 1;
+    scoreCountRunSeqRef.current = runSeq;
+    setIsScoreFilterUpdating(true);
+
+    const timeout = window.setTimeout(async () => {
+      try {
+        const response = await axios.get("/api/search", {
+          params: {
+            q: activeBrowserSearch.query,
+            count_only: 1,
+            count_min_score: countMinScore,
+          },
+        });
+        if (runSeq !== scoreCountRunSeqRef.current) {
+          return;
+        }
+        const payload = response.data as SearchResponsePayload & {
+          total_matching_count?: number | null;
+        };
+        const nextTotal = Number(payload?.total_matching_count);
+        setScoreThresholdTotalCount(Number.isFinite(nextTotal) ? nextTotal : null);
+        setAppliedMinScore(nextAppliedMin);
+        setAppliedMaxScore(nextAppliedMax);
+        lastScoreCountKeyRef.current = countKey;
+      } catch {
+        if (runSeq !== scoreCountRunSeqRef.current) {
+          return;
+        }
+      } finally {
+        if (runSeq === scoreCountRunSeqRef.current) {
+          setIsScoreFilterUpdating(false);
+        }
+      }
+    }, 450);
+
+    return () => window.clearTimeout(timeout);
+  }, [
+    activeBrowserSearch,
+    hasValidMinScore,
+    hasValidMaxScore,
+    minScore,
+    maxScore,
+    isLoading,
+    isLoadingMore,
+  ]);
 
   useEffect(() => {
     const loadSourceStatus = async () => {
@@ -405,34 +539,85 @@ export default function HomePageClient({
   const runSearch = async ({
     query,
     imageFile,
+    targetVisibleLimit,
+    isLoadMore,
+    includeScoreTotalCount,
+    countMinScore = null,
+    applyScoreFilterOnSuccess = false,
+    nextAppliedMinScore = null,
+    nextAppliedMaxScore = null,
+    showLoadMoreSpinner = true,
+    updateResultsOnSuccess = true,
+    suppressErrors = false,
   }: {
     query: string;
     imageFile: File | null;
+    targetVisibleLimit: number;
+    isLoadMore: boolean;
+    includeScoreTotalCount: boolean;
+    countMinScore?: number | null;
+    applyScoreFilterOnSuccess?: boolean;
+    nextAppliedMinScore?: number | null;
+    nextAppliedMaxScore?: number | null;
+    showLoadMoreSpinner?: boolean;
+    updateResultsOnSuccess?: boolean;
+    suppressErrors?: boolean;
   }) => {
+    const runSeq = searchRunSeqRef.current + 1;
+    searchRunSeqRef.current = runSeq;
     const cleanedQuery = query.trim();
-    if (!cleanedQuery && !imageFile) {
+    if (!cleanedQuery && !imageFile && !isLoadMore) {
       setImages([]);
       setLastQuery("");
       setErrorMessage(null);
       setCurrentPage(1);
+      setBrowserHasMore(false);
+      setBrowserLoadedLimit(INITIAL_BROWSER_VISIBLE_LIMIT);
+      setActiveBrowserSearch(null);
+      setScoreThresholdTotalCount(null);
+      lastScoreCountKeyRef.current = "";
       return;
     }
 
-    setIsLoading(true);
-    setErrorMessage(null);
-    setSearchWarningMessage(null);
-    setLastQuery(cleanedQuery || (imageFile ? IMAGE_SEARCH_QUERY_TOKEN : ""));
+    if (isLoadMore) {
+      if (showLoadMoreSpinner) {
+        setIsLoadingMore(true);
+      }
+    } else {
+      setIsLoading(true);
+      setErrorMessage(null);
+      setSearchWarningMessage(null);
+      setLastQuery(cleanedQuery || (imageFile ? IMAGE_SEARCH_QUERY_TOKEN : ""));
+    }
     try {
+      const requestedLimit = Math.max(
+        INITIAL_BROWSER_VISIBLE_LIMIT,
+        Math.min(MAX_BROWSER_VISIBLE_LIMIT, Math.floor(targetVisibleLimit))
+      );
+      const includeCount = includeScoreTotalCount && countMinScore !== null;
+      const params = new URLSearchParams();
+      params.set("limit", String(requestedLimit));
+      if (includeCount) {
+        params.set("count_min_score", String(countMinScore));
+      }
+
       const response = imageFile
-        ? await axios.post("/api/search?limit=100", imageFile, {
+        ? await axios.post(`/api/search?${params.toString()}`, imageFile, {
             headers: {
               "Content-Type": imageFile.type || "application/octet-stream",
             },
           })
         : await axios.get("/api/search", {
-            params: { q: cleanedQuery, limit: 100 },
+            params: {
+              q: cleanedQuery,
+              limit: requestedLimit,
+              ...(includeCount ? { count_min_score: countMinScore } : {}),
+            },
           });
-      const payload = response.data;
+      if (runSeq !== searchRunSeqRef.current) {
+        return;
+      }
+      const payload = response.data as SearchResponsePayload;
       const items = Array.isArray(payload)
         ? payload
         : Array.isArray(payload?.items)
@@ -462,20 +647,72 @@ export default function HomePageClient({
             : copy.search.searchBackendUnavailable;
         setSearchWarningMessage(warningMessage);
       }
-      setImages(items);
-      setCurrentPage(1);
+      if (updateResultsOnSuccess) {
+        setImages(items);
+        setBrowserHasMore(Boolean(payload?.pagination?.has_more));
+        setBrowserLoadedLimit(
+          Number.isFinite(payload?.pagination?.requested_visible_limit)
+            ? Number(payload.pagination?.requested_visible_limit)
+            : requestedLimit
+        );
+        setActiveBrowserSearch((prev) => {
+          if (prev && prev.query === cleanedQuery && prev.imageFile === imageFile) {
+            return prev;
+          }
+          return { query: cleanedQuery, imageFile };
+        });
+      }
+      if (includeCount) {
+        const nextTotal = Number(payload?.total_matching_count);
+        setScoreThresholdTotalCount(Number.isFinite(nextTotal) ? nextTotal : null);
+      } else if (!isLoadMore) {
+        setScoreThresholdTotalCount(null);
+        lastScoreCountKeyRef.current = "";
+      }
+      if (applyScoreFilterOnSuccess) {
+        setAppliedMinScore(nextAppliedMinScore);
+        setAppliedMaxScore(nextAppliedMaxScore);
+      }
+      if (!isLoadMore && updateResultsOnSuccess) {
+        setCurrentPage(1);
+      }
     } catch (error) {
+      if (runSeq !== searchRunSeqRef.current) {
+        return;
+      }
       const message = axios.isAxiosError(error)
         ? error.response?.data?.error || error.message
         : error instanceof Error
           ? error.message
           : copy.search.searchFailed;
-      setErrorMessage(message);
-      setSearchWarningMessage(null);
-      setImages([]);
-      setCurrentPage(1);
+      if (!suppressErrors) {
+        setErrorMessage(message);
+        setSearchWarningMessage(null);
+      }
+      if (!isLoadMore && updateResultsOnSuccess) {
+        setImages([]);
+        setCurrentPage(1);
+        setBrowserHasMore(false);
+        setActiveBrowserSearch(null);
+        setScoreThresholdTotalCount(null);
+        setAppliedMinScore(hasValidMinScore ? (minScore as number) : null);
+        setAppliedMaxScore(hasValidMaxScore ? (maxScore as number) : null);
+        lastScoreCountKeyRef.current = "";
+      }
     } finally {
-      setIsLoading(false);
+      if (runSeq !== searchRunSeqRef.current) {
+        return;
+      }
+      if (isLoadMore) {
+        if (showLoadMoreSpinner) {
+          setIsLoadingMore(false);
+        }
+      } else {
+        setIsLoading(false);
+      }
+      if (applyScoreFilterOnSuccess) {
+        setIsScoreFilterUpdating(false);
+      }
     }
   };
 
@@ -531,7 +768,16 @@ export default function HomePageClient({
   };
 
   const handleSearch = (payload: { query: string; imageFile: File | null }) =>
-    runSearch(payload);
+    runSearch({
+      ...payload,
+      targetVisibleLimit: INITIAL_BROWSER_VISIBLE_LIMIT,
+      isLoadMore: false,
+      includeScoreTotalCount: hasValidMinScore && !hasValidMaxScore,
+      countMinScore: hasValidMinScore && !hasValidMaxScore ? (minScore as number) : null,
+      applyScoreFilterOnSuccess: true,
+      nextAppliedMinScore: hasValidMinScore ? (minScore as number) : null,
+      nextAppliedMaxScore: hasValidMaxScore ? (maxScore as number) : null,
+    });
 
   const handleExportCsv = () => {
     if (filteredImages.length === 0) return;
@@ -881,7 +1127,7 @@ export default function HomePageClient({
 
           <section className="px-4 pb-16 sm:px-6">
             <div className="mx-auto max-w-5xl">
-              {isLoading && (
+              {isLoading && images.length === 0 && (
                 <div className="text-sm text-gray-500">{copy.browser.loadingResults}</div>
               )}
               {!isLoading && images.length === 0 && lastQuery && !errorMessage && !searchWarningMessage && (
@@ -902,7 +1148,14 @@ export default function HomePageClient({
                             filteredImages.length
                           )
                         : copy.browser.noResultsForFilter}
-                      {hasScoreFilter && copy.browser.totalFoundSuffix(images.length)}
+                      {hasScoreFilter &&
+                        (isScoreFilterUpdating
+                          ? copy.browser.totalFoundUpdating
+                          : copy.browser.totalFoundSuffix(
+                              hasValidMinScore && !hasValidMaxScore && scoreThresholdTotalCount !== null
+                                ? scoreThresholdTotalCount
+                                : images.length
+                            ))}
                     </div>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                       <label className="flex items-center gap-2 text-sm text-gray-600">
@@ -945,6 +1198,10 @@ export default function HomePageClient({
                       </div>
                     </div>
                   </div>
+
+                  {isLoadingMore && (
+                    <div className="mt-3 text-xs text-gray-500">{copy.browser.loadingResults}</div>
+                  )}
 
                   {filteredImages.length > 0 && (
                     <ImageGallery images={paginatedImages} />

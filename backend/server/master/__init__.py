@@ -440,11 +440,17 @@ def search_text(payload: TextSearchRequest):
 
 
 @app.post("/search/image_bytes")
-async def search_image_bytes(request: Request, top_k: int = 5, max_rows: int = 10000):
+async def search_image_bytes(
+    request: Request,
+    top_k: int = 5,
+    max_rows: int = 10000,
+    count_min_similarity: float | None = None,
+):
     del max_rows
     return await master_routes.search_image_bytes(
         request,
         top_k=top_k,
+        count_min_similarity=count_min_similarity,
         logger=logger,
         search_dependencies_ready=_search_dependencies_ready_for_routes,
         build_search_backend_unavailable_warning=_build_search_backend_unavailable_warning,

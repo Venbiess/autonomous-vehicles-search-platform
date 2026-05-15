@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
+import Image from "next/image";
 import {
   getLocalizedText,
   getUiLanguageLocale,
@@ -3981,9 +3982,12 @@ export default function StoragePanel({
                 {tr("Закрыть", "Close")}
               </button>
             </div>
-            <img
+            <Image
               src={`/api/objects/${encodeURIComponent(previewObjectId)}`}
               alt={previewObjectId}
+              unoptimized
+              width={1920}
+              height={1080}
               className="max-h-[75vh] w-full rounded-xl border border-slate-200 bg-slate-100 object-contain"
             />
           </div>

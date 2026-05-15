@@ -174,8 +174,10 @@ export default function SystemMonitor({
   showGpuPanel?: boolean;
   isActive?: boolean;
 }) {
-  const tr = (ru: string, en: string) =>
-    getLocalizedText(language, { ru, en }, en);
+  const tr = useCallback(
+    (ru: string, en: string) => getLocalizedText(language, { ru, en }, en),
+    [language]
+  );
   const dateLocale = getUiLanguageLocale(language);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -215,7 +217,7 @@ export default function SystemMonitor({
     process.env.NEXT_PUBLIC_CADVISOR_CONTAINERS_URL?.trim() ||
     "http://localhost:8088/containers/";
 
-  const fetchSystemInfo = async () => {
+  const fetchSystemInfo = useCallback(async () => {
     try {
       const response = await axios.get("/api/system-info");
       setSystemInfo(response.data);
@@ -226,9 +228,9 @@ export default function SystemMonitor({
           : tr("Не удалось загрузить информацию о системе", "Failed to load system info");
       setError(message);
     }
-  };
+  }, [tr]);
 
-  const fetchJobs = async () => {
+  const fetchJobs = useCallback(async () => {
     try {
       const response = await axios.get("/api/jobs", {
         validateStatus: () => true,
@@ -260,9 +262,9 @@ export default function SystemMonitor({
         }
       }
     }
-  };
+  }, []);
 
-  const fetchModelLogMeta = async () => {
+  const fetchModelLogMeta = useCallback(async () => {
     try {
       const [embedderResponse, vlmResponse] = await Promise.allSettled([
         axios.get("/api/model-logs", {
@@ -301,7 +303,7 @@ export default function SystemMonitor({
     } catch (err) {
       console.error("Failed to fetch model log metadata:", err);
     }
-  };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -374,7 +376,7 @@ export default function SystemMonitor({
       if (coreTimer) clearTimeout(coreTimer);
       if (modelLogTimer) clearTimeout(modelLogTimer);
     };
-  }, [isActive]);
+  }, [isActive, fetchJobs, fetchModelLogMeta, fetchSystemInfo]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -502,7 +504,7 @@ export default function SystemMonitor({
         return log ? `${prefix}\n${log}` : prefix;
       })
       .join("\n\n");
-  }, [language]);
+  }, [tr]);
 
   const getJobMainLog = useCallback((job: Job): string => {
     const lines = Array.isArray(job.job_log) ? job.job_log : [];
@@ -510,7 +512,7 @@ export default function SystemMonitor({
       return tr("Лог джобы отсутствует.", "No job log available.");
     }
     return lines.join("\n");
-  }, [language]);
+  }, [tr]);
 
   const formatDate = (timestamp: number): string => {
     return new Date(timestamp * 1000).toLocaleString(dateLocale);
@@ -804,7 +806,7 @@ export default function SystemMonitor({
     );
   };
 
-  const fetchWaymoAuthLink = async () => {
+  const fetchWaymoAuthLink = useCallback(async () => {
     try {
       setWaymoAuthBusy(true);
       setWaymoAuthError(null);
@@ -844,7 +846,7 @@ export default function SystemMonitor({
     } finally {
       setWaymoAuthBusy(false);
     }
-  };
+  }, [tr]);
 
   const submitWaymoAuthCode = async () => {
     if (!waymoAuthSessionId) {
@@ -927,7 +929,7 @@ export default function SystemMonitor({
       return;
     }
     fetchWaymoAuthLink();
-  }, [waymoAuthModalOpen, waymoAuthSessionId, waymoAuthBusy]);
+  }, [waymoAuthModalOpen, waymoAuthSessionId, waymoAuthBusy, fetchWaymoAuthLink]);
 
   useEffect(() => {
     if (!logViewer?.jobId || !logViewer.source || logViewer.source === "model") {
@@ -1027,7 +1029,7 @@ export default function SystemMonitor({
       active = false;
       clearInterval(interval);
     };
-  }, [logViewer?.source, logViewer?.modelService]);
+  }, [logViewer?.source, logViewer?.modelService, dateLocale, tr]);
 
   useEffect(() => {
     if (!logViewer && !configViewer && !cancelDialogJob && !waymoAuthModalOpen) {

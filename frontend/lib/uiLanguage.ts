@@ -49,6 +49,7 @@ export interface UiCopy {
     resultsShown: (start: number, end: number, total: number) => string;
     noResultsForFilter: string;
     totalFoundSuffix: (total: number) => string;
+    totalFoundUpdating: string;
     imagesPerPage: string;
     previousPage: string;
     nextPage: string;
@@ -188,6 +189,7 @@ export const UI_COPY: Record<UiLanguageCode, UiCopy> = {
         `Showing ${start}-${end} of ${total}`,
       noResultsForFilter: "No results for the current filter",
       totalFoundSuffix: (total: number) => ` (total found: ${total})`,
+      totalFoundUpdating: " (updating total found...)",
       imagesPerPage: "Images per page",
       previousPage: "← Previous",
       nextPage: "Next →",
@@ -284,6 +286,7 @@ export const UI_COPY: Record<UiLanguageCode, UiCopy> = {
         `Показаны ${start}-${end} из ${total}`,
       noResultsForFilter: "По текущему фильтру результаты отсутствуют",
       totalFoundSuffix: (total: number) => ` (всего найдено: ${total})`,
+      totalFoundUpdating: " (обновляем общее количество...)",
       imagesPerPage: "Картинок на странице",
       previousPage: "← Назад",
       nextPage: "Вперёд →",

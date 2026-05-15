@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { getLocalizedText, type UiLanguageCode } from "../lib/uiLanguage";
 
@@ -185,8 +185,10 @@ function normalizeFieldName(name: string): string {
 }
 
 export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCode }) {
-  const tr = (ru: string, en: string) =>
-    getLocalizedText(language, { ru, en }, en);
+  const tr = useCallback(
+    (ru: string, en: string) => getLocalizedText(language, { ru, en }, en),
+    [language]
+  );
 
   const responseTypeOptions = useMemo(
     () => [
@@ -196,18 +198,18 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
       { value: "short_text" as ResponseType, label: tr("Короткий текст", "Short text") },
       { value: "text" as ResponseType, label: tr("Подробный текст", "Detailed text") },
     ],
-    [language]
+    [tr]
   );
   const anyMatchModeOption = useMemo(
     () => ({ value: "any" as MatchModeSelectValue, label: tr("Любой", "Any") }),
-    [language]
+    [tr]
   );
   const basicMatchModeOptions = useMemo(
     () => [
       { value: "contains" as MatchModeSelectValue, label: tr("Содержит", "Contains") },
       { value: "exact" as MatchModeSelectValue, label: tr("Точное", "Exact") },
     ],
-    [language]
+    [tr]
   );
   const numberMatchModeOptions = useMemo(
     () => [
@@ -225,14 +227,14 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
         label: tr("Меньше или равно", "Less or equal than"),
       },
     ],
-    [language]
+    [tr]
   );
   const yesNoValueOptions = useMemo(
     () => [
       { value: "yes", label: tr("Да", "Yes") },
       { value: "no", label: tr("Нет", "No") },
     ],
-    [language]
+    [tr]
   );
   const getLocalizedMatchModeOptions = (responseType: ResponseType): MatchModeOption[] => {
     if (responseType === "yes_no") {
@@ -305,7 +307,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
       }
     };
     loadSchema();
-  }, []);
+  }, [tr]);
 
   useEffect(() => {
     const loadSourceStatus = async () => {
@@ -329,7 +331,7 @@ export default function VlmPanel({ language = "ru" }: { language?: UiLanguageCod
       }
     };
     loadSourceStatus();
-  }, []);
+  }, [tr]);
 
   useEffect(() => {
     if (currentPage > totalPages) {

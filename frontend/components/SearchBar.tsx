@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import { DEFAULT_UI_COPY, type SearchBarCopy } from "../lib/uiLanguage";
 
 interface SearchBarProps {
@@ -134,9 +135,12 @@ export default function SearchBar({
                 }}
                 aria-label={copy.openImagePreviewAria}
               >
-                <img
+                <Image
                   src={previewUrl}
                   alt={copy.selectedImageAlt}
+                  unoptimized
+                  width={28}
+                  height={28}
                   className="h-full w-full object-cover"
                   onLoad={() => setIsImageLoading(false)}
                   onError={() => {
@@ -232,9 +236,12 @@ export default function SearchBar({
             >
               ×
             </button>
-            <img
+            <Image
               src={previewUrl}
               alt={copy.uploadedImagePreviewAlt}
+              unoptimized
+              width={1600}
+              height={900}
               className="max-h-[82vh] max-w-[90vw] rounded-xl object-contain"
             />
           </div>
